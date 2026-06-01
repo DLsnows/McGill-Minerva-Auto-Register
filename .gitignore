@@ -26,6 +26,9 @@ data/
 logs/
 screenshots/
 
+# User-provided Minerva HTML samples (contain personal info — NEVER commit)
+Minerva Pages html/
+
 # Superpowers brainstorm visual companion (local only)
 .superpowers/
 
