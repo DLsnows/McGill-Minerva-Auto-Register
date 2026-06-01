@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "browser:install": "playwright install chromium",
+    "session:login": "tsx src/session/login-script.ts"
+  },
+  "dependencies": {
+    "playwright": "^1.49.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
   }
 }
