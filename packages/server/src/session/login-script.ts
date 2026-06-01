@@ -17,8 +17,12 @@ async function main() {
 
   console.log('✓ Logged in. Session cookies are saved in the persistent profile.');
   console.log('You can close the browser window. Re-running will reuse this session.');
-  // Best-effort cleanup: don't let a slow browser close hang the process.
-  await Promise.race([session.close(), new Promise((r) => setTimeout(r, 5000))]);
+  // Best-effort cleanup: don't let a slow browser close hang the process, but
+  // surface (don't swallow) any close error for diagnostics.
+  await Promise.race([
+    session.close().catch((e) => console.warn('close() error (ignored):', e)),
+    new Promise((r) => setTimeout(r, 5000)),
+  ]);
   process.exit(0);
 }
 

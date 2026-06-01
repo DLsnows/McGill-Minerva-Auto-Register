@@ -29,11 +29,20 @@ describe('classifySession', () => {
     ).toBe('logged-out');
   });
 
-  it('logged-out when body shows a login form even on a pban1 url', () => {
+  it('authenticated on a pban1 url even if body has incidental login-ish text (url wins)', () => {
     expect(
       classifySession({
         url: 'https://horizon.mcgill.ca/pban1/twbkwbis.P_GenMenu',
-        bodyText: 'please enter your mcgill username and password',
+        bodyText: 'sign in as a different user',
+      }),
+    ).toBe('authenticated');
+  });
+
+  it('logged-out on a non-pban1 page detected via body markers', () => {
+    expect(
+      classifySession({
+        url: 'https://sso.mcgill.ca/landing',
+        bodyText: 'please enter your username and password',
       }),
     ).toBe('logged-out');
   });

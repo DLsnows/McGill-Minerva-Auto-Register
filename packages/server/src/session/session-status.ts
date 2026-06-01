@@ -24,8 +24,12 @@ export function classifySession(probe: SessionProbe): SessionStatus {
   const url = probe.url.toLowerCase();
   const body = probe.bodyText.toLowerCase();
 
+  // URL is the most reliable signal. A known login/SSO URL means logged-out;
+  // being inside the authenticated pban1 area means authenticated regardless of
+  // incidental body text (e.g. a "Sign in as a different user" link).
   if (LOGIN_URL_MARKERS.some((m) => url.includes(m))) return 'logged-out';
-  if (LOGIN_BODY_MARKERS.some((m) => body.includes(m))) return 'logged-out';
   if (url.includes(AUTH_BASE)) return 'authenticated';
+  // Fallback for non-pban1 pages (e.g. an SSO landing page).
+  if (LOGIN_BODY_MARKERS.some((m) => body.includes(m))) return 'logged-out';
   return 'logged-out';
 }

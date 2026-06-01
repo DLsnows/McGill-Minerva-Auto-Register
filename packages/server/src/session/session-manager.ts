@@ -17,6 +17,12 @@ export class SessionManager {
       headless: false,
       viewport: { width: 1280, height: 900 },
     });
+    // If the context is closed externally (crash, user closes window), drop the
+    // stale reference so a later launch() re-creates it instead of silently
+    // no-opping and failing later in getPage().
+    this.context.on('close', () => {
+      this.context = null;
+    });
   }
 
   private requireContext(): BrowserContext {
