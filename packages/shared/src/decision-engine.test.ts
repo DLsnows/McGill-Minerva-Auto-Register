@@ -44,6 +44,12 @@ describe('decide', () => {
     expect(decide(stats({ wlcap: 20, wlact: 20, wlrem: 0, rem: 3 })).action).toBe('NOOP');
   });
 
+  it('reason reflects that seats remain when NOOP is due to a full waitlist', () => {
+    const d = decide(stats({ wlcap: 20, wlact: 20, wlrem: 0, rem: 3 }));
+    expect(d.reason).toContain('rem=3');
+    expect(d.reason).not.toContain('No seat');
+  });
+
   it('NOOPs when waitlist is active and full and class is full', () => {
     expect(decide(stats({ wlcap: 20, wlact: 20, wlrem: 0, rem: 0 })).action).toBe('NOOP');
   });

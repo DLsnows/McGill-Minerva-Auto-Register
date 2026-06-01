@@ -33,10 +33,18 @@ export function decide(s: SectionStats): Decision {
     };
   }
 
+  if (hasWaitlist) {
+    return {
+      action: 'NOOP',
+      reason:
+        s.rem > 0
+          ? `Seats remain (rem=${s.rem}) but waitlist full (wlrem=0), seats reserved — wait`
+          : `No seat and waitlist full (wlrem=0) — wait`,
+    };
+  }
+
   return {
     action: 'NOOP',
-    reason: hasWaitlist
-      ? `No seat and waitlist full (wlrem=0) — wait`
-      : `No waitlist and class full (rem=0) — wait`,
+    reason: `No waitlist and class full (rem=0) — wait`,
   };
 }
