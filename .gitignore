@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Environment & secrets (NEVER commit)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Playwright browser profile (the logged-in session lives here — never commit)
+.browser-profile/
+playwright-profile/
+
+# Local app data (sqlite db, logs, screenshots of errors)
+data/
+*.sqlite
+*.sqlite-*
+logs/
+screenshots/
+
+# Superpowers brainstorm visual companion (local only)
+.superpowers/
+
+# Claude Code local (personal) settings
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Test / coverage
+coverage/
