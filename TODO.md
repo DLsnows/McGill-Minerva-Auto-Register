@@ -6,7 +6,7 @@ See design spec: `docs/superpowers/specs/2026-06-01-autoregister-design.md`.
 ## Phases (each = one PR → dev)
 
 - [x] **P0 — Scaffolding**: monorepo, tooling, CI port, TODO, design doc
-- [ ] **P1 — shared**: decision engine (pure, fully tested) + course table parser
+- [x] **P1 — shared**: decision engine (pure, fully tested) — parser moved to P3
 - [ ] **P2 — minerva-client/session**: persistent profile, login detection, health check
 - [ ] **P3 — minerva-client/query**: advanced search navigation + parse, match by target CRN
 - [ ] **P4 — minerva-client/register**: submit + waitlist re-submit + term check + error capture
