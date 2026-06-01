@@ -1,0 +1,3 @@
+# Normalize line endings: store text files as LF in the repo so Windows (local)
+# and Linux (CI) stay consistent and Prettier never trips on CRLF.
+* text=auto eol=lf

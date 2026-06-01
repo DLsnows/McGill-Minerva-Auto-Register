@@ -1,0 +1,94 @@
+name: CI / lint-and-typecheck
+
+on:
+  pull_request:
+    branches: [dev, staging]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-typecheck:
+    runs-on: ubuntu-slim
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        id: lint
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run lint 2>&1 | tee lint-output.txt
+
+      - name: Run TypeScript type check
+        id: typecheck
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee typecheck-output.txt
+
+      - name: Build comment body
+        id: build-comment
+        if: always()
+        run: |
+          TRUNCATE_LINES=200
+
+          {
+            echo "## :mag: Lint & Type Check Results"
+            echo ""
+
+            echo "### ESLint"
+            if [ "${{ steps.lint.outcome }}" = "success" ]; then
+              echo ":white_check_mark: **Passed** -- no lint errors or warnings."
+            else
+              echo ":x: **Failed** -- see errors below:"
+              echo ""
+              echo '```'
+              tail -n $TRUNCATE_LINES lint-output.txt 2>/dev/null || echo "(no output captured)"
+              echo '```'
+            fi
+            echo ""
+
+            echo "### TypeScript Type Check"
+            if [ "${{ steps.typecheck.outcome }}" = "success" ]; then
+              echo ":white_check_mark: **Passed** -- no type errors."
+            else
+              echo ":x: **Failed** -- see errors below:"
+              echo ""
+              echo '```'
+              tail -n $TRUNCATE_LINES typecheck-output.txt 2>/dev/null || echo "(no output captured)"
+              echo '```'
+            fi
+            echo ""
+          } > /tmp/comment.md
+
+      - name: Post sticky comment
+        if: always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: lint-and-typecheck
+          path: /tmp/comment.md
+
+      - name: Fail if any check failed
+        if: |
+          always() &&
+          (steps.lint.outcome == 'failure' || steps.typecheck.outcome == 'failure')
+        run: exit 1

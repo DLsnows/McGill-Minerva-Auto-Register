@@ -1,0 +1,37 @@
+name: PR Agent Code Review
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr_agent_job:
+    if: ${{ github.event.sender.type != 'Bot' }}
+    # NOTE: keep ubuntu-latest (NOT ubuntu-slim). pr-agent is a Docker container
+    # action; the slim runner image has no docker daemon, so the action's build
+    # phase fails with "no such file or directory" on /var/run/docker.sock.
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: write
+    name: PR Agent - Auto Review & Describe
+    steps:
+      - name: PR Agent action step
+        id: pragent
+        uses: the-pr-agent/pr-agent@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEEPSEEK.KEY: ${{ secrets.DEEPSEEK_KEY }}
+          config.model: "deepseek/deepseek-v4-pro"
+          config.fallback_models: '["deepseek/deepseek-v4-pro"]'
+          config.custom_model_max_tokens: "131072"
+          config.max_model_tokens: "120000"
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "true"
+          github_action_config.auto_improve: "true"
+          github_action_config.enable_output_relevant: "true"
