@@ -1,0 +1,55 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-slim
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch PR diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/pr-data
+          gh pr diff ${{ github.event.pull_request.number }} > /tmp/pr-data/diff.txt
+          gh pr view ${{ github.event.pull_request.number }} --json title,body > /tmp/pr-data/info.json
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+          ANTHROPIC_MODEL: deepseek-v4-pro[1M]
+          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro[1M]
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
+        with:
+          anthropic_api_key: ${{ secrets.DEEPSEEK_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }}.
+
+            Read /tmp/pr-data/info.json for PR title/body.
+            Read /tmp/pr-data/diff.txt for all code changes.
+
+            Find bugs, logic errors, and security issues. Skip formatting, style, type errors, pre-existing issues.
+
+            Post your review as a PR comment:
+            gh pr comment ${{ github.event.pull_request.number }} --body "### Code Review
+            [your findings here, or 'No issues found.']
+            🤖 Generated with [Claude Code](https://claude.ai/code)"
+          claude_args: "--model deepseek-v4-pro[1M] --max-turns 15 --allowedTools Bash,Read,Grep,Glob"
