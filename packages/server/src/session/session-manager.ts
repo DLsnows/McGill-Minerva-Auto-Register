@@ -122,7 +122,7 @@ export class SessionManager {
     if ((await target.count().catch(() => 0)) === 0) return;
     await page.waitForTimeout(500);
     await Promise.all([
-      page.waitForLoadState('domcontentloaded').catch(() => undefined),
+      page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined),
       target
         .click()
         .catch((e: unknown) =>

@@ -56,7 +56,7 @@ export class RegisterClient {
       await humanPause();
       const ok = await page
         .locator('table[summary*="Registration Errors"] tr')
-        .filter({ has: page.locator(`td:text-is("${crn}")`) })
+        .filter({ hasText: new RegExp(`\\b${crn}\\b`) })
         .locator('select[name="RSTS_IN"]')
         .selectOption('LW')
         .then(() => true)
