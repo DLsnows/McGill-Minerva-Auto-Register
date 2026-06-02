@@ -1,5 +1,6 @@
 import type { ActionKind } from '@autoregister/shared';
 import { SessionManager } from '../session/session-manager';
+import { closeSession } from '../util/close-session';
 import { RegisterClient } from './register-client';
 
 /**
@@ -36,10 +37,7 @@ async function main() {
   const outcome = await client.act(term, crn, action);
   console.log('Outcome:', JSON.stringify(outcome, null, 2));
 
-  await Promise.race([
-    session.close().catch(() => undefined),
-    new Promise((r) => setTimeout(r, 5000)),
-  ]);
+  await closeSession(session);
   process.exit(0);
 }
 

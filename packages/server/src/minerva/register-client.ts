@@ -54,9 +54,10 @@ export class RegisterClient {
     if (action === 'WAITLIST' && outcome.kind === 'waitlist-available') {
       // Pick "Add to Waitlist" (LW) on the errored row for THIS crn, then resubmit.
       await humanPause();
+      const safeCrn = crn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const ok = await page
         .locator('table[summary*="Registration Errors"] tr')
-        .filter({ hasText: new RegExp(`\\b${crn}\\b`) })
+        .filter({ hasText: new RegExp(`\\b${safeCrn}\\b`) })
         .locator('select[name="RSTS_IN"]')
         .selectOption('LW')
         .then(() => true)

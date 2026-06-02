@@ -37,6 +37,7 @@ export function parseRegisterResult(html: string, crn: string): RegisterOutcome 
       if (tds.length <= Math.max(crnCol, statusCol)) return;
       if ($(tds[crnCol]).text().trim() !== crn) return;
       const status = $(tds[statusCol]).text().trim();
+      // Order matters: a waitlist status must be checked before "registered".
       if (/waitlist/i.test(status)) found = { kind: 'waitlisted', crn, message: status };
       else if (/registered/i.test(status)) found = { kind: 'registered', crn, message: status };
       if (found) return false; // stop at the first matching row

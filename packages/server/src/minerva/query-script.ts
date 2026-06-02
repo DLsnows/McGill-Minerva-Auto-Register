@@ -1,5 +1,6 @@
 import { decide } from '@autoregister/shared';
 import { SessionManager } from '../session/session-manager';
+import { closeSession } from '../util/close-session';
 import { QueryClient } from './query-client';
 
 /**
@@ -32,10 +33,7 @@ async function main() {
     stats ? JSON.stringify({ stats, decision: decide(stats) }, null, 2) : `CRN ${targetCrn} not found`,
   );
 
-  await Promise.race([
-    session.close().catch(() => undefined),
-    new Promise((r) => setTimeout(r, 5000)),
-  ]);
+  await closeSession(session);
   process.exit(0);
 }
 
