@@ -55,7 +55,8 @@ export class RegisterClient {
       // Pick "Add to Waitlist" (LW) on the errored row for THIS crn, then resubmit.
       await humanPause();
       const ok = await page
-        .locator('table[summary*="Registration Errors"] tr', { hasText: crn })
+        .locator('table[summary*="Registration Errors"] tr')
+        .filter({ has: page.locator(`td:text-is("${crn}")`) })
         .locator('select[name="RSTS_IN"]')
         .selectOption('LW')
         .then(() => true)

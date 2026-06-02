@@ -39,6 +39,8 @@ export function parseRegisterResult(html: string, crn: string): RegisterOutcome 
       const status = $(tds[statusCol]).text().trim();
       if (/waitlist/i.test(status)) found = { kind: 'waitlisted', crn, message: status };
       else if (/registered/i.test(status)) found = { kind: 'registered', crn, message: status };
+      if (found) return false; // stop at the first matching row
+      return undefined;
     });
     if (found) return found;
   }
@@ -61,11 +63,12 @@ export function parseRegisterResult(html: string, crn: string): RegisterOutcome 
         found = { kind: 'waitlist-available', crn, message };
       } else if (/waitlist full/i.test(message)) {
         found = { kind: 'waitlist-full', crn, message };
-      } else if (/closed|class full|full/i.test(message)) {
+      } else if (/closed|class full/i.test(message)) {
         found = { kind: 'closed', crn, message };
       } else {
         found = { kind: 'error', crn, message };
       }
+      return false; // a matched CRN is always classified — stop here
     });
     if (found) return found;
   }
