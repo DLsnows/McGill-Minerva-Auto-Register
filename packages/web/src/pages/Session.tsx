@@ -13,32 +13,26 @@ export default function Session() {
   const { session } = useData();
   const status = session.data?.status ?? 'unknown';
   const [busy, setBusy] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // While logging in, poll the status until it resolves.
+  // Keep the latest refetch in a ref so the polling effect can depend on
+  // `status` alone — `session` is a fresh object on every refetch, so depending
+  // on it would tear down and recreate the interval each tick (resetting the cap).
+  const refetchRef = useRef(session.refetch);
   useEffect(() => {
-    if (status === 'logging-in' && !pollRef.current) {
-      let n = 0;
-      pollRef.current = setInterval(() => {
-        n += 1;
-        void session.refetch();
-        if (n >= 12 && pollRef.current) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
-        }
-      }, 3000);
-    }
-    if (status !== 'logging-in' && pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-  }, [status, session]);
+    refetchRef.current = session.refetch;
+  });
+
+  // While logging in, poll the status until it resolves, with a ~36s safety cap.
+  useEffect(() => {
+    if (status !== 'logging-in') return;
+    let n = 0;
+    const id = setInterval(() => {
+      n += 1;
+      void refetchRef.current();
+      if (n >= 12) clearInterval(id);
+    }, 3000);
+    return () => clearInterval(id);
+  }, [status]);
 
   const login = async () => {
     setBusy(true);
