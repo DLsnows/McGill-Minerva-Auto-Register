@@ -114,22 +114,31 @@ describe('API', () => {
   });
 
   it('lazy-checks session status on GET when currently authenticated', async () => {
-    const loggedIn = false;
     const store = new Store(dir);
+    let isLoggedIn = true;
     const app2 = buildServer({
       store,
       budget: new Budget(store),
       session: {
         launch: async () => undefined,
         ensureLoggedIn: async () => undefined,
-        isLoggedIn: async () => loggedIn,
+        isLoggedIn: async () => isLoggedIn,
       },
       scheduler: { start: () => undefined, stop: () => undefined },
     });
-    // simulate login
+    // Simulate a successful login — status becomes 'authenticated'
     await app2.inject({ method: 'POST', url: '/api/session/login' });
-    // isLoggedIn returns false → should report logged-out
-    const r = await app2.inject({ method: 'GET', url: '/api/session' });
+    // Let the async IIFE complete (mock functions resolve instantly,
+    // but a microtask yield is needed)
+    await new Promise((r) => setTimeout(r, 10));
+    // Confirm we are authenticated
+    let r = await app2.inject({ method: 'GET', url: '/api/session' });
+    expect(r.json().status).toBe('authenticated');
+
+    // Now simulate session expiry — isLoggedIn starts returning false
+    isLoggedIn = false;
+    r = await app2.inject({ method: 'GET', url: '/api/session' });
+    // Lazy re-check should detect drift and flip to 'logged-out'
     expect(r.json().status).toBe('logged-out');
     await app2.close();
   });
