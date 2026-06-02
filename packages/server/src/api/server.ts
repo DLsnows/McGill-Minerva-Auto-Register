@@ -1,5 +1,8 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyInstance } from 'fastify';
 import websocketPlugin from '@fastify/websocket';
+import fastifyStatic from '@fastify/static';
 import type { WebSocket } from 'ws';
 import { z } from 'zod';
 import type { LogEvent, Settings } from '@autoregister/shared';
@@ -183,6 +186,20 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     }
     socket.on('close', () => clients.delete(socket));
   });
+
+  // Serve the built web UI from packages/web/dist when present (one-process use).
+  const webDist =
+    process.env.AUTOREG_WEB_DIST ?? fileURLToPath(new URL('../../../web/dist', import.meta.url));
+  if (existsSync(webDist)) {
+    void app.register(fastifyStatic, { root: webDist });
+    // SPA fallback: non-API, non-file GETs return index.html (client-side routing).
+    app.setNotFoundHandler((req, reply) => {
+      if (req.method === 'GET' && !req.url.startsWith('/api')) {
+        return reply.sendFile('index.html');
+      }
+      return reply.code(404).send({ error: 'not found' });
+    });
+  }
 
   return app;
 }
