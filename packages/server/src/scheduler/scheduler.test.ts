@@ -163,4 +163,16 @@ describe('Scheduler.runOnce', () => {
     expect(t.status).toBe('watching');
     expect(store.recentEvents().some((e) => e.level === 'error')).toBe(true);
   });
+
+  it('force-runs a notify-mode target: acts despite the mode gate', async () => {
+    const { scheduler, store, actor, target } = setup({
+      mode: 'notify',
+      decision: { action: 'WAITLIST', reason: 'wlrem>0' },
+      outcome: { kind: 'waitlisted', crn: '1814' },
+    });
+    await scheduler.runOnce(target.id, { force: true });
+    expect(actor.calls).toBe(1);
+    expect(actor.lastArgs).toEqual(['202701', '1814', 'WAITLIST']);
+    expect(store.getTarget(target.id)!.status).toBe('waitlisted');
+  });
 });
