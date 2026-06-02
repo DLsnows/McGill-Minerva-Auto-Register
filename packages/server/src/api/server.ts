@@ -1,5 +1,8 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyInstance } from 'fastify';
 import websocketPlugin from '@fastify/websocket';
+import fastifyStatic from '@fastify/static';
 import type { WebSocket } from 'ws';
 import { z } from 'zod';
 import type { LogEvent, Settings } from '@autoregister/shared';
@@ -18,6 +21,7 @@ export interface ApiSession {
 export interface ApiScheduler {
   start(tickMs?: number): void;
   stop(): void;
+  runTarget(id: string): void;
 }
 export interface ApiDeps {
   store: Store;
@@ -95,6 +99,21 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   app.delete('/api/targets/:id', (req) => {
     deps.store.removeTarget((req.params as { id: string }).id);
     return { ok: true };
+  });
+  // One-click "Register now": run an immediate forced cycle for this target.
+  // `started: true` means the run was *accepted*; it executes asynchronously and
+  // its outcome arrives via the event stream (like a normal tick). The status
+  // check below is a best-effort fast-fail — runCycle re-checks status when it runs.
+  app.post('/api/targets/:id/run', (req, reply) => {
+    const { id } = req.params as { id: string };
+    const target = deps.store.getTarget(id);
+    if (!target) return reply.code(404).send({ error: 'not found' });
+    // runOnce no-ops on non-watching targets; report honestly rather than a bare started:true.
+    if (target.status !== 'watching') {
+      return reply.send({ started: false, reason: `target is ${target.status}` });
+    }
+    deps.scheduler.runTarget(id);
+    return { started: true };
   });
 
   // --- settings ---
@@ -175,6 +194,20 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     }
     socket.on('close', () => clients.delete(socket));
   });
+
+  // Serve the built web UI from packages/web/dist when present (one-process use).
+  const webDist =
+    process.env.AUTOREG_WEB_DIST ?? fileURLToPath(new URL('../../../web/dist', import.meta.url));
+  if (existsSync(webDist)) {
+    void app.register(fastifyStatic, { root: webDist });
+    // SPA fallback: non-API, non-file GETs return index.html (client-side routing).
+    app.setNotFoundHandler((req, reply) => {
+      if (req.method === 'GET' && !req.url.startsWith('/api')) {
+        return reply.sendFile('index.html');
+      }
+      return reply.code(404).send({ error: 'not found' });
+    });
+  }
 
   return app;
 }

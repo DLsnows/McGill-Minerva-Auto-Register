@@ -1,0 +1,62 @@
+import { useEffect, useRef, useState } from 'react';
+import type { LogEvent } from '@autoregister/shared';
+
+interface StreamState {
+  events: LogEvent[];
+  connected: boolean;
+}
+
+/** Subscribe to /api/stream: seed from the `recent` snapshot, append `event`
+ * messages (capped at `max`), and auto-reconnect with backoff on close. */
+export function useEventStream(max = 500): StreamState {
+  const [events, setEvents] = useState<LogEvent[]>([]);
+  const [connected, setConnected] = useState(false);
+  const retryRef = useRef(0);
+
+  useEffect(() => {
+    let ws: WebSocket;
+    let timer: ReturnType<typeof setTimeout>;
+    let closed = false;
+
+    const cap = (arr: LogEvent[]) => (arr.length > max ? arr.slice(-max) : arr);
+
+    const connect = () => {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(`${proto}://${location.host}/api/stream`);
+      ws.onopen = () => {
+        retryRef.current = 0;
+        setConnected(true);
+      };
+      ws.onmessage = (e) => {
+        let msg: { type: 'recent'; events: LogEvent[] } | { type: 'event'; event: LogEvent };
+        try {
+          msg = JSON.parse(e.data);
+        } catch {
+          return; // ignore non-JSON frames (proxy errors, heartbeats) — keep the stream alive
+        }
+        // Guard the shape too — a malformed frame must not push undefined events.
+        if (msg.type === 'recent' && Array.isArray(msg.events)) setEvents(cap(msg.events));
+        else if (msg.type === 'event' && msg.event) setEvents((prev) => cap([...prev, msg.event]));
+      };
+      ws.onerror = () => {
+        // Some failures (e.g. CSP) may not fire onclose; force a close so reconnect runs.
+        ws.close();
+      };
+      ws.onclose = () => {
+        setConnected(false);
+        if (closed) return;
+        const delay = Math.min(30_000, 1000 * 2 ** retryRef.current++);
+        timer = setTimeout(connect, delay);
+      };
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      clearTimeout(timer);
+      ws.close();
+    };
+  }, [max]);
+
+  return { events, connected };
+}

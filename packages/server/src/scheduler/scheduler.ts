@@ -48,6 +48,9 @@ export class Scheduler {
   private readonly random: () => number;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /** Targets with a runOnce currently executing — prevents the tick loop and a
+   * manual `runTarget` (or two manual runs) from double-acting the same course. */
+  private readonly inFlight = new Set<string>();
 
   constructor(private readonly deps: SchedulerDeps) {
     this.now = deps.now ?? Date.now;
@@ -59,8 +62,24 @@ export class Scheduler {
     this.deps.onEvent?.(ev);
   }
 
-  /** Run a single cycle for one target. */
-  async runOnce(targetId: string): Promise<void> {
+  /** Run a single cycle for one target. With `{ force: true }` the auto/notify
+   * mode gate is bypassed (notify-mode courses still act on an opening) — used
+   * by the one-click "Register now" path. Budgets + session checks still apply.
+   * A per-target in-flight guard prevents concurrent runs of the same target. */
+  async runOnce(targetId: string, opts: { force?: boolean } = {}): Promise<void> {
+    if (this.inFlight.has(targetId)) {
+      this.log('info', 'Run already in progress for this target — skipping concurrent run', targetId);
+      return;
+    }
+    this.inFlight.add(targetId);
+    try {
+      await this.runCycle(targetId, opts);
+    } finally {
+      this.inFlight.delete(targetId);
+    }
+  }
+
+  private async runCycle(targetId: string, opts: { force?: boolean }): Promise<void> {
     const { store, budget } = this.deps;
     const target = store.getTarget(targetId);
     if (!target || target.status !== 'watching') return;
@@ -116,7 +135,7 @@ export class Scheduler {
       decision: check.decision,
     });
 
-    if (target.mode === 'notify') {
+    if (!opts.force && target.mode === 'notify') {
       this.log('ok', `Notify-only: ${action} available — awaiting your go.`, targetId, { action });
       this.scheduleNext(target);
       return;
@@ -141,6 +160,14 @@ export class Scheduler {
     budget.recordRegister(now);
 
     this.applyOutcome(target, outcome);
+  }
+
+  /** Trigger an immediate forced run for one target (one-click "Register now").
+   * Fire-and-forget; results surface via the event stream like a normal tick. */
+  runTarget(id: string): void {
+    void this.runOnce(id, { force: true }).catch((e) =>
+      this.log('error', `Forced run failed: ${errMsg(e)}`, id),
+    );
   }
 
   private applyOutcome(target: WatchTarget, outcome: RegisterOutcome): void {

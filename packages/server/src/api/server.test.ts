@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
@@ -20,7 +20,7 @@ function makeDeps(): ApiDeps {
       ensureLoggedIn: async () => undefined,
       isLoggedIn: async () => true,
     },
-    scheduler: { start: () => undefined, stop: () => undefined },
+    scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined },
   };
 }
 
@@ -111,7 +111,7 @@ describe('API', () => {
       store,
       budget: new Budget(store),
       session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
-      scheduler: { start: () => undefined, stop: () => undefined },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined },
     });
     const r = await app2.inject({ method: 'GET', url: '/api/events?limit=abc' });
     expect(r.json()).toHaveLength(1);
@@ -139,7 +139,7 @@ describe('API', () => {
         ensureLoggedIn: async () => undefined,
         isLoggedIn: async () => isLoggedIn,
       },
-      scheduler: { start: () => undefined, stop: () => undefined },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined },
     });
     // Simulate a successful login — status becomes 'authenticated'
     await app2.inject({ method: 'POST', url: '/api/session/login' });
@@ -170,7 +170,7 @@ describe('API', () => {
           ensureLoggedIn: async () => undefined,
           isLoggedIn: async () => false,
         },
-        scheduler: { start: () => undefined, stop: () => undefined },
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined },
       });
       await app2.inject({ method: 'POST', url: '/api/session/login' });
       // Still mid-login before the timeout fires
@@ -183,6 +183,93 @@ describe('API', () => {
       await app2.close();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('POST /api/targets/:id/run triggers runTarget for an existing target', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'notify' });
+    const runTarget = vi.fn();
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget },
+    });
+    const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({ started: true });
+    expect(runTarget).toHaveBeenCalledWith(t.id);
+    await app2.close();
+  });
+
+  it('POST /api/targets/:id/run returns 404 for a missing target', async () => {
+    const r = await app.inject({ method: 'POST', url: '/api/targets/nope/run' });
+    expect(r.statusCode).toBe(404);
+  });
+
+  it('POST /api/targets/:id/run reports started:false for a non-watching target', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto' });
+    store.updateTarget(t.id, { status: 'paused' });
+    const runTarget = vi.fn();
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget },
+    });
+    const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().started).toBe(false);
+    expect(runTarget).not.toHaveBeenCalled();
+    await app2.close();
+  });
+
+  it('skips static serving when the web dist is absent (API still works, non-API 404)', async () => {
+    const missing = join(dir, 'no-such-dist');
+    const prev = process.env.AUTOREG_WEB_DIST;
+    process.env.AUTOREG_WEB_DIST = missing;
+    try {
+      const store = new Store(dir);
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined },
+      });
+      expect((await app2.inject({ method: 'GET', url: '/api/health' })).json()).toEqual({ ok: true });
+      expect((await app2.inject({ method: 'GET', url: '/some-page' })).statusCode).toBe(404);
+      await app2.close();
+    } finally {
+      if (prev === undefined) delete process.env.AUTOREG_WEB_DIST;
+      else process.env.AUTOREG_WEB_DIST = prev;
+    }
+  });
+
+  it('serves index.html for non-API GETs when the web dist is present (SPA fallback)', async () => {
+    const distDir = mkdtempSync(join(tmpdir(), 'autoreg-dist-'));
+    writeFileSync(join(distDir, 'index.html'), '<!doctype html><title>Synapse</title>');
+    const prev = process.env.AUTOREG_WEB_DIST;
+    process.env.AUTOREG_WEB_DIST = distDir;
+    try {
+      const store = new Store(dir);
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined },
+      });
+      const r = await app2.inject({ method: 'GET', url: '/dashboard' });
+      expect(r.statusCode).toBe(200);
+      expect(r.body).toContain('Synapse');
+      // API routes are unaffected by the SPA fallback
+      expect((await app2.inject({ method: 'GET', url: '/api/health' })).json()).toEqual({ ok: true });
+      await app2.close();
+    } finally {
+      if (prev === undefined) delete process.env.AUTOREG_WEB_DIST;
+      else process.env.AUTOREG_WEB_DIST = prev;
+      rmSync(distDir, { recursive: true, force: true });
     }
   });
 });
