@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -141,5 +141,33 @@ describe('API', () => {
     // Lazy re-check should detect drift and flip to 'logged-out'
     expect(r.json().status).toBe('logged-out');
     await app2.close();
+  });
+
+  it('resets session status to logged-out when login hangs past the timeout', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const store = new Store(dir);
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: {
+          launch: () => new Promise<void>(() => {}), // never resolves — simulates a hang
+          ensureLoggedIn: async () => undefined,
+          isLoggedIn: async () => false,
+        },
+        scheduler: { start: () => undefined, stop: () => undefined },
+      });
+      await app2.inject({ method: 'POST', url: '/api/session/login' });
+      // Still mid-login before the timeout fires
+      let r = await app2.inject({ method: 'GET', url: '/api/session' });
+      expect(r.json().status).toBe('logging-in');
+      // Advance past the 120s login timeout — the safety net resets the status
+      vi.advanceTimersByTime(120_000);
+      r = await app2.inject({ method: 'GET', url: '/api/session' });
+      expect(r.json().status).toBe('logged-out');
+      await app2.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

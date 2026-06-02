@@ -6,6 +6,10 @@ import type { LogEvent, Settings } from '@autoregister/shared';
 import type { Budget } from '../budget/budget';
 import type { Store } from '../store/store';
 
+/** Cap how long a login attempt may run before the cached status is reset so
+ * the user can retry (the browser/SSO flow can hang indefinitely otherwise). */
+const LOGIN_TIMEOUT_MS = 120_000;
+
 export interface ApiSession {
   launch(): Promise<void>;
   ensureLoggedIn(onPrompt?: () => void): Promise<void>;
@@ -66,7 +70,11 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   const app = Fastify({ logger: false });
   let sessionStatus: 'unknown' | 'authenticated' | 'logged-out' | 'logging-in' = 'unknown';
 
-  void app.register(websocketPlugin);
+  // `.after()` (not `.catch()`) — surfacing a plugin load failure without
+  // prematurely triggering `ready()`, which would reject later route registration.
+  app.register(websocketPlugin).after((err) => {
+    if (err) console.error('[api] WebSocket plugin failed to load:', err);
+  });
 
   app.get('/api/health', () => ({ ok: true }));
 
@@ -115,12 +123,20 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     if (sessionStatus !== 'logging-in') {
       sessionStatus = 'logging-in';
       void (async () => {
+        // Safety net: if the browser/SSO flow hangs, reset the status so the
+        // user can retry instead of being stuck in 'logging-in' forever.
+        const timeout = setTimeout(() => {
+          if (sessionStatus === 'logging-in') sessionStatus = 'logged-out';
+        }, LOGIN_TIMEOUT_MS);
+        if (typeof timeout.unref === 'function') timeout.unref();
         try {
           await deps.session.launch();
           await deps.session.ensureLoggedIn();
           sessionStatus = (await deps.session.isLoggedIn()) ? 'authenticated' : 'logged-out';
         } catch {
           sessionStatus = 'logged-out';
+        } finally {
+          clearTimeout(timeout);
         }
       })();
     }
@@ -148,7 +164,12 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   // --- live event stream ---
   app.get('/api/stream', { websocket: true }, (socket: WebSocket) => {
     clients.add(socket);
-    socket.send(JSON.stringify({ type: 'recent', events: deps.store.recentEvents() }));
+    // Guard the initial send: a client may disconnect between add and send.
+    try {
+      socket.send(JSON.stringify({ type: 'recent', events: deps.store.recentEvents() }));
+    } catch {
+      clients.delete(socket);
+    }
     socket.on('close', () => clients.delete(socket));
   });
 
