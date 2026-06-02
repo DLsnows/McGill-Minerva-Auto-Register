@@ -24,3 +24,6 @@ export const PROFILE_DIR = resolve(process.env.AUTOREG_PROFILE_DIR ?? '.browser-
 
 /** Max time (ms) to wait for the user to complete manual login. */
 export const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Max time (ms) to wait for the SSO redirect chain after clicking Login. */
+export const SSO_NAV_TIMEOUT_MS = 10_000;

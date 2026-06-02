@@ -1,5 +1,11 @@
 import { chromium, type BrowserContext, type Page } from 'playwright';
-import { LOGIN_TIMEOUT_MS, LOGIN_URL, PROFILE_DIR, PROTECTED_PROBE_URL } from './config';
+import {
+  LOGIN_TIMEOUT_MS,
+  LOGIN_URL,
+  PROFILE_DIR,
+  PROTECTED_PROBE_URL,
+  SSO_NAV_TIMEOUT_MS,
+} from './config';
 import { classifySession } from './session-status';
 import type { SessionStatus } from './types';
 
@@ -122,7 +128,7 @@ export class SessionManager {
     if ((await target.count().catch(() => 0)) === 0) return;
     await page.waitForTimeout(500);
     await Promise.all([
-      page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined),
+      page.waitForLoadState('domcontentloaded', { timeout: SSO_NAV_TIMEOUT_MS }).catch(() => undefined),
       target
         .click()
         .catch((e: unknown) =>
