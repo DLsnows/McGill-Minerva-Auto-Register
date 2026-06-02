@@ -47,6 +47,7 @@ export class Scheduler {
   private readonly now: () => number;
   private readonly random: () => number;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private ticking = false;
 
   constructor(private readonly deps: SchedulerDeps) {
     this.now = deps.now ?? Date.now;
@@ -210,7 +211,13 @@ export class Scheduler {
   /** Thin timer loop: every `tickMs`, run cycles for due watching targets. */
   start(tickMs = 30_000): void {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.tick(), tickMs);
+    this.timer = setInterval(() => {
+      if (this.ticking) return; // skip if the previous tick is still running
+      this.ticking = true;
+      void this.tick().finally(() => {
+        this.ticking = false;
+      });
+    }, tickMs);
   }
 
   stop(): void {
