@@ -5,9 +5,10 @@ import { useData } from '../lib/DataContext';
 import { useEventStream } from '../lib/useEventStream';
 import { CourseCard } from '../components/CourseCard';
 import { Console } from '../components/Console';
+import { SchedulerToggle } from '../components/SchedulerToggle';
 
 export default function Dashboard() {
-  const { targets, session } = useData();
+  const { targets, session, scheduler } = useData();
   const { events, connected } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
 
@@ -32,6 +33,12 @@ export default function Dashboard() {
     }
   }, []);
 
+  const onToggleScheduler = useCallback(async () => {
+    if (scheduler.data?.running) await api.stopScheduler();
+    else await api.startScheduler();
+    await scheduler.refetch();
+  }, [scheduler]);
+
   const list = targets.data ?? [];
   const sessionStatus = session.data?.status ?? 'unknown';
   const sessionDown = sessionStatus === 'logged-out' || sessionStatus === 'unknown';
@@ -48,6 +55,11 @@ export default function Dashboard() {
         <div>
           <div className="col-h">
             <h2 className="serif">Watched Courses</h2>
+            <SchedulerToggle
+              running={scheduler.data?.running ?? false}
+              onStart={onToggleScheduler}
+              onStop={onToggleScheduler}
+            />
           </div>
           {list.length === 0 ? (
             <div className="empty glass">No courses watched yet. Add one from the Courses tab.</div>
