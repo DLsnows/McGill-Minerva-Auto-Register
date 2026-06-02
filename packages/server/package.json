@@ -13,9 +13,14 @@
   "dependencies": {
     "@autoregister/shared": "*",
     "cheerio": "^1.0.0",
+    "dotenv": "^16.4.7",
+    "node-notifier": "^10.0.1",
+    "nodemailer": "^8.0.10",
     "playwright": "^1.49.1"
   },
   "devDependencies": {
+    "@types/node-notifier": "^8.0.5",
+    "@types/nodemailer": "^6.4.17",
     "tsx": "^4.19.2"
   }
 }
