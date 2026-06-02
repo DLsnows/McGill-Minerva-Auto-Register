@@ -8,6 +8,9 @@ export type SessionStatus = 'unknown' | 'authenticated' | 'logged-out' | 'loggin
 export interface SessionInfo {
   status: SessionStatus;
 }
+export interface SchedulerState {
+  running: boolean;
+}
 
 type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'targetCrn' | 'mode'> &
   Partial<Pick<WatchTarget, 'faculty' | 'label'>>;
@@ -53,6 +56,7 @@ export const api = {
   getSession: () => req<SessionInfo>('/api/session'),
   login: () => post<{ started: boolean }>('/api/session/login'),
 
+  getScheduler: () => req<SchedulerState>('/api/scheduler'),
   startScheduler: () => post<{ running: boolean }>('/api/scheduler/start'),
   stopScheduler: () => post<{ running: boolean }>('/api/scheduler/stop'),
 
