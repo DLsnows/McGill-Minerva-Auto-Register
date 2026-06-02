@@ -156,7 +156,10 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   // --- events + budget ---
   app.get('/api/events', (req) => {
     const raw = (req.query as { limit?: string }).limit;
-    const limit = raw !== undefined ? Math.max(0, Number(raw) || 0) : 200;
+    const parsed = raw === undefined ? 200 : Number(raw);
+    // Non-numeric garbage (NaN) falls back to the default; negatives clamp to 0;
+    // an explicit 0 is honoured.
+    const limit = Number.isFinite(parsed) ? Math.max(0, parsed) : 200;
     return deps.store.recentEvents(limit);
   });
   app.get('/api/budget', () => deps.budget.remaining());

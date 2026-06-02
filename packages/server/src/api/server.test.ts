@@ -103,6 +103,21 @@ describe('API', () => {
     expect(r.json()).toEqual([]);
   });
 
+  it('falls back to default for non-numeric limit', async () => {
+    // seed one event so default-limit returns it (proving we did NOT return [])
+    const store = new Store(dir);
+    store.appendEvent({ level: 'info', message: 'seed' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined },
+    });
+    const r = await app2.inject({ method: 'GET', url: '/api/events?limit=abc' });
+    expect(r.json()).toHaveLength(1);
+    await app2.close();
+  });
+
   it('broadcast removes dead clients from the set', async () => {
     const { broadcast } = await import('./server');
     const clients = new Set<{ send: () => void }>();
