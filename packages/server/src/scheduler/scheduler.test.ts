@@ -207,3 +207,14 @@ describe('Scheduler.runOnce', () => {
     expect(actor.calls).toBe(1);
   });
 });
+
+describe('Scheduler.isRunning', () => {
+  it('reflects start/stop', () => {
+    const { scheduler } = setup({ decision: { action: 'NOOP', reason: 'x' } });
+    expect(scheduler.isRunning()).toBe(false);
+    scheduler.start();
+    expect(scheduler.isRunning()).toBe(true);
+    scheduler.stop();
+    expect(scheduler.isRunning()).toBe(false);
+  });
+});
