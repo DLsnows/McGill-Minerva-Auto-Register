@@ -1,5 +1,5 @@
 import { chromium, type BrowserContext, type Page } from 'playwright';
-import { LOGIN_TIMEOUT_MS, PROFILE_DIR, PROTECTED_PROBE_URL } from './config';
+import { LOGIN_TIMEOUT_MS, LOGIN_URL, PROFILE_DIR, PROTECTED_PROBE_URL } from './config';
 import { classifySession } from './session-status';
 import type { SessionStatus } from './types';
 
@@ -69,16 +69,33 @@ export class SessionManager {
     await page.goto(PROTECTED_PROBE_URL, { waitUntil: 'domcontentloaded' });
     if ((await this.readStatus(page)) === 'authenticated') return;
 
+    // Logged out or session evicted. Surface a real login form instead of
+    // leaving the user stuck on the MS "signed out" (oauth2/logout) page.
+    await this.gotoLoginForm(page);
     onPrompt?.();
+
     const deadline = Date.now() + LOGIN_TIMEOUT_MS;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 3000));
       if (page.isClosed()) {
         throw new Error('Browser window was closed before login completed');
       }
+      // If we drifted onto the MS "signed out" dead-end, bounce back to the
+      // login form so the user always has somewhere to log in.
+      if (page.url().toLowerCase().includes('oauth2/logout')) {
+        await this.gotoLoginForm(page);
+        continue;
+      }
       if ((await this.readStatus(page)) === 'authenticated') return;
     }
     throw new Error('Login not completed within timeout');
+  }
+
+  /** Navigate to the Minerva login form, logging (not swallowing) any failure. */
+  private async gotoLoginForm(page: Page): Promise<void> {
+    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch((e: unknown) => {
+      console.warn('navigation to login form failed:', e instanceof Error ? e.message : e);
+    });
   }
 
   async close(): Promise<void> {

@@ -38,6 +38,15 @@ describe('classifySession', () => {
     ).toBe('authenticated');
   });
 
+  it('logged-out when a pban1 url serves the Minerva login/timeout page', () => {
+    expect(
+      classifySession({
+        url: 'https://horizon.mcgill.ca/pban1/bwskfcls.p_sel_crse_search',
+        bodyText: 'minerva user login login to minerva mcgill central information system',
+      }),
+    ).toBe('logged-out');
+  });
+
   it('logged-out on a non-pban1 page detected via body markers', () => {
     expect(
       classifySession({
