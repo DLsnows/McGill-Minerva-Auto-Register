@@ -11,25 +11,33 @@ const LOGIN_URL_MARKERS = [
   '/cas/',
 ];
 
-/** Body-text fragments that indicate a login form is being shown. */
-const LOGIN_BODY_MARKERS = ['enter your', 'username and password', 'user id', 'sign in', 'duo'];
+/**
+ * Strong markers unique to Minerva's login / session-timeout page. Banner serves
+ * that page at a pban1 URL (title "User Login"), so these MUST be checked even
+ * when the URL looks authenticated — otherwise a timed-out session reads as
+ * logged-in. These phrases do not appear on authenticated content pages.
+ */
+const LOGIN_PAGE_MARKERS = ['login to minerva', 'user login'];
+
+/** Generic login-form hints, used only for non-pban1 pages (e.g. an SSO page). */
+const LOGIN_BODY_MARKERS = ['enter your', 'username and password', 'sign in', 'duo'];
 
 const AUTH_BASE = 'horizon.mcgill.ca/pban1';
 
 /**
  * Classify whether a probed page means we are authenticated or logged out.
- * Markers are refined against real Minerva behavior during P2 manual verification.
  */
 export function classifySession(probe: SessionProbe): SessionStatus {
   const url = probe.url.toLowerCase();
   const body = probe.bodyText.toLowerCase();
 
-  // URL is the most reliable signal. A known login/SSO URL means logged-out;
-  // being inside the authenticated pban1 area means authenticated regardless of
-  // incidental body text (e.g. a "Sign in as a different user" link).
+  // 1. Known login/SSO URL → logged out.
   if (LOGIN_URL_MARKERS.some((m) => url.includes(m))) return 'logged-out';
+  // 2. Minerva login/timeout page (served at a pban1 URL) → logged out.
+  if (LOGIN_PAGE_MARKERS.some((m) => body.includes(m))) return 'logged-out';
+  // 3. Otherwise, being inside the authenticated pban1 area → authenticated.
   if (url.includes(AUTH_BASE)) return 'authenticated';
-  // Fallback for non-pban1 pages (e.g. an SSO landing page).
+  // 4. Fallback for non-pban1 pages (e.g. an SSO landing page).
   if (LOGIN_BODY_MARKERS.some((m) => body.includes(m))) return 'logged-out';
   return 'logged-out';
 }

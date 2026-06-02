@@ -6,9 +6,12 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "browser:install": "playwright install chromium",
-    "session:login": "tsx src/session/login-script.ts"
+    "session:login": "tsx src/session/login-script.ts",
+    "query": "tsx src/minerva/query-script.ts"
   },
   "dependencies": {
+    "@autoregister/shared": "*",
+    "cheerio": "^1.0.0",
     "playwright": "^1.49.1"
   },
   "devDependencies": {

@@ -1,5 +1,5 @@
 import { chromium, type BrowserContext, type Page } from 'playwright';
-import { LOGIN_TIMEOUT_MS, PROFILE_DIR, PROTECTED_PROBE_URL } from './config';
+import { LOGIN_TIMEOUT_MS, LOGIN_URL, PROFILE_DIR, PROTECTED_PROBE_URL } from './config';
 import { classifySession } from './session-status';
 import type { SessionStatus } from './types';
 
@@ -69,12 +69,22 @@ export class SessionManager {
     await page.goto(PROTECTED_PROBE_URL, { waitUntil: 'domcontentloaded' });
     if ((await this.readStatus(page)) === 'authenticated') return;
 
+    // Logged out or session evicted. Surface a real login form instead of
+    // leaving the user stuck on the MS "signed out" (oauth2/logout) page.
+    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
     onPrompt?.();
+
     const deadline = Date.now() + LOGIN_TIMEOUT_MS;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 3000));
       if (page.isClosed()) {
         throw new Error('Browser window was closed before login completed');
+      }
+      // If we drifted onto a logout / "signed out" page, bounce back to the
+      // login form so the user always has somewhere to log in.
+      if (page.url().toLowerCase().includes('logout')) {
+        await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
+        continue;
       }
       if ((await this.readStatus(page)) === 'authenticated') return;
     }
