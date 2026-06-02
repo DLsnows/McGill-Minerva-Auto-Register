@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 export interface Resource<T> {
   data: T | undefined;
@@ -52,5 +52,7 @@ export function useResource<T>(fetcher: () => Promise<T>): Resource<T> {
     void refetch();
   }, [refetch]);
 
-  return { data, loading, error, refetch };
+  // Stable identity unless data/loading/error actually change (refetch is already
+  // stable) — lets consumers like DataProvider memoize without churn.
+  return useMemo(() => ({ data, loading, error, refetch }), [data, loading, error, refetch]);
 }

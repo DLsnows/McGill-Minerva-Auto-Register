@@ -61,8 +61,13 @@ export default function Session() {
           {status}
         </div>
         <div style={{ color: 'var(--tx-2)', fontSize: 13, marginBottom: 14 }}>{LABEL[status]}</div>
-        <button type="button" className="btn btn-accent" onClick={login} disabled={busy}>
-          {busy ? 'Opening browser…' : 'Open browser & log in'}
+        <button
+          type="button"
+          className="btn btn-accent"
+          onClick={login}
+          disabled={busy || status === 'logging-in'}
+        >
+          {busy || status === 'logging-in' ? 'Logging in…' : 'Open browser & log in'}
         </button>
         {err && <div className="errbar">{err}</div>}
         <div style={{ color: 'var(--tx-3)', fontSize: 12, marginTop: 14 }}>

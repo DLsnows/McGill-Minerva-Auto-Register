@@ -5,7 +5,7 @@ import { DataProvider } from '../lib/DataContext';
 import Session from './Session';
 import { api } from '../lib/api';
 
-function mockAll(status: 'authenticated' | 'logged-out') {
+function mockAll(status: 'authenticated' | 'logged-out' | 'logging-in') {
   vi.spyOn(api, 'getTargets').mockResolvedValue([]);
   vi.spyOn(api, 'getSession').mockResolvedValue({ status });
   vi.spyOn(api, 'getBudget').mockResolvedValue({ query: 100, register: 20 });
@@ -39,6 +39,12 @@ describe('Session', () => {
     await waitFor(() => screen.getByRole('button', { name: /log in/i }));
     await userEvent.click(screen.getByRole('button', { name: /log in/i }));
     expect(login).toHaveBeenCalled();
+  });
+
+  it('disables the login button while the server reports logging-in', async () => {
+    mockAll('logging-in');
+    renderSession();
+    await waitFor(() => expect(screen.getByRole('button')).toBeDisabled());
   });
 
   it('surfaces a login error', async () => {

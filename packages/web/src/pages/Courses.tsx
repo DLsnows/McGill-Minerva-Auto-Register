@@ -65,7 +65,10 @@ export default function Courses() {
                   faculty: t.faculty ?? '', label: t.label ?? '', mode: t.mode,
                 }}
                 onSubmit={(v) => saveEdit(t.id, v)}
-                onCancel={() => setEditing(null)}
+                onCancel={() => {
+                  setEditing(null);
+                  setErr(undefined);
+                }}
               />
             ) : (
               <div key={t.id} className="card glass">
