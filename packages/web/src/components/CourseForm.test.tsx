@@ -25,6 +25,14 @@ describe('CourseForm', () => {
     });
   });
 
+  it('clears the validation error once the user edits a field', async () => {
+    render(<CourseForm onSubmit={() => {}} submitLabel="Add" />);
+    await userEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(screen.getByText(/required/i)).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('Term'), '2');
+    expect(screen.queryByText(/required/i)).not.toBeInTheDocument();
+  });
+
   it('prefills from initial values for editing', () => {
     render(
       <CourseForm

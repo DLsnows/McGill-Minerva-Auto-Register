@@ -11,6 +11,7 @@ export default function Dashboard() {
   const { targets, session, scheduler } = useData();
   const { events, connected } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
+  const [schedErr, setSchedErr] = useState<string>();
 
   // `targets`/`scheduler` are fresh objects each render; reach them through refs
   // so the callbacks below can be genuinely stable and always read fresh data.
@@ -41,9 +42,14 @@ export default function Dashboard() {
 
   const onToggleScheduler = useCallback(async () => {
     const sch = schedulerRef.current;
-    if (sch.data?.running) await api.stopScheduler();
-    else await api.startScheduler();
-    await sch.refetch();
+    setSchedErr(undefined);
+    try {
+      if (sch.data?.running) await api.stopScheduler();
+      else await api.startScheduler();
+      await sch.refetch();
+    } catch (e) {
+      setSchedErr(e instanceof Error ? e.message : 'Scheduler toggle failed.');
+    }
   }, []);
 
   const list = targets.data ?? [];
@@ -68,6 +74,7 @@ export default function Dashboard() {
               onStop={onToggleScheduler}
             />
           </div>
+          {schedErr && <div className="errbar">{schedErr}</div>}
           {list.length === 0 ? (
             <div className="empty glass">No courses watched yet. Add one from the Courses tab.</div>
           ) : (

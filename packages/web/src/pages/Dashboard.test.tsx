@@ -55,4 +55,13 @@ describe('Dashboard', () => {
     await userEvent.click(screen.getByRole('button', { name: /start/i }));
     expect(start).toHaveBeenCalled();
   });
+
+  it('surfaces a scheduler toggle error', async () => {
+    mockApi([], 'authenticated');
+    vi.spyOn(api, 'startScheduler').mockRejectedValue(new Error('sched boom'));
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /start/i }));
+    await userEvent.click(screen.getByRole('button', { name: /start/i }));
+    await waitFor(() => expect(screen.getByText(/sched boom/i)).toBeInTheDocument());
+  });
 });

@@ -43,6 +43,11 @@ export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) 
   const [v, setV] = useState<CourseFormValues>(initial ?? EMPTY);
   const [err, setErr] = useState<string>();
 
+  const update = (patch: Partial<CourseFormValues>) => {
+    setV((prev) => ({ ...prev, ...patch }));
+    if (err) setErr(undefined); // clear the validation message once the user edits
+  };
+
   const submit = () => {
     const trimmed: CourseFormValues = {
       ...v,
@@ -71,7 +76,7 @@ export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) 
               aria-label={f.label}
               style={inputStyle}
               value={v[f.key] as string}
-              onChange={(e) => setV({ ...v, [f.key]: e.target.value })}
+              onChange={(e) => update({ [f.key]: e.target.value })}
             />
           </label>
         ))}
@@ -81,7 +86,7 @@ export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) 
             aria-label="Mode"
             style={inputStyle}
             value={v.mode}
-            onChange={(e) => setV({ ...v, mode: e.target.value as WatchMode })}
+            onChange={(e) => update({ mode: e.target.value as WatchMode })}
           >
             <option value="auto">auto</option>
             <option value="notify">notify</option>
