@@ -45,12 +45,23 @@ export interface Settings {
   registerBudget: number;
   /** Which notification channels are enabled (in-app log is always on). */
   notify: NotifyChannels;
+  /** SMTP config for email notifications (absent/empty = email disabled). */
+  email?: EmailConfig;
 }
 
 export interface NotifyChannels {
   desktop: boolean;
   sound: boolean;
   email: boolean;
+}
+
+/** SMTP settings for email notifications, edited in the UI (stored locally). */
+export interface EmailConfig {
+  host: string;
+  port: number;
+  user: string;
+  pass: string;
+  to: string;
 }
 
 export interface DailyOps {

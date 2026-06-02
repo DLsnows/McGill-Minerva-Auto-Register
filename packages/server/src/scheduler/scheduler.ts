@@ -179,7 +179,8 @@ export class Scheduler {
     const s = store.getSettings();
     const now = this.now();
     const activeCount = store.listTargets().filter((t) => t.status === 'watching').length || 1;
-    const remainingQuery = budget.remaining(now).query;
+    const rem = budget.remaining(now);
+    const remainingQuery = rem.query;
 
     let baseMin = s.pollIntervalMinutes;
     if (remainingQuery > 0) {
@@ -188,6 +189,10 @@ export class Scheduler {
       if (pollsPerTarget > 0) {
         baseMin = Math.max(baseMin, minutesUntilMidnight / pollsPerTarget);
       }
+    }
+    // When register budget is exhausted, stretch the interval (can only notify, not act)
+    if (rem.register <= 0 && remainingQuery > 0) {
+      baseMin = Math.max(baseMin * 3, 60); // 3× the query interval, floored at 60 min
     }
     const jitter = (this.random() * 2 - 1) * s.jitterMinutes;
     const nextMin = Math.max(1, baseMin + jitter);

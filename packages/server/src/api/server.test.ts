@@ -1,0 +1,188 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { FastifyInstance } from 'fastify';
+import { Store } from '../store/store';
+import { Budget } from '../budget/budget';
+import { buildServer, type ApiDeps } from './server';
+
+let dir: string;
+let app: FastifyInstance;
+
+function makeDeps(): ApiDeps {
+  const store = new Store(dir);
+  return {
+    store,
+    budget: new Budget(store),
+    session: {
+      launch: async () => undefined,
+      ensureLoggedIn: async () => undefined,
+      isLoggedIn: async () => true,
+    },
+    scheduler: { start: () => undefined, stop: () => undefined },
+  };
+}
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'autoreg-api-'));
+  app = buildServer(makeDeps());
+});
+afterEach(async () => {
+  await app.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+const validTarget = {
+  term: '202701',
+  subject: 'COMP',
+  courseNumber: '551',
+  targetCrn: '1814',
+  mode: 'auto',
+};
+
+describe('API', () => {
+  it('GET /api/health', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/health' });
+    expect(r.json()).toEqual({ ok: true });
+  });
+
+  it('adds and lists targets', async () => {
+    const post = await app.inject({ method: 'POST', url: '/api/targets', payload: validTarget });
+    expect(post.statusCode).toBe(200);
+    const list = await app.inject({ method: 'GET', url: '/api/targets' });
+    expect(list.json()).toHaveLength(1);
+  });
+
+  it('rejects an invalid target with 400', async () => {
+    const r = await app.inject({ method: 'POST', url: '/api/targets', payload: { subject: 'COMP' } });
+    expect(r.statusCode).toBe(400);
+  });
+
+  it('gets and updates settings (incl. email)', async () => {
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { pollIntervalMinutes: 45, notify: { desktop: true, sound: false, email: true } },
+    });
+    expect(put.statusCode).toBe(200);
+    const get = await app.inject({ method: 'GET', url: '/api/settings' });
+    expect(get.json().pollIntervalMinutes).toBe(45);
+    expect(get.json().notify.email).toBe(true);
+  });
+
+  it('returns budget remaining', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/budget' });
+    expect(r.json()).toHaveProperty('query');
+    expect(r.json()).toHaveProperty('register');
+  });
+
+  it('reports session status and toggles the scheduler', async () => {
+    expect((await app.inject({ method: 'GET', url: '/api/session' })).json()).toHaveProperty('status');
+    expect((await app.inject({ method: 'POST', url: '/api/scheduler/start' })).json()).toEqual({
+      running: true,
+    });
+    expect((await app.inject({ method: 'POST', url: '/api/scheduler/stop' })).json()).toEqual({
+      running: false,
+    });
+  });
+
+  it('rejects empty-string email fields with 400', async () => {
+    const r = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        email: { host: '', port: 587, user: 'u', pass: 'p', to: '' },
+      },
+    });
+    expect(r.statusCode).toBe(400);
+  });
+
+  it('uses limit=0 as zero (not 200)', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/events?limit=0' });
+    expect(r.json()).toEqual([]);
+  });
+
+  it('falls back to default for non-numeric limit', async () => {
+    // seed one event so default-limit returns it (proving we did NOT return [])
+    const store = new Store(dir);
+    store.appendEvent({ level: 'info', message: 'seed' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined },
+    });
+    const r = await app2.inject({ method: 'GET', url: '/api/events?limit=abc' });
+    expect(r.json()).toHaveLength(1);
+    await app2.close();
+  });
+
+  it('broadcast removes dead clients from the set', async () => {
+    const { broadcast } = await import('./server');
+    const clients = new Set<{ send: () => void }>();
+    const dead = { send: () => { throw new Error('boom'); } };
+    clients.add(dead);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    broadcast(clients as any, { level: 'info', message: 'test', id: 'x', ts: 1 });
+    expect(clients.has(dead)).toBe(false);
+  });
+
+  it('lazy-checks session status on GET when currently authenticated', async () => {
+    const store = new Store(dir);
+    let isLoggedIn = true;
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => isLoggedIn,
+      },
+      scheduler: { start: () => undefined, stop: () => undefined },
+    });
+    // Simulate a successful login — status becomes 'authenticated'
+    await app2.inject({ method: 'POST', url: '/api/session/login' });
+    // Let the async IIFE complete (mock functions resolve instantly,
+    // but a microtask yield is needed)
+    await new Promise((r) => setTimeout(r, 10));
+    // Confirm we are authenticated
+    let r = await app2.inject({ method: 'GET', url: '/api/session' });
+    expect(r.json().status).toBe('authenticated');
+
+    // Now simulate session expiry — isLoggedIn starts returning false
+    isLoggedIn = false;
+    r = await app2.inject({ method: 'GET', url: '/api/session' });
+    // Lazy re-check should detect drift and flip to 'logged-out'
+    expect(r.json().status).toBe('logged-out');
+    await app2.close();
+  });
+
+  it('resets session status to logged-out when login hangs past the timeout', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const store = new Store(dir);
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: {
+          launch: () => new Promise<void>(() => {}), // never resolves — simulates a hang
+          ensureLoggedIn: async () => undefined,
+          isLoggedIn: async () => false,
+        },
+        scheduler: { start: () => undefined, stop: () => undefined },
+      });
+      await app2.inject({ method: 'POST', url: '/api/session/login' });
+      // Still mid-login before the timeout fires
+      let r = await app2.inject({ method: 'GET', url: '/api/session' });
+      expect(r.json().status).toBe('logging-in');
+      // Advance past the 120s login timeout — the safety net resets the status
+      vi.advanceTimersByTime(120_000);
+      r = await app2.inject({ method: 'GET', url: '/api/session' });
+      expect(r.json().status).toBe('logged-out');
+      await app2.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
