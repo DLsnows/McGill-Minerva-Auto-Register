@@ -69,24 +69,34 @@ export class SessionManager {
     await page.goto(PROTECTED_PROBE_URL, { waitUntil: 'domcontentloaded' });
     if ((await this.readStatus(page)) === 'authenticated') return;
 
-    // Logged out or session evicted. Surface a real login form instead of
-    // leaving the user stuck on the MS "signed out" (oauth2/logout) page.
+    // Surface the login form and attempt auto-login by clicking "Login" — the
+    // persistent profile remembers the SSO session, so this usually
+    // authenticates with no typing and no 2FA. Manual login is only needed if
+    // that doesn't complete (e.g. Duo actually prompts).
     await this.gotoLoginForm(page);
-    onPrompt?.();
+    await this.tryClickLogin(page);
 
-    const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+    const start = Date.now();
+    const deadline = start + LOGIN_TIMEOUT_MS;
+    let prompted = false;
     while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 2500));
       if (page.isClosed()) {
         throw new Error('Browser window was closed before login completed');
       }
-      // If we drifted onto the MS "signed out" dead-end, bounce back to the
-      // login form so the user always has somewhere to log in.
+      if ((await this.readStatus(page)) === 'authenticated') return;
+      // Bounce off the MS "signed out" dead-end and retry auto-login.
       if (page.url().toLowerCase().includes('oauth2/logout')) {
         await this.gotoLoginForm(page);
+        await this.tryClickLogin(page);
         continue;
       }
-      if ((await this.readStatus(page)) === 'authenticated') return;
+      // Give auto-login (+ SSO redirects) a grace period; only then ask the
+      // user to log in manually.
+      if (!prompted && Date.now() - start > 12000) {
+        onPrompt?.();
+        prompted = true;
+      }
     }
     throw new Error('Login not completed within timeout');
   }
@@ -96,6 +106,29 @@ export class SessionManager {
     await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch((e: unknown) => {
       console.warn('navigation to login form failed:', e instanceof Error ? e.message : e);
     });
+  }
+
+  /**
+   * Attempt auto-login. Prefer the SAML SSO login link, which authenticates via
+   * the profile's remembered SSO session (no credentials, no 2FA). Fall back to
+   * a "Login" submit/button if the SSO link isn't present.
+   */
+  private async tryClickLogin(page: Page): Promise<void> {
+    const sso = page.locator('a[href*="saml/login"], a[href*="ssomanager"]').first();
+    const btn = page
+      .locator('#mcg_id_submit, input[type="submit"][value="Login" i], button:has-text("Login")')
+      .first();
+    const target = (await sso.count().catch(() => 0)) > 0 ? sso : btn;
+    if ((await target.count().catch(() => 0)) === 0) return;
+    await page.waitForTimeout(500);
+    await Promise.all([
+      page.waitForLoadState('domcontentloaded').catch(() => undefined),
+      target
+        .click()
+        .catch((e: unknown) =>
+          console.warn('login click failed:', e instanceof Error ? e.message : e),
+        ),
+    ]);
   }
 
   async close(): Promise<void> {
