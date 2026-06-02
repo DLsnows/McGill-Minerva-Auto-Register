@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { DataProvider } from '../lib/DataContext';
 import Dashboard from './Dashboard';
 import { api } from '../lib/api';
@@ -44,5 +45,14 @@ describe('Dashboard', () => {
     mockApi([], 'logged-out');
     renderDashboard();
     await waitFor(() => expect(screen.getByText(/No courses watched/i)).toBeInTheDocument());
+  });
+
+  it('starts the scheduler from the Dashboard toggle', async () => {
+    mockApi([], 'authenticated');
+    const start = vi.spyOn(api, 'startScheduler').mockResolvedValue({ running: true });
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /start/i }));
+    await userEvent.click(screen.getByRole('button', { name: /start/i }));
+    expect(start).toHaveBeenCalled();
   });
 });

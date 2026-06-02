@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WatchMode } from '@autoregister/shared';
 import { api } from '../lib/api';
 import { useData } from '../lib/DataContext';
@@ -12,13 +12,19 @@ export default function Dashboard() {
   const { events, connected } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
 
-  const onToggleMode = useCallback(
-    async (id: string, next: WatchMode) => {
-      await api.updateTarget(id, { mode: next });
-      await targets.refetch();
-    },
-    [targets],
-  );
+  // `targets`/`scheduler` are fresh objects each render; reach them through refs
+  // so the callbacks below can be genuinely stable and always read fresh data.
+  const targetsRef = useRef(targets);
+  const schedulerRef = useRef(scheduler);
+  useEffect(() => {
+    targetsRef.current = targets;
+    schedulerRef.current = scheduler;
+  });
+
+  const onToggleMode = useCallback(async (id: string, next: WatchMode) => {
+    await api.updateTarget(id, { mode: next });
+    await targetsRef.current.refetch();
+  }, []);
 
   const onRun = useCallback(async (id: string) => {
     setRunning((s) => new Set(s).add(id));
@@ -34,10 +40,11 @@ export default function Dashboard() {
   }, []);
 
   const onToggleScheduler = useCallback(async () => {
-    if (scheduler.data?.running) await api.stopScheduler();
+    const sch = schedulerRef.current;
+    if (sch.data?.running) await api.stopScheduler();
     else await api.startScheduler();
-    await scheduler.refetch();
-  }, [scheduler]);
+    await sch.refetch();
+  }, []);
 
   const list = targets.data ?? [];
   const sessionStatus = session.data?.status ?? 'unknown';
