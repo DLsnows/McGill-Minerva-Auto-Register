@@ -18,6 +18,7 @@ export interface ApiSession {
 export interface ApiScheduler {
   start(tickMs?: number): void;
   stop(): void;
+  runTarget(id: string): void;
 }
 export interface ApiDeps {
   store: Store;
@@ -95,6 +96,13 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   app.delete('/api/targets/:id', (req) => {
     deps.store.removeTarget((req.params as { id: string }).id);
     return { ok: true };
+  });
+  // One-click "Register now": run an immediate forced cycle for this target.
+  app.post('/api/targets/:id/run', (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.store.getTarget(id)) return reply.code(404).send({ error: 'not found' });
+    deps.scheduler.runTarget(id);
+    return { started: true };
   });
 
   // --- settings ---

@@ -20,7 +20,7 @@ function makeDeps(): ApiDeps {
       ensureLoggedIn: async () => undefined,
       isLoggedIn: async () => true,
     },
-    scheduler: { start: () => undefined, stop: () => undefined },
+    scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined },
   };
 }
 
@@ -111,7 +111,7 @@ describe('API', () => {
       store,
       budget: new Budget(store),
       session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
-      scheduler: { start: () => undefined, stop: () => undefined },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined },
     });
     const r = await app2.inject({ method: 'GET', url: '/api/events?limit=abc' });
     expect(r.json()).toHaveLength(1);
@@ -139,7 +139,7 @@ describe('API', () => {
         ensureLoggedIn: async () => undefined,
         isLoggedIn: async () => isLoggedIn,
       },
-      scheduler: { start: () => undefined, stop: () => undefined },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined },
     });
     // Simulate a successful login — status becomes 'authenticated'
     await app2.inject({ method: 'POST', url: '/api/session/login' });
@@ -170,7 +170,7 @@ describe('API', () => {
           ensureLoggedIn: async () => undefined,
           isLoggedIn: async () => false,
         },
-        scheduler: { start: () => undefined, stop: () => undefined },
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined },
       });
       await app2.inject({ method: 'POST', url: '/api/session/login' });
       // Still mid-login before the timeout fires
@@ -184,5 +184,27 @@ describe('API', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('POST /api/targets/:id/run triggers runTarget for an existing target', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'notify' });
+    const runTarget = vi.fn();
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget },
+    });
+    const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({ started: true });
+    expect(runTarget).toHaveBeenCalledWith(t.id);
+    await app2.close();
+  });
+
+  it('POST /api/targets/:id/run returns 404 for a missing target', async () => {
+    const r = await app.inject({ method: 'POST', url: '/api/targets/nope/run' });
+    expect(r.statusCode).toBe(404);
   });
 });
