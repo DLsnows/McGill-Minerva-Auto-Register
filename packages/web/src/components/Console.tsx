@@ -14,7 +14,11 @@ export function Console({ events, connected }: { events: LogEvent[]; connected: 
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    // Only auto-scroll if the user is already near the bottom, so scrolling up
+    // to read older lines isn't interrupted by new events.
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [events]);
 
   return (

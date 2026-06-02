@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface Resource<T> {
   data: T | undefined;
@@ -7,21 +7,37 @@ export interface Resource<T> {
   refetch: () => Promise<void>;
 }
 
-/** Run `fetcher` on mount; expose data/loading/error + a manual refetch. */
+/** Run `fetcher` on mount; expose data/loading/error + a manual refetch.
+ * A generation counter discards stale overlapping responses, and a mounted
+ * ref avoids state updates after unmount. */
 export function useResource<T>(fetcher: () => Promise<T>): Resource<T> {
   const [data, setData] = useState<T>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error>();
+  const genRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const refetch = useCallback(async () => {
+    const gen = ++genRef.current;
+    const live = () => mountedRef.current && gen === genRef.current;
     setLoading(true);
     try {
-      setData(await fetcher());
-      setError(undefined);
+      const result = await fetcher();
+      if (live()) {
+        setData(result);
+        setError(undefined);
+      }
     } catch (e) {
-      setError(e instanceof Error ? e : new Error(String(e)));
+      if (live()) setError(e instanceof Error ? e : new Error(String(e)));
     } finally {
-      setLoading(false);
+      if (live()) setLoading(false);
     }
   }, [fetcher]);
 

@@ -45,6 +45,16 @@ describe('useEventStream', () => {
     expect(result.current.events.map((e) => e.id)).toEqual(['e2', 'e3']);
   });
 
+  it('ignores a non-JSON frame and keeps appending afterwards', () => {
+    vi.stubGlobal('WebSocket', FakeWS as unknown as typeof WebSocket);
+    const { result } = renderHook(() => useEventStream(5));
+    expect(() =>
+      act(() => FakeWS.last!.onmessage?.({ data: 'not json <html>502</html>' })),
+    ).not.toThrow();
+    act(() => FakeWS.last!.emit({ type: 'event', event: { id: 'a', ts: 1, level: 'info', message: 'ok' } }));
+    expect(result.current.events.map((e) => e.id)).toEqual(['a']);
+  });
+
   it('marks disconnected on close', () => {
     vi.stubGlobal('WebSocket', FakeWS as unknown as typeof WebSocket);
     const { result } = renderHook(() => useEventStream());

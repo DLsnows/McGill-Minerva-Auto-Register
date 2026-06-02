@@ -175,4 +175,35 @@ describe('Scheduler.runOnce', () => {
     expect(actor.lastArgs).toEqual(['202701', '1814', 'WAITLIST']);
     expect(store.getTarget(target.id)!.status).toBe('waitlisted');
   });
+
+  it('skips a concurrent run of the same target (no double registration)', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+    let releaseCheck!: () => void;
+    const gate = new Promise<void>((r) => (releaseCheck = r));
+    let checkCalls = 0;
+    const watcher: Watcher = {
+      checkCourse: async () => {
+        checkCalls++;
+        await gate; // hold the first run open so the second overlaps it
+        return { stats: stats(), decision: { action: 'REGISTER', reason: 'rem>0' } };
+      },
+    };
+    const actor = new FakeActor({ kind: 'registered', crn: '1814' });
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher,
+      actor,
+      session: new FakeSession(true),
+      now: () => NOW,
+      random: () => 0.5,
+    });
+    const p1 = scheduler.runOnce(t.id);
+    const p2 = scheduler.runOnce(t.id); // in-flight → should skip immediately
+    releaseCheck();
+    await Promise.all([p1, p2]);
+    expect(checkCalls).toBe(1);
+    expect(actor.calls).toBe(1);
+  });
 });

@@ -14,7 +14,11 @@ type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'target
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
-  if (!res.ok) throw new Error(`${init?.method ?? 'GET'} ${url} failed: ${res.status}`);
+  if (!res.ok) {
+    // Read the body as text — error responses may be HTML (e.g. a 502 page), not JSON.
+    const detail = await res.text().catch(() => '');
+    throw new Error(`${init?.method ?? 'GET'} ${url} failed: ${res.status}${detail ? ` — ${detail}` : ''}`);
+  }
   return (await res.json()) as T;
 }
 

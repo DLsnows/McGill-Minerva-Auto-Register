@@ -208,6 +208,24 @@ describe('API', () => {
     expect(r.statusCode).toBe(404);
   });
 
+  it('POST /api/targets/:id/run reports started:false for a non-watching target', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto' });
+    store.updateTarget(t.id, { status: 'paused' });
+    const runTarget = vi.fn();
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget },
+    });
+    const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().started).toBe(false);
+    expect(runTarget).not.toHaveBeenCalled();
+    await app2.close();
+  });
+
   it('skips static serving when the web dist is absent (API still works, non-API 404)', async () => {
     const missing = join(dir, 'no-such-dist');
     const prev = process.env.AUTOREG_WEB_DIST;

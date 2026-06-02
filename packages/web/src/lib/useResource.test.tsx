@@ -29,4 +29,23 @@ describe('useResource', () => {
     });
     expect(result.current.data).toBe(2);
   });
+
+  it('discards a stale in-flight response when a newer refetch resolves first', async () => {
+    let resolveSlow!: (v: string) => void;
+    const fetcher = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<string>((r) => (resolveSlow = r))) // mount: slow
+      .mockImplementationOnce(() => Promise.resolve('fresh')); // refetch: fast
+    const { result } = renderHook(() => useResource(fetcher));
+    await act(async () => {
+      await result.current.refetch();
+    });
+    expect(result.current.data).toBe('fresh');
+    // resolve the older, slower request — it must NOT overwrite 'fresh'
+    await act(async () => {
+      resolveSlow('stale');
+      await Promise.resolve();
+    });
+    expect(result.current.data).toBe('fresh');
+  });
 });

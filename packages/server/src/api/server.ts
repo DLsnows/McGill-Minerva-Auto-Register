@@ -103,7 +103,12 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   // One-click "Register now": run an immediate forced cycle for this target.
   app.post('/api/targets/:id/run', (req, reply) => {
     const { id } = req.params as { id: string };
-    if (!deps.store.getTarget(id)) return reply.code(404).send({ error: 'not found' });
+    const target = deps.store.getTarget(id);
+    if (!target) return reply.code(404).send({ error: 'not found' });
+    // runOnce no-ops on non-watching targets; report honestly rather than a bare started:true.
+    if (target.status !== 'watching') {
+      return reply.send({ started: false, reason: `target is ${target.status}` });
+    }
     deps.scheduler.runTarget(id);
     return { started: true };
   });

@@ -28,11 +28,18 @@ export function useEventStream(max = 500): StreamState {
         setConnected(true);
       };
       ws.onmessage = (e) => {
-        const msg = JSON.parse(e.data) as
-          | { type: 'recent'; events: LogEvent[] }
-          | { type: 'event'; event: LogEvent };
+        let msg: { type: 'recent'; events: LogEvent[] } | { type: 'event'; event: LogEvent };
+        try {
+          msg = JSON.parse(e.data);
+        } catch {
+          return; // ignore non-JSON frames (proxy errors, heartbeats) — keep the stream alive
+        }
         if (msg.type === 'recent') setEvents(cap(msg.events));
-        else setEvents((prev) => cap([...prev, msg.event]));
+        else if (msg.type === 'event') setEvents((prev) => cap([...prev, msg.event]));
+      };
+      ws.onerror = () => {
+        // Some failures (e.g. CSP) may not fire onclose; force a close so reconnect runs.
+        ws.close();
       };
       ws.onclose = () => {
         setConnected(false);

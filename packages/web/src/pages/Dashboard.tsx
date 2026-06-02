@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import type { WatchMode } from '@autoregister/shared';
 import { api } from '../lib/api';
 import { useResource } from '../lib/useResource';
@@ -10,6 +10,7 @@ export default function Dashboard() {
   const targets = useResource(useCallback(() => api.getTargets(), []));
   const session = useResource(useCallback(() => api.getSession(), []));
   const { events, connected } = useEventStream();
+  const [running, setRunning] = useState<Set<string>>(new Set());
 
   const onToggleMode = useCallback(
     async (id: string, next: WatchMode) => {
@@ -20,7 +21,16 @@ export default function Dashboard() {
   );
 
   const onRun = useCallback(async (id: string) => {
-    await api.runTarget(id);
+    setRunning((s) => new Set(s).add(id));
+    try {
+      await api.runTarget(id);
+    } finally {
+      setRunning((s) => {
+        const next = new Set(s);
+        next.delete(id);
+        return next;
+      });
+    }
   }, []);
 
   const list = targets.data ?? [];
@@ -45,7 +55,13 @@ export default function Dashboard() {
           ) : (
             <div className="cards">
               {list.map((t) => (
-                <CourseCard key={t.id} target={t} onToggleMode={onToggleMode} onRun={onRun} />
+                <CourseCard
+                  key={t.id}
+                  target={t}
+                  onToggleMode={onToggleMode}
+                  onRun={onRun}
+                  running={running.has(t.id)}
+                />
               ))}
             </div>
           )}
