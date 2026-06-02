@@ -13,8 +13,21 @@ export const PROTECTED_PROBE_URL = `${MINERVA_BASE}/bwskfreg.P_AltPin`;
  */
 export const LOGIN_URL = `${MINERVA_BASE}/twbkwbis.P_GenMenu?name=bmenu.P_MainMnu`;
 
+/** Quick Add/Drop term selection (select[name="term_in"] -> P_StoreTerm). */
+export const ADD_DROP_TERM_URL = `${MINERVA_BASE}/bwskflib.P_SelDefTerm`;
+
+/**
+ * Quick Add/Drop worksheet (enter CRNs, Submit Changes). Intentionally the same
+ * endpoint as PROTECTED_PROBE_URL — the alt-pin page IS the registration
+ * worksheet; kept as a separate name for call-site clarity.
+ */
+export const QUICK_ADD_URL = PROTECTED_PROBE_URL;
+
 /** Persistent browser profile dir (gitignored). Override with AUTOREG_PROFILE_DIR. */
 export const PROFILE_DIR = resolve(process.env.AUTOREG_PROFILE_DIR ?? '.browser-profile');
 
 /** Max time (ms) to wait for the user to complete manual login. */
 export const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Max time (ms) to wait for the SSO redirect chain after clicking Login. */
+export const SSO_NAV_TIMEOUT_MS = 10_000;
