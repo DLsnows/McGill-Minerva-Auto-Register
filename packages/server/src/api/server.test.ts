@@ -102,4 +102,35 @@ describe('API', () => {
     const r = await app.inject({ method: 'GET', url: '/api/events?limit=0' });
     expect(r.json()).toEqual([]);
   });
+
+  it('broadcast removes dead clients from the set', async () => {
+    const { broadcast } = await import('./server');
+    const clients = new Set<{ send: () => void }>();
+    const dead = { send: () => { throw new Error('boom'); } };
+    clients.add(dead);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    broadcast(clients as any, { level: 'info', message: 'test', id: 'x', ts: 1 });
+    expect(clients.has(dead)).toBe(false);
+  });
+
+  it('lazy-checks session status on GET when currently authenticated', async () => {
+    const loggedIn = false;
+    const store = new Store(dir);
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => loggedIn,
+      },
+      scheduler: { start: () => undefined, stop: () => undefined },
+    });
+    // simulate login
+    await app2.inject({ method: 'POST', url: '/api/session/login' });
+    // isLoggedIn returns false → should report logged-out
+    const r = await app2.inject({ method: 'GET', url: '/api/session' });
+    expect(r.json().status).toBe('logged-out');
+    await app2.close();
+  });
 });

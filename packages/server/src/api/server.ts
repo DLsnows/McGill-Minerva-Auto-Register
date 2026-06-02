@@ -98,7 +98,19 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   });
 
   // --- session ---
-  app.get('/api/session', () => ({ status: sessionStatus }));
+  app.get('/api/session', async () => {
+    // Lazy re-check so the reported status doesn't drift from reality
+    // (session can expire naturally without going through /api/session/login).
+    if (sessionStatus === 'authenticated') {
+      try {
+        const live = await deps.session.isLoggedIn();
+        if (!live) sessionStatus = 'logged-out';
+      } catch {
+        sessionStatus = 'unknown';
+      }
+    }
+    return { status: sessionStatus };
+  });
   app.post('/api/session/login', () => {
     if (sessionStatus !== 'logging-in') {
       sessionStatus = 'logging-in';
@@ -150,7 +162,7 @@ export function broadcast(clients: Set<WebSocket>, event: LogEvent): void {
     try {
       client.send(payload);
     } catch {
-      // drop a dead client silently
+      clients.delete(client);
     }
   }
 }
