@@ -43,6 +43,14 @@ export interface Settings {
   queryBudget: number;
   /** Max registration submits per day (default 20). */
   registerBudget: number;
+  /** Which notification channels are enabled (in-app log is always on). */
+  notify: NotifyChannels;
+}
+
+export interface NotifyChannels {
+  desktop: boolean;
+  sound: boolean;
+  email: boolean;
 }
 
 export interface DailyOps {
@@ -57,4 +65,5 @@ export const DEFAULT_SETTINGS: Settings = {
   jitterMinutes: 3,
   queryBudget: 100,
   registerBudget: 20,
+  notify: { desktop: true, sound: true, email: false },
 };
