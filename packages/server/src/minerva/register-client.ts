@@ -1,6 +1,7 @@
 import type { ActionKind, RegisterOutcome } from '@autoregister/shared';
 import { ADD_DROP_TERM_URL, QUICK_ADD_URL } from '../session/config';
 import type { SessionManager } from '../session/session-manager';
+import { humanPause } from '../util/pacing';
 import { parseRegisterResult } from './parse-register-result';
 
 /**
@@ -13,9 +14,12 @@ export class RegisterClient {
   /** Ensure the Quick Add/Drop term matches `term` (term_in -> P_StoreTerm). */
   private async ensureTerm(term: string): Promise<void> {
     const page = await this.session.getPage();
+    await humanPause();
     await page.goto(ADD_DROP_TERM_URL, { waitUntil: 'domcontentloaded' });
     if ((await page.locator('select[name="term_in"]').count()) > 0) {
+      await humanPause();
       await page.selectOption('select[name="term_in"]', term);
+      await humanPause();
       await Promise.all([
         page.waitForLoadState('domcontentloaded'),
         page.click('form[action*="P_StoreTerm"] input[type="submit"]'),
@@ -33,11 +37,14 @@ export class RegisterClient {
 
     await this.ensureTerm(term);
     const page = await this.session.getPage();
+    await humanPause();
     await page.goto(QUICK_ADD_URL, { waitUntil: 'domcontentloaded' });
 
     // Enter the CRN in the first empty worksheet field (text inputs only —
     // the Current Schedule rows also carry hidden CRN_IN inputs).
+    await humanPause();
     await page.locator('input[type="text"][name="CRN_IN"]').first().fill(crn);
+    await humanPause();
     await Promise.all([
       page.waitForLoadState('domcontentloaded'),
       page.click('input[name="REG_BTN"][value="Submit Changes"]'),
@@ -46,6 +53,7 @@ export class RegisterClient {
 
     if (action === 'WAITLIST' && outcome.kind === 'waitlist-available') {
       // Pick "Add to Waitlist" (LW) on the errored row for THIS crn, then resubmit.
+      await humanPause();
       const ok = await page
         .locator('table[summary*="Registration Errors"] tr', { hasText: crn })
         .locator('select[name="RSTS_IN"]')
@@ -53,6 +61,7 @@ export class RegisterClient {
         .then(() => true)
         .catch(() => false);
       if (ok) {
+        await humanPause();
         await Promise.all([
           page.waitForLoadState('domcontentloaded'),
           page.click('input[name="REG_BTN"][value="Submit Changes"]'),
