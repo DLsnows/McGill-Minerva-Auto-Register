@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useResource } from './useResource';
 
+// helper: pause for any pending microtasks
+const flush = () => act(async () => { await Promise.resolve(); });
+
 describe('useResource', () => {
   it('loads data and exposes it', async () => {
     const fetcher = vi.fn().mockResolvedValue(42);
@@ -28,6 +31,21 @@ describe('useResource', () => {
       await result.current.refetch();
     });
     expect(result.current.data).toBe(2);
+  });
+
+  it('does not refetch in a loop when given a non-memoized fetcher', async () => {
+    let calls = 0;
+    const { rerender } = renderHook(() =>
+      useResource(() => {
+        calls++;
+        return Promise.resolve('x');
+      }),
+    );
+    await waitFor(() => expect(calls).toBe(1));
+    rerender(); // new inline fetcher each render — must NOT trigger more fetches
+    rerender();
+    await flush();
+    expect(calls).toBe(1);
   });
 
   it('discards a stale in-flight response when a newer refetch resolves first', async () => {

@@ -8,14 +8,21 @@ export interface Resource<T> {
 }
 
 /** Run `fetcher` on mount; expose data/loading/error + a manual refetch.
- * A generation counter discards stale overlapping responses, and a mounted
- * ref avoids state updates after unmount. */
+ * The fetcher is read through a ref so `refetch` stays stable across renders —
+ * callers can pass an inline (non-memoized) fetcher without causing a refetch
+ * loop. A generation counter discards stale overlapping responses, and a
+ * mounted ref avoids state updates after unmount. */
 export function useResource<T>(fetcher: () => Promise<T>): Resource<T> {
   const [data, setData] = useState<T>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error>();
   const genRef = useRef(0);
   const mountedRef = useRef(true);
+  const fetcherRef = useRef(fetcher);
+
+  useEffect(() => {
+    fetcherRef.current = fetcher; // keep latest fetcher without changing refetch identity
+  });
 
   useEffect(() => {
     mountedRef.current = true;
@@ -29,7 +36,7 @@ export function useResource<T>(fetcher: () => Promise<T>): Resource<T> {
     const live = () => mountedRef.current && gen === genRef.current;
     setLoading(true);
     try {
-      const result = await fetcher();
+      const result = await fetcherRef.current();
       if (live()) {
         setData(result);
         setError(undefined);
@@ -39,7 +46,7 @@ export function useResource<T>(fetcher: () => Promise<T>): Resource<T> {
     } finally {
       if (live()) setLoading(false);
     }
-  }, [fetcher]);
+  }, []);
 
   useEffect(() => {
     void refetch();

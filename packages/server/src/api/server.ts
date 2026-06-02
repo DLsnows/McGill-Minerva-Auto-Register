@@ -101,6 +101,9 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     return { ok: true };
   });
   // One-click "Register now": run an immediate forced cycle for this target.
+  // `started: true` means the run was *accepted*; it executes asynchronously and
+  // its outcome arrives via the event stream (like a normal tick). The status
+  // check below is a best-effort fast-fail — runCycle re-checks status when it runs.
   app.post('/api/targets/:id/run', (req, reply) => {
     const { id } = req.params as { id: string };
     const target = deps.store.getTarget(id);

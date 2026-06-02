@@ -34,8 +34,9 @@ export function useEventStream(max = 500): StreamState {
         } catch {
           return; // ignore non-JSON frames (proxy errors, heartbeats) — keep the stream alive
         }
-        if (msg.type === 'recent') setEvents(cap(msg.events));
-        else if (msg.type === 'event') setEvents((prev) => cap([...prev, msg.event]));
+        // Guard the shape too — a malformed frame must not push undefined events.
+        if (msg.type === 'recent' && Array.isArray(msg.events)) setEvents(cap(msg.events));
+        else if (msg.type === 'event' && msg.event) setEvents((prev) => cap([...prev, msg.event]));
       };
       ws.onerror = () => {
         // Some failures (e.g. CSP) may not fire onclose; force a close so reconnect runs.
