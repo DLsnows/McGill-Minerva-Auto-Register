@@ -59,8 +59,18 @@ export class Store {
           settings: { ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) },
           dailyOps: parsed.dailyOps ?? freshDailyOps(Date.now()),
         };
-      } catch {
-        // corrupt file — start fresh rather than crash
+      } catch (err) {
+        // corrupt file — back it up before starting fresh
+        const corruptPath = `${this.file}.corrupt`;
+        try {
+          renameSync(this.file, corruptPath);
+        } catch {
+          // best-effort backup; if rename fails we still start fresh
+        }
+        console.error(
+          `[store] Corrupt store.json — backed up to ${corruptPath}. Starting fresh.`,
+        );
+        console.error(`[store] Parse error:`, err instanceof Error ? err.message : String(err));
       }
     }
     return {
@@ -145,22 +155,32 @@ export class Store {
   }
 
   // --- daily ops (resets on local date change) ---
+
+  /** Pure reader — never writes. Returns a snapshot of today's counts (or zeros
+   * if the stored date doesn't match `now`). The rollover + persist is done
+   * explicitly by `incrementQuery` / `incrementRegister`. */
   getDailyOps(now = Date.now()): DailyOps {
+    const ops = this.data.dailyOps;
+    if (ops.date !== localDate(now)) {
+      return freshDailyOps(now);
+    }
+    return { ...ops };
+  }
+
+  private ensureRollover(now: number): void {
     if (this.data.dailyOps.date !== localDate(now)) {
       this.data.dailyOps = freshDailyOps(now);
-      this.save();
     }
-    return { ...this.data.dailyOps };
   }
 
   incrementQuery(now = Date.now()): void {
-    this.getDailyOps(now);
+    this.ensureRollover(now);
     this.data.dailyOps.queryCount += 1;
     this.save();
   }
 
   incrementRegister(now = Date.now()): void {
-    this.getDailyOps(now);
+    this.ensureRollover(now);
     this.data.dailyOps.registerCount += 1;
     this.save();
   }

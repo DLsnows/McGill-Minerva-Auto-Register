@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from './store';
@@ -75,5 +75,37 @@ describe('Store', () => {
     s.incrementRegister(day1);
     expect(s.getDailyOps(day1)).toMatchObject({ queryCount: 2, registerCount: 1 });
     expect(s.getDailyOps(day2)).toMatchObject({ queryCount: 0, registerCount: 0 });
+  });
+
+  it('backs up corrupt store.json to .corrupt and starts fresh', () => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'autoreg-corrupt-'));
+    const storeFile = join(storeDir, 'store.json');
+    writeFileSync(storeFile, '{{{ bad json {{{');
+    const s = new Store(storeDir);
+    // should start fresh — no targets
+    expect(s.listTargets()).toHaveLength(0);
+    // corrupt file should be renamed
+    expect(existsSync(join(storeDir, 'store.json.corrupt'))).toBe(true);
+    expect(readFileSync(join(storeDir, 'store.json.corrupt'), 'utf8')).toBe('{{{ bad json {{{');
+    // store.json is NOT created until first save (load only backs up + returns fresh)
+    // should be able to use the store normally after recovery
+    s.addTarget(sampleTarget);
+    expect(s.listTargets()).toHaveLength(1);
+    // now store.json should exist (created by addTarget → save)
+    expect(existsSync(storeFile)).toBe(true);
+    rmSync(storeDir, { recursive: true, force: true });
+  });
+
+  it('getDailyOps is a pure reader — does not write on date rollover', () => {
+    const day1 = new Date('2026-06-02T10:00:00').getTime();
+    const day2 = new Date('2026-06-03T10:00:00').getTime();
+    const s = new Store(dir);
+    s.incrementQuery(day1);
+    // reading day2 ops should return fresh zeros WITHOUT saving
+    const ops = s.getDailyOps(day2);
+    expect(ops.queryCount).toBe(0);
+    // re-open: day1 data still persists
+    const s2 = new Store(dir);
+    expect(s2.getDailyOps(day1).queryCount).toBe(1);
   });
 });

@@ -15,5 +15,9 @@ export async function sendEmail(cfg: EmailConfig, subject: string, text: string)
     secure: port === 465,
     auth: { user: cfg.user, pass: cfg.pass },
   });
-  await transporter.sendMail({ from: cfg.user, to: cfg.to, subject, text });
+  try {
+    await transporter.sendMail({ from: cfg.user, to: cfg.to, subject, text });
+  } finally {
+    transporter.close();
+  }
 }

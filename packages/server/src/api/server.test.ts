@@ -86,4 +86,20 @@ describe('API', () => {
       running: false,
     });
   });
+
+  it('rejects empty-string email fields with 400', async () => {
+    const r = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        email: { host: '', port: 587, user: 'u', pass: 'p', to: '' },
+      },
+    });
+    expect(r.statusCode).toBe(400);
+  });
+
+  it('uses limit=0 as zero (not 200)', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/events?limit=0' });
+    expect(r.json()).toEqual([]);
+  });
 });

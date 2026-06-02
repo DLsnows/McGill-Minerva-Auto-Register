@@ -33,11 +33,11 @@ const targetSchema = z.object({
 });
 
 const emailSchema = z.object({
-  host: z.string(),
-  port: z.number(),
-  user: z.string(),
-  pass: z.string(),
-  to: z.string(),
+  host: z.string().min(1),
+  port: z.number().int().min(1).max(65535),
+  user: z.string().min(1),
+  pass: z.string().min(1),
+  to: z.string().min(1),
 });
 
 const settingsSchema = z
@@ -127,7 +127,8 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
 
   // --- events + budget ---
   app.get('/api/events', (req) => {
-    const limit = Number((req.query as { limit?: string }).limit) || 200;
+    const raw = (req.query as { limit?: string }).limit;
+    const limit = raw !== undefined ? Math.max(0, Number(raw) || 0) : 200;
     return deps.store.recentEvents(limit);
   });
   app.get('/api/budget', () => deps.budget.remaining());
