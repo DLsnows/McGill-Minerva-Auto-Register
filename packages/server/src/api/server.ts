@@ -179,7 +179,9 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
 /** Broadcast a log event to all connected WebSocket clients. */
 export function broadcast(clients: Set<WebSocket>, event: LogEvent): void {
   const payload = JSON.stringify({ type: 'event', event });
-  for (const client of clients) {
+  // Iterate a snapshot: deleting from a Set mid-`for...of` is actually safe
+  // (unlike arrays), but the snapshot makes that correctness self-evident.
+  for (const client of [...clients]) {
     try {
       client.send(payload);
     } catch {
