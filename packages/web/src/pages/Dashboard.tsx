@@ -1,14 +1,13 @@
 import { useCallback, useState } from 'react';
 import type { WatchMode } from '@autoregister/shared';
 import { api } from '../lib/api';
-import { useResource } from '../lib/useResource';
+import { useData } from '../lib/DataContext';
 import { useEventStream } from '../lib/useEventStream';
 import { CourseCard } from '../components/CourseCard';
 import { Console } from '../components/Console';
 
 export default function Dashboard() {
-  const targets = useResource(useCallback(() => api.getTargets(), []));
-  const session = useResource(useCallback(() => api.getSession(), []));
+  const { targets, session } = useData();
   const { events, connected } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
 

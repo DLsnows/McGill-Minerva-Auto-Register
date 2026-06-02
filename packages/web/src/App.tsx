@@ -1,7 +1,5 @@
-import { useCallback } from 'react';
 import { Outlet, Route, Routes } from 'react-router-dom';
-import { api } from './lib/api';
-import { useResource } from './lib/useResource';
+import { useData } from './lib/DataContext';
 import { NavPills } from './components/NavPills';
 import { Ticker } from './components/Ticker';
 import Dashboard from './pages/Dashboard';
@@ -10,11 +8,7 @@ import Session from './pages/Session';
 import Settings from './pages/Settings';
 
 function Shell() {
-  const targets = useResource(useCallback(() => api.getTargets(), []));
-  const budget = useResource(useCallback(() => api.getBudget(), []));
-  const session = useResource(useCallback(() => api.getSession(), []));
-  const settings = useResource(useCallback(() => api.getSettings(), []));
-
+  const { targets, budget, session, settings } = useData();
   const s = settings.data;
   const queryBudget = s?.queryBudget ?? 100;
   const registerBudget = s?.registerBudget ?? 20;
