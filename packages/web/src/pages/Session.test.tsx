@@ -40,4 +40,13 @@ describe('Session', () => {
     await userEvent.click(screen.getByRole('button', { name: /log in/i }));
     expect(login).toHaveBeenCalled();
   });
+
+  it('surfaces a login error', async () => {
+    mockAll('logged-out');
+    vi.spyOn(api, 'login').mockRejectedValue(new Error('login boom'));
+    renderSession();
+    await waitFor(() => screen.getByRole('button', { name: /log in/i }));
+    await userEvent.click(screen.getByRole('button', { name: /log in/i }));
+    await waitFor(() => expect(screen.getByText(/login boom/i)).toBeInTheDocument());
+  });
 });

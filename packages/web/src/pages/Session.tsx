@@ -13,6 +13,7 @@ export default function Session() {
   const { session } = useData();
   const status = session.data?.status ?? 'unknown';
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string>();
 
   // Keep the latest refetch in a ref so the polling effect can depend on
   // `status` alone — `session` is a fresh object on every refetch, so depending
@@ -36,9 +37,12 @@ export default function Session() {
 
   const login = async () => {
     setBusy(true);
+    setErr(undefined);
     try {
       await api.login();
       await session.refetch();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Login failed');
     } finally {
       setBusy(false);
     }
@@ -60,6 +64,7 @@ export default function Session() {
         <button type="button" className="btn btn-accent" onClick={login} disabled={busy}>
           {busy ? 'Opening browser…' : 'Open browser & log in'}
         </button>
+        {err && <div className="errbar">{err}</div>}
         <div style={{ color: 'var(--tx-3)', fontSize: 12, marginTop: 14 }}>
           McGill allows one active session — logging in elsewhere will evict the automation.
         </div>

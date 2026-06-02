@@ -51,6 +51,15 @@ describe('Settings', () => {
     expect(screen.getByText(/email .*required/i)).toBeInTheDocument();
   });
 
+  it('surfaces a save error', async () => {
+    mockAll();
+    vi.spyOn(api, 'putSettings').mockRejectedValue(new Error('save boom'));
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    await waitFor(() => expect(screen.getByText(/save boom/i)).toBeInTheDocument());
+  });
+
   it('links to the email setup guide', async () => {
     mockAll();
     renderSettings();

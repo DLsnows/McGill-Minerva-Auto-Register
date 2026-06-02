@@ -67,9 +67,17 @@ export default function SettingsPage() {
       return;
     }
     setErr(undefined);
-    await api.putSettings({ ...form, email: form.notify.email || emailComplete ? email : undefined });
-    await settings.refetch();
-    setSaved(true);
+    try {
+      // Persist the email config whenever it's complete (even if notifications
+      // are off) so toggling email on later doesn't lose it. The server only
+      // *sends* email when notify.email is true.
+      await api.putSettings({ ...form, email: form.notify.email || emailComplete ? email : undefined });
+      await settings.refetch();
+      setSaved(true);
+    } catch (e) {
+      setSaved(false);
+      setErr(e instanceof Error ? e.message : 'Failed to save settings.');
+    }
   };
 
   return (

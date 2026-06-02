@@ -7,29 +7,38 @@ import { StatusBadge } from '../components/StatusBadge';
 export default function Courses() {
   const { targets } = useData();
   const [editing, setEditing] = useState<string | null>(null);
+  const [err, setErr] = useState<string>();
   const list = targets.data ?? [];
 
-  const add = async (v: CourseFormValues) => {
-    await api.addTarget({
-      term: v.term, subject: v.subject, courseNumber: v.courseNumber, targetCrn: v.targetCrn,
-      faculty: v.faculty || undefined, label: v.label || undefined, mode: v.mode,
-    });
-    await targets.refetch();
+  // Run a mutation, surface any failure, and refresh the list.
+  const run = async (op: () => Promise<unknown>) => {
+    setErr(undefined);
+    try {
+      await op();
+      await targets.refetch();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Operation failed.');
+    }
   };
 
-  const saveEdit = async (id: string, v: CourseFormValues) => {
-    await api.updateTarget(id, {
-      term: v.term, subject: v.subject, courseNumber: v.courseNumber, targetCrn: v.targetCrn,
-      faculty: v.faculty || undefined, label: v.label || undefined, mode: v.mode,
-    });
-    setEditing(null);
-    await targets.refetch();
-  };
+  const add = (v: CourseFormValues) =>
+    run(() =>
+      api.addTarget({
+        term: v.term, subject: v.subject, courseNumber: v.courseNumber, targetCrn: v.targetCrn,
+        faculty: v.faculty || undefined, label: v.label || undefined, mode: v.mode,
+      }),
+    );
 
-  const remove = async (id: string) => {
-    await api.removeTarget(id);
-    await targets.refetch();
-  };
+  const saveEdit = (id: string, v: CourseFormValues) =>
+    run(async () => {
+      await api.updateTarget(id, {
+        term: v.term, subject: v.subject, courseNumber: v.courseNumber, targetCrn: v.targetCrn,
+        faculty: v.faculty || undefined, label: v.label || undefined, mode: v.mode,
+      });
+      setEditing(null);
+    });
+
+  const remove = (id: string) => run(() => api.removeTarget(id));
 
   return (
     <div>
@@ -37,6 +46,7 @@ export default function Courses() {
         <h2 className="serif">Add a course</h2>
       </div>
       <CourseForm submitLabel="Add course" onSubmit={add} />
+      {err && <div className="errbar">{err}</div>}
 
       <div className="col-h" style={{ marginTop: 22 }}>
         <h2 className="serif">Managed courses</h2>
