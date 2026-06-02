@@ -8,19 +8,23 @@
     "browser:install": "playwright install chromium",
     "session:login": "tsx src/session/login-script.ts",
     "query": "tsx src/minerva/query-script.ts",
-    "register": "tsx src/minerva/register-script.ts"
+    "register": "tsx src/minerva/register-script.ts",
+    "serve": "tsx src/api/main.ts"
   },
   "dependencies": {
     "@autoregister/shared": "*",
+    "@fastify/websocket": "^11.0.2",
     "cheerio": "^1.0.0",
-    "dotenv": "^16.4.7",
+    "fastify": "^5.2.0",
     "node-notifier": "^10.0.1",
     "nodemailer": "^8.0.10",
-    "playwright": "^1.49.1"
+    "playwright": "^1.49.1",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node-notifier": "^8.0.5",
     "@types/nodemailer": "^6.4.17",
+    "@types/ws": "^8.5.13",
     "tsx": "^4.19.2"
   }
 }

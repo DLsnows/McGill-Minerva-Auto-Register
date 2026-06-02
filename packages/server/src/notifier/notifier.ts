@@ -24,9 +24,9 @@ export class Notifier {
       }
     }
 
-    if (s.notify.email && isEmailConfigured()) {
+    if (s.notify.email && isEmailConfigured(s.email)) {
       try {
-        await sendEmail(title, body);
+        await sendEmail(s.email, title, body);
       } catch (e) {
         console.warn('email notification failed:', e instanceof Error ? e.message : e);
       }

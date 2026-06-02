@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import type { LogEvent } from '@autoregister/shared';
 import { QueryClient } from '../minerva/query-client';
 import { RegisterClient } from '../minerva/register-client';
