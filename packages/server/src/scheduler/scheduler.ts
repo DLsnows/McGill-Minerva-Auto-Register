@@ -67,7 +67,7 @@ export class Scheduler {
 
     if (!budget.canQuery(now)) {
       this.log('warn', 'Daily query budget reached — backing off until tomorrow', targetId);
-      this.scheduleNext(target);
+      this.scheduleAfterReset(target, now);
       return;
     }
 
@@ -191,6 +191,14 @@ export class Scheduler {
     const jitter = (this.random() * 2 - 1) * s.jitterMinutes;
     const nextMin = Math.max(1, baseMin + jitter);
     store.updateTarget(target.id, { nextPollAt: now + nextMin * 60_000 });
+  }
+
+  /** Schedule the next poll just after the local-midnight daily budget reset. */
+  private scheduleAfterReset(target: WatchTarget, now: number): void {
+    const buffer = Math.round(this.random() * 5 + 1) * 60_000; // 1–6 min past midnight
+    this.deps.store.updateTarget(target.id, {
+      nextPollAt: now + this.msUntilLocalMidnight(now) + buffer,
+    });
   }
 
   private msUntilLocalMidnight(now: number): number {

@@ -129,6 +129,8 @@ describe('Scheduler.runOnce', () => {
     await scheduler.runOnce(target.id);
     expect(watcher.calls).toBe(0);
     expect(store.recentEvents().some((e) => /query budget/i.test(e.message))).toBe(true);
+    // backs off until after the local-midnight reset (NOW is noon → ~12h away)
+    expect(store.getTarget(target.id)!.nextPollAt!).toBeGreaterThan(NOW + 11 * 3600 * 1000);
   });
 
   it('does not register when the register budget is exhausted', async () => {

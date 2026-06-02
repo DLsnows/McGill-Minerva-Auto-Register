@@ -29,6 +29,12 @@ describe('Store', () => {
     expect(s.listTargets()).toHaveLength(1);
   });
 
+  it('rejects a target missing a required field', () => {
+    const s = new Store(dir);
+    expect(() => s.addTarget({ ...sampleTarget, targetCrn: '' })).toThrow(/targetCrn/);
+    expect(() => s.addTarget({ ...sampleTarget, term: '  ' })).toThrow(/term/);
+  });
+
   it('updates and removes targets', () => {
     const s = new Store(dir);
     const t = s.addTarget(sampleTarget);

@@ -89,6 +89,11 @@ export class Store {
   addTarget(
     input: Omit<WatchTarget, 'id' | 'createdAt' | 'status'> & { status?: WatchStatus },
   ): WatchTarget {
+    for (const field of ['term', 'subject', 'courseNumber', 'targetCrn'] as const) {
+      if (!input[field] || String(input[field]).trim() === '') {
+        throw new Error(`addTarget: missing required field "${field}"`);
+      }
+    }
     const target: WatchTarget = {
       ...input,
       id: randomUUID(),
