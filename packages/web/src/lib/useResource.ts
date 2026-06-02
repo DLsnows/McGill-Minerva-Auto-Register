@@ -23,8 +23,6 @@ export function useResource<T>(fetcher: () => Promise<T>): Resource<T> {
     } finally {
       setLoading(false);
     }
-    // fetcher identity is controlled by the caller (usually a stable api.* ref)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetcher]);
 
   useEffect(() => {

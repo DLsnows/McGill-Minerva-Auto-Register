@@ -16,7 +16,8 @@
     "format:check": "prettier --check .",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
-    "build:web": "npm run build -w @autoregister/web"
+    "build:web": "npm run build -w @autoregister/web",
+    "serve": "npm run build:web && npm run serve -w @autoregister/server"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

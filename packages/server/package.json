@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@autoregister/shared": "*",
-    "@fastify/static": "^8.0.3",
+    "@fastify/static": "^9.1.3",
     "@fastify/websocket": "^11.0.2",
     "cheerio": "^1.0.0",
     "fastify": "^5.2.0",
