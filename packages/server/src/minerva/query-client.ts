@@ -37,7 +37,14 @@ export class QueryClient {
     // 3. Advanced form → subject + optional faculty + course number → Get Course Sections.
     await page.selectOption('select[name="sel_subj"]', query.subject);
     if (query.faculty) {
-      await page.selectOption('select[name="sel_coll"]', query.faculty).catch(() => undefined);
+      await page
+        .selectOption('select[name="sel_coll"]', query.faculty)
+        .catch((e: unknown) =>
+          console.warn(
+            'faculty (sel_coll) not applied, continuing:',
+            e instanceof Error ? e.message : e,
+          ),
+        );
     }
     await page.fill('input[name="sel_crse"]', query.courseNumber);
     await Promise.all([
@@ -45,7 +52,9 @@ export class QueryClient {
       page.click('input[name="SUB_BTN"][value="Get Course Sections"]'),
     ]);
 
-    // 4. Parse the results page (P_GetCrse_Advanced).
+    // 4. Parse the results page (P_GetCrse_Advanced). Soft-wait for the table
+    // (don't throw on a legitimate no-results page).
+    await page.waitForSelector('table.datadisplaytable', { timeout: 8000 }).catch(() => undefined);
     return parseSections(await page.content());
   }
 

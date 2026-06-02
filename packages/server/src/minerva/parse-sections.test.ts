@@ -9,8 +9,8 @@ const FIXTURE = `
 <th class="ddheader">Crse</th><th class="ddheader">Sec</th><th class="ddheader">Type</th>
 <th class="ddheader">Cred</th><th class="ddheader">Title</th><th class="ddheader">Days</th>
 <th class="ddheader">Time</th><th class="ddheader">Cap</th><th class="ddheader">Act</th>
-<th class="ddheader">Rem</th><th class="ddheader">WLCap</th><th class="ddheader">WLAct</th>
-<th class="ddheader">WLRem</th><th class="ddheader">Instr</th><th class="ddheader">Date</th>
+<th class="ddheader">Rem</th><th class="ddheader">WL Cap</th><th class="ddheader">WL Act</th>
+<th class="ddheader">WL Rem</th><th class="ddheader">Instr</th><th class="ddheader">Date</th>
 <th class="ddheader">Loc</th><th class="ddheader">Status</th></tr>
 <tr>
 <td class="dddefault"><abbr title="Closed">C</abbr></td>
@@ -63,7 +63,7 @@ describe('parseSections', () => {
   });
 
   it('skips NOTES and spacer rows and the header row', () => {
-    expect(parseSections(FIXTURE).every((r) => /^\d{4,5}$/.test(r.crn))).toBe(true);
+    expect(parseSections(FIXTURE).map((r) => r.crn)).toEqual(['2347', '2348']);
   });
 
   it('returns empty array when no sections table is present', () => {
