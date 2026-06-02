@@ -13,6 +13,12 @@ export const PROTECTED_PROBE_URL = `${MINERVA_BASE}/bwskfreg.P_AltPin`;
  */
 export const LOGIN_URL = `${MINERVA_BASE}/twbkwbis.P_GenMenu?name=bmenu.P_MainMnu`;
 
+/** Quick Add/Drop term selection (select[name="term_in"] -> P_StoreTerm). */
+export const ADD_DROP_TERM_URL = `${MINERVA_BASE}/bwskflib.P_SelDefTerm`;
+
+/** Quick Add/Drop worksheet (enter CRNs, Submit Changes). */
+export const QUICK_ADD_URL = `${MINERVA_BASE}/bwskfreg.P_AltPin`;
+
 /** Persistent browser profile dir (gitignored). Override with AUTOREG_PROFILE_DIR. */
 export const PROFILE_DIR = resolve(process.env.AUTOREG_PROFILE_DIR ?? '.browser-profile');
 
