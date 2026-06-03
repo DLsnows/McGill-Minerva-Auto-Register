@@ -57,6 +57,7 @@ const settingsSchema = z
     registerBudget: z.number().min(0),
     notify: z.object({ desktop: z.boolean(), sound: z.boolean(), email: z.boolean() }),
     email: emailSchema,
+    dryRun: z.boolean(),
   })
   .partial();
 

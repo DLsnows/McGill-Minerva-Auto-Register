@@ -177,6 +177,32 @@ describe('Scheduler.runOnce', () => {
     expect(store.getTarget(target.id)!.status).toBe('waitlisted');
   });
 
+  it('dry-run: auto + opening logs "would" and does NOT act', async () => {
+    const { scheduler, store, actor, budget, target } = setup({
+      decision: { action: 'REGISTER', reason: 'rem>0' },
+      outcome: { kind: 'registered', crn: '1814' },
+    });
+    store.setSettings({ dryRun: true });
+    const before = budget.remaining(NOW).register;
+    await scheduler.runOnce(target.id);
+    expect(actor.calls).toBe(0);
+    expect(store.getTarget(target.id)!.status).toBe('watching');
+    expect(budget.remaining(NOW).register).toBe(before); // register budget untouched
+    expect(store.recentEvents().some((e) => /DRY-RUN: would REGISTER/.test(e.message))).toBe(true);
+  });
+
+  it('dry-run also applies to a forced (one-click) run', async () => {
+    const { scheduler, store, actor, target } = setup({
+      mode: 'notify',
+      decision: { action: 'WAITLIST', reason: 'wlrem>0' },
+      outcome: { kind: 'waitlisted', crn: '1814' },
+    });
+    store.setSettings({ dryRun: true });
+    await scheduler.runOnce(target.id, { force: true });
+    expect(actor.calls).toBe(0);
+    expect(store.recentEvents().some((e) => /DRY-RUN: would WAITLIST/.test(e.message))).toBe(true);
+  });
+
   it('skips a concurrent run of the same target (no double registration)', async () => {
     const store = new Store(dir);
     const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });

@@ -114,6 +114,18 @@ export default function SettingsPage() {
             <input type="checkbox" aria-label={t('settings.emailAria')} checked={form.notify.email} onChange={(e) => setForm({ ...form, notify: { ...form.notify, email: e.target.checked } })} /> {t('settings.email')}
           </label>
         </div>
+
+        <div style={{ marginTop: 14 }}>
+          <label>
+            <input
+              type="checkbox"
+              aria-label={t('settings.dryRunAria')}
+              checked={form.dryRun ?? false}
+              onChange={(e) => setForm({ ...form, dryRun: e.target.checked })}
+            />{' '}
+            {t('settings.dryRun')}
+          </label>
+        </div>
       </div>
 
       <div className="col-h" style={{ marginTop: 22 }}>

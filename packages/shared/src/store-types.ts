@@ -47,6 +47,9 @@ export interface Settings {
   notify: NotifyChannels;
   /** SMTP config for email notifications (absent/empty = email disabled). */
   email?: EmailConfig;
+  /** Rehearsal mode: poll + decide normally but never actually submit a
+   * registration (logs "would register" instead). Default false. */
+  dryRun?: boolean;
 }
 
 export interface NotifyChannels {
@@ -77,4 +80,5 @@ export const DEFAULT_SETTINGS: Settings = {
   queryBudget: 100,
   registerBudget: 20,
   notify: { desktop: true, sound: true, email: false },
+  dryRun: false,
 };

@@ -51,6 +51,7 @@ const en = {
     saveSettings: 'Save settings', saved: 'Saved ✓', loading: 'Loading settings…',
     emailRequired: 'All email fields are required when email notifications are enabled.',
     saveFailed: 'Failed to save settings.',
+    dryRun: 'Dry-run (rehearsal) mode', dryRunAria: 'Dry-run mode',
   },
   session: {
     title: 'Session',
@@ -82,13 +83,13 @@ const zh: typeof en = {
     required: '学期、科目、学院、课程号和目标 CRN 为必填。', cancel: '取消',
     ph: { term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', faculty: 'Faculty of Science', label: 'COMP 551' },
     help: {
-      term: 'Term(学期）—— Minerva 学期代码,后两位代表季节:Winter 冬季(1–4 月）= 01、Summer 夏季(5–8 月）= 05、Fall 秋季(9–12 月）= 09。例:Winter 2027 = 202701、Fall 2026 = 202609。',
-      subject: 'Subject(科目）—— 课程科目代码,如 COMP(计算机科学）。',
-      courseNumber: 'Course #(课程号）—— 科目后面的编号,如 COMP 551 中的 551。',
-      targetCrn: 'Target CRN(目标 CRN）—— 你想要的那一节课的 4 位课程参考号,如 2347。',
-      faculty: 'Faculty(学院）—— Minerva 的学院,搜索时必填,如 Faculty of Science。',
-      label: 'Label(标签）—— 该监控的可选显示名,如 COMP 551。',
-      mode: 'Mode(模式）—— auto:出现空位时自动注册/候补;notify:仅提醒你。',
+      term: 'Term（学期）—— Minerva 学期代码,后两位代表季节:Winter 冬季（1–4 月）= 01、Summer 夏季（5–8 月）= 05、Fall 秋季（9–12 月）= 09。例:Winter 2027 = 202701、Fall 2026 = 202609。',
+      subject: 'Subject（科目）—— 课程科目代码,如 COMP（计算机科学）。',
+      courseNumber: 'Course #（课程号）—— 科目后面的编号,如 COMP 551 中的 551。',
+      targetCrn: 'Target CRN（目标 CRN）—— 你想要的那一节课的 4 位课程参考号,如 2347。',
+      faculty: 'Faculty（学院）—— Minerva 的学院,搜索时必填,如 Faculty of Science。',
+      label: 'Label（标签）—— 该监控的可选显示名,如 COMP 551。',
+      mode: 'Mode（模式）—— auto:出现空位时自动注册/候补;notify:仅提醒你。',
     },
   },
   dashboard: {
@@ -111,6 +112,7 @@ const zh: typeof en = {
     saveSettings: '保存设置', saved: '已保存 ✓', loading: '加载设置中…',
     emailRequired: '启用邮件通知时,所有邮件字段均为必填。',
     saveFailed: '保存设置失败。',
+    dryRun: 'Dry-run（演练）模式', dryRunAria: '演练模式',
   },
   session: {
     title: '会话',
@@ -171,6 +173,7 @@ const fr: typeof en = {
     saveSettings: 'Enregistrer', saved: 'Enregistré ✓', loading: 'Chargement des paramètres…',
     emailRequired: 'Tous les champs courriel sont requis lorsque les notifications par courriel sont activées.',
     saveFailed: "Échec de l'enregistrement des paramètres.",
+    dryRun: 'Mode simulation (dry-run)', dryRunAria: 'Mode simulation',
   },
   session: {
     title: 'Session',

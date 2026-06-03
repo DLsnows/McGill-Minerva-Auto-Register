@@ -11,9 +11,11 @@ See design spec: `docs/superpowers/specs/2026-06-01-autoregister-design.md`.
 - [x] **P3 — minerva-client/query**: advanced search navigation + parse, match by target CRN
 - [x] **P4 — minerva-client/register**: submit + waitlist re-submit + term check + error capture
 - [x] **P5 — store + scheduler + budget/pacing + notifier**
-- [ ] **P6 — api**: REST + WebSocket
-- [ ] **P7 — web**: Synapse UI wired to API (incl. one-click execute)
-- [ ] **P8 — integration**: dry-run rehearsal, docs, polish
+- [x] **P6 — api**: REST + WebSocket (email config moved into Settings/UI-editable)
+- [x] **P7 — web**: Synapse UI wired to API — P7a scaffold + theme + data layer + Dashboard, P7b Courses/Session/Settings + shared data provider, P7c i18n (中文/EN/FR), P7d Courses-form help + faculty required
+- [x] **P8 — integration**: dry-run rehearsal mode (Settings toggle) + README/docs
+
+🎉 All phases complete.
 
 ## Conventions
 

@@ -84,6 +84,13 @@ describe('API', () => {
     expect(get.json().notify.email).toBe(true);
   });
 
+  it('accepts and persists the dryRun setting', async () => {
+    const put = await app.inject({ method: 'PUT', url: '/api/settings', payload: { dryRun: true } });
+    expect(put.statusCode).toBe(200);
+    const get = await app.inject({ method: 'GET', url: '/api/settings' });
+    expect(get.json().dryRun).toBe(true);
+  });
+
   it('returns budget remaining', async () => {
     const r = await app.inject({ method: 'GET', url: '/api/budget' });
     expect(r.json()).toHaveProperty('query');
