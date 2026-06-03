@@ -3,7 +3,8 @@ import type { EmailConfig, Settings } from '@autoregister/shared';
 import { api } from '../lib/api';
 import { useData } from '../lib/DataContext';
 
-const DOC_URL = 'https://github.com/DLsnows/McGill-Minerva-Auto-Register/blob/dev/docs/EMAIL_SETUP.md';
+// /blob/HEAD/ resolves to the repo's default branch, so the link survives branch renames.
+const DOC_URL = 'https://github.com/DLsnows/McGill-Minerva-Auto-Register/blob/HEAD/docs/EMAIL_SETUP.md';
 const EMPTY_EMAIL: EmailConfig = { host: '', port: 587, user: '', pass: '', to: '' };
 
 const inputStyle = {

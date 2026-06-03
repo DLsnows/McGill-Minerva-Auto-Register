@@ -14,6 +14,7 @@ export default function Session() {
   const status = session.data?.status ?? 'unknown';
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string>();
+  const [capped, setCapped] = useState(false);
 
   // Keep the latest refetch in a ref so the polling effect can depend on
   // `status` alone — `session` is a fresh object on every refetch, so depending
@@ -24,13 +25,21 @@ export default function Session() {
   });
 
   // While logging in, poll the status until it resolves, with a ~36s safety cap.
+  // After the cap we re-enable the button (via `capped`) so a stuck login can be retried.
   useEffect(() => {
-    if (status !== 'logging-in') return;
+    if (status !== 'logging-in') {
+      setCapped(false);
+      return;
+    }
+    setCapped(false);
     let n = 0;
     const id = setInterval(() => {
       n += 1;
       void refetchRef.current();
-      if (n >= 12) clearInterval(id);
+      if (n >= 12) {
+        clearInterval(id);
+        setCapped(true);
+      }
     }, 3000);
     return () => clearInterval(id);
   }, [status]);
@@ -38,6 +47,7 @@ export default function Session() {
   const login = async () => {
     setBusy(true);
     setErr(undefined);
+    setCapped(false);
     try {
       await api.login();
       await session.refetch();
@@ -47,6 +57,8 @@ export default function Session() {
       setBusy(false);
     }
   };
+
+  const loggingIn = status === 'logging-in' && !capped;
 
   const dot = status === 'authenticated' ? 'dot-ok' : status === 'logging-in' ? 'dot-warn' : '';
 
@@ -61,13 +73,8 @@ export default function Session() {
           {status}
         </div>
         <div style={{ color: 'var(--tx-2)', fontSize: 13, marginBottom: 14 }}>{LABEL[status]}</div>
-        <button
-          type="button"
-          className="btn btn-accent"
-          onClick={login}
-          disabled={busy || status === 'logging-in'}
-        >
-          {busy || status === 'logging-in' ? 'Logging in…' : 'Open browser & log in'}
+        <button type="button" className="btn btn-accent" onClick={login} disabled={busy || loggingIn}>
+          {busy || loggingIn ? 'Logging in…' : 'Open browser & log in'}
         </button>
         {err && <div className="errbar">{err}</div>}
         <div style={{ color: 'var(--tx-3)', fontSize: 12, marginTop: 14 }}>

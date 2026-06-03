@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, render } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 
 // Mock useData so status is pinned to 'logging-in' and refetch is observable.
 const { refetchSpy } = vi.hoisted(() => ({ refetchSpy: vi.fn().mockResolvedValue(undefined) }));
@@ -25,5 +25,15 @@ describe('Session login polling', () => {
       vi.advanceTimersByTime(3000 * 20); // far past the 12-tick cap
     });
     expect(refetchSpy).toHaveBeenCalledTimes(12);
+  });
+
+  it('re-enables the login button after the polling cap so a stuck login can be retried', () => {
+    vi.useFakeTimers();
+    render(<Session />);
+    expect(screen.getByRole('button')).toBeDisabled(); // disabled while logging-in
+    act(() => {
+      vi.advanceTimersByTime(3000 * 13); // past the cap
+    });
+    expect(screen.getByRole('button')).toBeEnabled(); // re-enabled for retry
   });
 });

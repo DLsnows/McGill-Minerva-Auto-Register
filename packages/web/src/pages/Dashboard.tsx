@@ -12,6 +12,7 @@ export default function Dashboard() {
   const { events, connected } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [schedErr, setSchedErr] = useState<string>();
+  const [schedBusy, setSchedBusy] = useState(false);
 
   // `targets`/`scheduler` are fresh objects each render; reach them through refs
   // so the callbacks below can be genuinely stable and always read fresh data.
@@ -40,15 +41,22 @@ export default function Dashboard() {
     }
   }, []);
 
+  const schedBusyRef = useRef(false);
   const onToggleScheduler = useCallback(async () => {
-    const sch = schedulerRef.current;
+    if (schedBusyRef.current) return; // ignore a click while a toggle is already in flight
+    schedBusyRef.current = true;
+    setSchedBusy(true);
     setSchedErr(undefined);
+    const sch = schedulerRef.current;
     try {
       if (sch.data?.running) await api.stopScheduler();
       else await api.startScheduler();
       await sch.refetch();
     } catch (e) {
       setSchedErr(e instanceof Error ? e.message : 'Scheduler toggle failed.');
+    } finally {
+      schedBusyRef.current = false;
+      setSchedBusy(false);
     }
   }, []);
 
@@ -72,6 +80,7 @@ export default function Dashboard() {
               running={scheduler.data?.running ?? false}
               onStart={onToggleScheduler}
               onStop={onToggleScheduler}
+              busy={schedBusy}
             />
           </div>
           {schedErr && <div className="errbar">{schedErr}</div>}
