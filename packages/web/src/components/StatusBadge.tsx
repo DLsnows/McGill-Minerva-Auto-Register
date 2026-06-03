@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import type { WatchStatus } from '@autoregister/shared';
 
 const CLASS: Record<WatchStatus, string> = {
@@ -10,5 +11,6 @@ const CLASS: Record<WatchStatus, string> = {
 };
 
 export function StatusBadge({ status }: { status: WatchStatus }) {
-  return <span className={`badge ${CLASS[status]}`}>{status.toUpperCase()}</span>;
+  const { t } = useTranslation();
+  return <span className={`badge ${CLASS[status]}`}>{t(`status.${status}`)}</span>;
 }

@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import type { WatchMode, WatchTarget } from '@autoregister/shared';
 import { StatGrid } from './StatGrid';
 import { StatusBadge } from './StatusBadge';
@@ -12,6 +13,7 @@ interface Props {
 }
 
 export function CourseCard({ target, onToggleMode, onRun, running }: Props) {
+  const { t } = useTranslation();
   const title = target.label ?? `${target.subject} ${target.courseNumber}`;
   const canRun = target.status === 'watching';
   return (
@@ -36,12 +38,12 @@ export function CourseCard({ target, onToggleMode, onRun, running }: Props) {
           disabled={!canRun || running}
           onClick={() => onRun(target.id)}
         >
-          {running ? '… running' : '⚡ Register now'}
+          {running ? t('card.running') : t('card.registerNow')}
         </button>
       </div>
 
       <div className="meta">
-        {target.lastPolledAt ? `last poll ${fmtRelative(target.lastPolledAt)}` : 'not polled yet'}
+        {target.lastPolledAt ? t('card.lastPoll', { rel: fmtRelative(target.lastPolledAt) }) : t('card.notPolled')}
       </div>
     </div>
   );

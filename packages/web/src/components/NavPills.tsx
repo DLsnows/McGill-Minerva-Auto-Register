@@ -1,23 +1,25 @@
 import { NavLink } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 
 const TABS = [
-  { to: '/', label: 'Dashboard', end: true },
-  { to: '/courses', label: 'Courses' },
-  { to: '/session', label: 'Session' },
-  { to: '/settings', label: 'Settings' },
+  { to: '/', key: 'nav.dashboard', end: true },
+  { to: '/courses', key: 'nav.courses' },
+  { to: '/session', key: 'nav.session' },
+  { to: '/settings', key: 'nav.settings' },
 ];
 
 export function NavPills() {
+  const { t } = useTranslation();
   return (
     <div className="nav glass">
-      {TABS.map((t) => (
+      {TABS.map((tab) => (
         <NavLink
-          key={t.to}
-          to={t.to}
-          end={t.end}
+          key={tab.to}
+          to={tab.to}
+          end={tab.end}
           className={({ isActive }) => `pill ${isActive ? 'pill-on' : ''}`}
         >
-          {t.label}
+          {t(tab.key)}
         </NavLink>
       ))}
     </div>
