@@ -8,26 +8,31 @@ export default function Courses() {
   const { targets } = useData();
   const [editing, setEditing] = useState<string | null>(null);
   const [err, setErr] = useState<string>();
+  const [addKey, setAddKey] = useState(0); // bumped to remount (reset) the add form
   const list = targets.data ?? [];
 
-  // Run a mutation, surface any failure, and refresh the list.
+  // Run a mutation, surface any failure, refresh the list; returns success.
   const run = async (op: () => Promise<unknown>) => {
     setErr(undefined);
     try {
       await op();
       await targets.refetch();
+      return true;
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Operation failed.');
+      return false;
     }
   };
 
-  const add = (v: CourseFormValues) =>
-    run(() =>
+  const add = async (v: CourseFormValues) => {
+    const ok = await run(() =>
       api.addTarget({
         term: v.term, subject: v.subject, courseNumber: v.courseNumber, targetCrn: v.targetCrn,
         faculty: v.faculty || undefined, label: v.label || undefined, mode: v.mode,
       }),
     );
+    if (ok) setAddKey((k) => k + 1); // clear the form so the next course starts fresh
+  };
 
   const saveEdit = (id: string, v: CourseFormValues) =>
     run(async () => {
@@ -45,7 +50,7 @@ export default function Courses() {
       <div className="col-h">
         <h2 className="serif">Add a course</h2>
       </div>
-      <CourseForm submitLabel="Add course" onSubmit={add} />
+      <CourseForm key={addKey} submitLabel="Add course" onSubmit={add} />
       {err && <div className="errbar">{err}</div>}
 
       <div className="col-h" style={{ marginTop: 22 }}>

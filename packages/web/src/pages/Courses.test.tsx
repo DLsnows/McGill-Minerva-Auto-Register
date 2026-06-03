@@ -47,6 +47,8 @@ describe('Courses', () => {
     await userEvent.type(screen.getByLabelText('Target CRN'), '2347');
     await userEvent.click(screen.getByRole('button', { name: 'Add course' }));
     await waitFor(() => expect(add).toHaveBeenCalledWith(expect.objectContaining({ subject: 'COMP', targetCrn: '2347' })));
+    // the form resets after a successful add
+    await waitFor(() => expect((screen.getByLabelText('Target CRN') as HTMLInputElement).value).toBe(''));
   });
 
   it('deletes a target', async () => {
