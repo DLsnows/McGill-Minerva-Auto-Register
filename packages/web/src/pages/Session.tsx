@@ -1,15 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, type SessionStatus } from '../lib/api';
 import { useData } from '../lib/DataContext';
 
-const LABEL: Record<SessionStatus, string> = {
-  authenticated: 'Authenticated — automation can run.',
-  'logging-in': 'Logging in… a browser window should be open.',
-  'logged-out': 'Logged out — log in to let polling run.',
-  unknown: 'Unknown — log in to establish a session.',
+const STATE_KEY: Record<SessionStatus, string> = {
+  authenticated: 'session.stateAuthenticated',
+  'logging-in': 'session.stateLoggingIn',
+  'logged-out': 'session.stateLoggedOut',
+  unknown: 'session.stateUnknown',
+};
+const DESC_KEY: Record<SessionStatus, string> = {
+  authenticated: 'session.descAuthenticated',
+  'logging-in': 'session.descLoggingIn',
+  'logged-out': 'session.descLoggedOut',
+  unknown: 'session.descUnknown',
 };
 
 export default function Session() {
+  const { t } = useTranslation();
   const { session } = useData();
   const status = session.data?.status ?? 'unknown';
   const [busy, setBusy] = useState(false);
@@ -52,34 +60,31 @@ export default function Session() {
       await api.login();
       await session.refetch();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Login failed');
+      setErr(e instanceof Error ? e.message : t('session.loginFailed'));
     } finally {
       setBusy(false);
     }
   };
 
   const loggingIn = status === 'logging-in' && !capped;
-
   const dot = status === 'authenticated' ? 'dot-ok' : status === 'logging-in' ? 'dot-warn' : '';
 
   return (
     <div>
       <div className="col-h">
-        <h2 className="serif">Session</h2>
+        <h2 className="serif">{t('session.title')}</h2>
       </div>
       <div className="card glass">
         <div style={{ fontSize: 16, marginBottom: 8 }}>
           <span className={`dot ${dot}`} />
-          {status}
+          {t(STATE_KEY[status])}
         </div>
-        <div style={{ color: 'var(--tx-2)', fontSize: 13, marginBottom: 14 }}>{LABEL[status]}</div>
+        <div style={{ color: 'var(--tx-2)', fontSize: 13, marginBottom: 14 }}>{t(DESC_KEY[status])}</div>
         <button type="button" className="btn btn-accent" onClick={login} disabled={busy || loggingIn}>
-          {busy || loggingIn ? 'Logging in…' : 'Open browser & log in'}
+          {busy || loggingIn ? t('session.loggingInBtn') : t('session.openAndLogin')}
         </button>
         {err && <div className="errbar">{err}</div>}
-        <div style={{ color: 'var(--tx-3)', fontSize: 12, marginTop: 14 }}>
-          McGill allows one active session — logging in elsewhere will evict the automation.
-        </div>
+        <div style={{ color: 'var(--tx-3)', fontSize: 12, marginTop: 14 }}>{t('session.singleSessionNote')}</div>
       </div>
     </div>
   );

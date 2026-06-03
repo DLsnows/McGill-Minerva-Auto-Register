@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { LogEvent, LogLevel } from '@autoregister/shared';
 import { fmtClock } from '../lib/format';
 
@@ -11,6 +12,7 @@ const LEVEL_CLASS: Record<LogLevel, string> = {
 };
 
 export function Console({ events, connected }: { events: LogEvent[]; connected: boolean }) {
+  const { t } = useTranslation();
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = logRef.current;
@@ -25,7 +27,7 @@ export function Console({ events, connected }: { events: LogEvent[]; connected: 
     <div className="console glass">
       <div className="bar">
         <span className="c cr" /> <span className="c cy" /> <span className="c cg" />
-        <span className="t">autoregister · {connected ? 'live stream' : 'reconnecting…'}</span>
+        <span className="t">autoregister · {connected ? t('console.liveStream') : t('console.reconnecting')}</span>
       </div>
       <div className="log" ref={logRef}>
         {events.map((e) => (

@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next';
+
 interface Props {
   running: boolean;
   onStart: () => void;
@@ -6,11 +8,12 @@ interface Props {
 }
 
 export function SchedulerToggle({ running, onStart, onStop, busy }: Props) {
+  const { t } = useTranslation();
   return (
     <div className="toggle" style={{ gap: 12 }}>
       <span>
         <span className={`dot ${running ? 'dot-ok' : ''}`} />
-        {running ? 'Watching · running' : 'Watching · stopped'}
+        {running ? t('scheduler.running') : t('scheduler.stopped')}
       </span>
       <button
         type="button"
@@ -18,7 +21,7 @@ export function SchedulerToggle({ running, onStart, onStop, busy }: Props) {
         onClick={running ? onStop : onStart}
         disabled={busy}
       >
-        {running ? '■ Stop' : '▶ Start'}
+        {running ? t('scheduler.stop') : t('scheduler.start')}
       </button>
     </div>
   );

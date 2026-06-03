@@ -1,6 +1,7 @@
 import { Outlet, Route, Routes } from 'react-router-dom';
 import { useData } from './lib/DataContext';
 import { NavPills } from './components/NavPills';
+import { LanguageSwitcher } from './components/LanguageSwitcher';
 import { Ticker } from './components/Ticker';
 import Dashboard from './pages/Dashboard';
 import Courses from './pages/Courses';
@@ -17,12 +18,15 @@ function Shell() {
     <div className="app-shell">
       <div
         className="top"
-        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}
+        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, gap: 12 }}
       >
         <h1 className="serif" style={{ fontSize: 30, margin: 0 }}>
           Synapse
         </h1>
-        <NavPills />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <NavPills />
+          <LanguageSwitcher />
+        </div>
       </div>
       <Ticker
         watching={(targets.data ?? []).filter((t) => t.status === 'watching').length}
