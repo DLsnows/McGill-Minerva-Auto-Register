@@ -15,6 +15,7 @@ afterEach(() => {
 const sampleTarget = {
   term: '202701',
   subject: 'COMP',
+  faculty: 'Faculty of Science',
   courseNumber: '551',
   targetCrn: '1814',
   mode: 'auto' as const,
@@ -33,6 +34,7 @@ describe('Store', () => {
     const s = new Store(dir);
     expect(() => s.addTarget({ ...sampleTarget, targetCrn: '' })).toThrow(/targetCrn/);
     expect(() => s.addTarget({ ...sampleTarget, term: '  ' })).toThrow(/term/);
+    expect(() => s.addTarget({ ...sampleTarget, faculty: '' })).toThrow(/faculty/);
   });
 
   it('updates and removes targets', () => {

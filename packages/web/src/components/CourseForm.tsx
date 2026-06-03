@@ -23,18 +23,32 @@ interface Props {
   onCancel?: () => void;
 }
 
-const FIELDS: { key: keyof CourseFormValues; labelKey: string }[] = [
-  { key: 'term', labelKey: 'form.term' },
-  { key: 'subject', labelKey: 'form.subject' },
-  { key: 'courseNumber', labelKey: 'form.courseNumber' },
-  { key: 'targetCrn', labelKey: 'form.targetCrn' },
-  { key: 'faculty', labelKey: 'form.faculty' },
-  { key: 'label', labelKey: 'form.label' },
+const FIELDS: { key: keyof CourseFormValues; required: boolean }[] = [
+  { key: 'term', required: true },
+  { key: 'subject', required: true },
+  { key: 'faculty', required: true },
+  { key: 'courseNumber', required: true },
+  { key: 'targetCrn', required: true },
+  { key: 'label', required: false },
 ];
 
 const inputStyle = {
   padding: 8, borderRadius: 8, background: 'rgba(255,255,255,.04)', border: '1px solid var(--bd)', color: 'var(--tx)',
 } as const;
+
+/** A small "?" badge that reveals a help tooltip on hover/focus. */
+function HelpTip({ text }: { text: string }) {
+  return (
+    <span className="help">
+      <span className="help-badge" tabIndex={0} role="img" aria-label={text}>
+        ?
+      </span>
+      <span className="tip" aria-hidden="true">
+        {text}
+      </span>
+    </span>
+  );
+}
 
 export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) {
   const { t } = useTranslation();
@@ -56,7 +70,7 @@ export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) 
       faculty: v.faculty.trim(),
       label: v.label.trim(),
     };
-    if (!trimmed.term || !trimmed.subject || !trimmed.courseNumber || !trimmed.targetCrn) {
+    if (!trimmed.term || !trimmed.subject || !trimmed.faculty || !trimmed.courseNumber || !trimmed.targetCrn) {
       setErr(t('form.required'));
       return;
     }
@@ -69,9 +83,13 @@ export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
         {FIELDS.map((f) => (
           <label key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
-            {t(f.labelKey)}
+            <span>
+              {t(`form.${f.key}`)}
+              <HelpTip text={t(`form.help.${f.key}`)} />
+            </span>
             <input
-              aria-label={t(f.labelKey)}
+              aria-label={t(`form.${f.key}`)}
+              placeholder={t(`form.ph.${f.key}`)}
               style={inputStyle}
               value={v[f.key] as string}
               onChange={(e) => update({ [f.key]: e.target.value })}
@@ -79,9 +97,13 @@ export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) 
           </label>
         ))}
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
-          {t('form.mode')}
+          <span>
+            {t('form.mode')}
+            <HelpTip text={t('form.help.mode')} />
+          </span>
           <select
             aria-label={t('form.mode')}
+            className="form-select"
             style={inputStyle}
             value={v.mode}
             onChange={(e) => update({ mode: e.target.value as WatchMode })}

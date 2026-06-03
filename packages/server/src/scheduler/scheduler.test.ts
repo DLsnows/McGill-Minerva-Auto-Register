@@ -74,6 +74,7 @@ function setup(opts: {
   const target = store.addTarget({
     term: '202701',
     subject: 'COMP',
+    faculty: 'Faculty of Science',
     courseNumber: '551',
     targetCrn: '1814',
     mode: opts.mode ?? 'auto',
@@ -178,7 +179,7 @@ describe('Scheduler.runOnce', () => {
 
   it('skips a concurrent run of the same target (no double registration)', async () => {
     const store = new Store(dir);
-    const t = store.addTarget({ term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
     let releaseCheck!: () => void;
     const gate = new Promise<void>((r) => (releaseCheck = r));
     let checkCalls = 0;
