@@ -257,6 +257,10 @@ export class Scheduler {
     this.timer = null;
   }
 
+  isRunning(): boolean {
+    return this.timer !== null;
+  }
+
   /** Run a cycle for every watching target whose nextPollAt is due. Sequential. */
   async tick(): Promise<void> {
     const now = this.now();

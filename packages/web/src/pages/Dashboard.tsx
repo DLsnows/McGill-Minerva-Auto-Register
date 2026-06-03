@@ -1,24 +1,32 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WatchMode } from '@autoregister/shared';
 import { api } from '../lib/api';
-import { useResource } from '../lib/useResource';
+import { useData } from '../lib/DataContext';
 import { useEventStream } from '../lib/useEventStream';
 import { CourseCard } from '../components/CourseCard';
 import { Console } from '../components/Console';
+import { SchedulerToggle } from '../components/SchedulerToggle';
 
 export default function Dashboard() {
-  const targets = useResource(useCallback(() => api.getTargets(), []));
-  const session = useResource(useCallback(() => api.getSession(), []));
+  const { targets, session, scheduler } = useData();
   const { events, connected } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
+  const [schedErr, setSchedErr] = useState<string>();
+  const [schedBusy, setSchedBusy] = useState(false);
 
-  const onToggleMode = useCallback(
-    async (id: string, next: WatchMode) => {
-      await api.updateTarget(id, { mode: next });
-      await targets.refetch();
-    },
-    [targets],
-  );
+  // `targets`/`scheduler` are fresh objects each render; reach them through refs
+  // so the callbacks below can be genuinely stable and always read fresh data.
+  const targetsRef = useRef(targets);
+  const schedulerRef = useRef(scheduler);
+  useEffect(() => {
+    targetsRef.current = targets;
+    schedulerRef.current = scheduler;
+  });
+
+  const onToggleMode = useCallback(async (id: string, next: WatchMode) => {
+    await api.updateTarget(id, { mode: next });
+    await targetsRef.current.refetch();
+  }, []);
 
   const onRun = useCallback(async (id: string) => {
     setRunning((s) => new Set(s).add(id));
@@ -30,6 +38,25 @@ export default function Dashboard() {
         next.delete(id);
         return next;
       });
+    }
+  }, []);
+
+  const schedBusyRef = useRef(false);
+  const onToggleScheduler = useCallback(async () => {
+    if (schedBusyRef.current) return; // ignore a click while a toggle is already in flight
+    schedBusyRef.current = true;
+    setSchedBusy(true);
+    setSchedErr(undefined);
+    const sch = schedulerRef.current;
+    try {
+      if (sch.data?.running) await api.stopScheduler();
+      else await api.startScheduler();
+      await sch.refetch();
+    } catch (e) {
+      setSchedErr(e instanceof Error ? e.message : 'Scheduler toggle failed.');
+    } finally {
+      schedBusyRef.current = false;
+      setSchedBusy(false);
     }
   }, []);
 
@@ -49,7 +76,14 @@ export default function Dashboard() {
         <div>
           <div className="col-h">
             <h2 className="serif">Watched Courses</h2>
+            <SchedulerToggle
+              running={scheduler.data?.running ?? false}
+              onStart={onToggleScheduler}
+              onStop={onToggleScheduler}
+              busy={schedBusy}
+            />
           </div>
+          {schedErr && <div className="errbar">{schedErr}</div>}
           {list.length === 0 ? (
             <div className="empty glass">No courses watched yet. Add one from the Courses tab.</div>
           ) : (

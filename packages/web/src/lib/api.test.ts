@@ -43,6 +43,14 @@ describe('api', () => {
     expect(out).toEqual({ started: true });
   });
 
+  it('getScheduler GETs /api/scheduler', async () => {
+    const f = mockFetch({ running: true });
+    vi.stubGlobal('fetch', f);
+    const out = await api.getScheduler();
+    expect(f).toHaveBeenCalledWith('/api/scheduler', undefined);
+    expect(out).toEqual({ running: true });
+  });
+
   it('throws on non-ok response', async () => {
     const f = mockFetch({ error: 'bad' }, false, 400);
     vi.stubGlobal('fetch', f);

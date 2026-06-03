@@ -22,6 +22,7 @@ export interface ApiScheduler {
   start(tickMs?: number): void;
   stop(): void;
   runTarget(id: string): void;
+  isRunning(): boolean;
 }
 export interface ApiDeps {
   store: Store;
@@ -163,6 +164,7 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   });
 
   // --- scheduler ---
+  app.get('/api/scheduler', () => ({ running: deps.scheduler.isRunning() }));
   app.post('/api/scheduler/start', () => {
     deps.scheduler.start();
     return { running: true };
