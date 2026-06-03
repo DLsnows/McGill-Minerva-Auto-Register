@@ -141,6 +141,17 @@ export class Scheduler {
       return;
     }
 
+    if (store.getSettings().dryRun) {
+      this.log(
+        'action',
+        `DRY-RUN: would ${action} ${target.targetCrn} — ${check.decision.reason}`,
+        targetId,
+        { stats: check.stats, decision: check.decision },
+      );
+      this.scheduleNext(target);
+      return;
+    }
+
     // auto mode → act
     if (!budget.canRegister(now)) {
       this.log('warn', 'Daily register budget reached — will retry next cycle', targetId);
