@@ -91,6 +91,11 @@ export default function Session() {
             ⏳ {t('session.keepOpenNote')}
           </div>
         )}
+        {(status === 'authenticated' || status === 'logging-in') && (
+          <div className="banner" style={{ marginTop: 14, marginBottom: 0 }}>
+            ⚠️ {t('session.dontCloseBrowserNote')}
+          </div>
+        )}
         <div style={{ color: 'var(--tx-3)', fontSize: 12, marginTop: 14 }}>{t('session.singleSessionNote')}</div>
       </div>
     </div>
