@@ -103,6 +103,10 @@ export default function SettingsPage() {
           <NumField label={t('settings.registerBudget')} value={form.registerBudget} onChange={(n) => setForm({ ...form, registerBudget: n })} />
         </div>
 
+        <div style={{ color: 'var(--tx-2)', fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
+          💡 {t('settings.pacingNote')}
+        </div>
+
         <div style={{ display: 'flex', gap: 18, marginTop: 14 }}>
           <label>
             <input type="checkbox" aria-label={t('settings.desktopAria')} checked={form.notify.desktop} onChange={(e) => setForm({ ...form, notify: { ...form.notify, desktop: e.target.checked } })} /> {t('settings.desktop')}

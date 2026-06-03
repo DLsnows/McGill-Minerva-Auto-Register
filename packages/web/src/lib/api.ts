@@ -26,9 +26,12 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function post<T>(url: string, body?: unknown): Promise<T> {
+  // Only set the JSON content-type when there's an actual body. Sending the
+  // header with an empty body makes Fastify reject it (FST_ERR_CTP_EMPTY_JSON_BODY),
+  // which breaks bodyless POSTs like /session/login, /scheduler/start, /:id/run.
   return req<T>(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }

@@ -56,6 +56,24 @@ describe('Dashboard', () => {
     expect(start).toHaveBeenCalled();
   });
 
+  it('refetches budget + targets when a log event streams in (live update, no manual refresh)', async () => {
+    const getTargets = vi.spyOn(api, 'getTargets').mockResolvedValue([]);
+    const getBudget = vi.spyOn(api, 'getBudget').mockResolvedValue({ query: 100, register: 20 });
+    vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
+    vi.spyOn(api, 'getSettings').mockResolvedValue({
+      pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+    });
+    vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+    renderDashboard();
+    // Mount fetch (useResource) + the event-driven refetch (mocked event id 'e')
+    // → each endpoint is hit at least twice without any manual page refresh.
+    await waitFor(() => {
+      expect(getBudget.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(getTargets.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
   it('surfaces a scheduler toggle error', async () => {
     mockApi([], 'authenticated');
     vi.spyOn(api, 'startScheduler').mockRejectedValue(new Error('sched boom'));

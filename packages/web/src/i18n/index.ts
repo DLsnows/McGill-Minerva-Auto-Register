@@ -52,6 +52,7 @@ const en = {
     emailRequired: 'All email fields are required when email notifications are enabled.',
     saveFailed: 'Failed to save settings.',
     dryRun: 'Dry-run (rehearsal) mode', dryRunAria: 'Dry-run mode',
+    pacingNote: 'Jitter and a low poll frequency make the automation behave like a human — they help avoid McGill’s servers flagging unusual / bot-like activity and rate-limiting or locking the account. Keep the interval reasonably high and leave jitter on.',
   },
   session: {
     title: 'Session',
@@ -61,6 +62,8 @@ const en = {
     descLoggedOut: 'Logged out — log in to let polling run.',
     descUnknown: 'Unknown — log in to establish a session.',
     openAndLogin: 'Open browser & log in', loggingInBtn: 'Logging in…', loginFailed: 'Login failed',
+    keepOpenNote: 'Keep this page open while logging in — it checks for completion automatically (first-time / Duo logins can take a few minutes).',
+    dontCloseBrowserNote: 'Do not close the automation browser window that opened — it is reused to poll courses and register, so closing it stops the automation. You can minimize it and leave it in the background.',
     singleSessionNote: 'McGill allows one active session — logging in elsewhere will evict the automation.',
   },
 };
@@ -113,6 +116,7 @@ const zh: typeof en = {
     emailRequired: '启用邮件通知时,所有邮件字段均为必填。',
     saveFailed: '保存设置失败。',
     dryRun: 'Dry-run（演练）模式', dryRunAria: '演练模式',
+    pacingNote: '抖动和较低的轮询频率让自动化更像真人操作 —— 有助于避免被 McGill 服务器判定为异常 / 机器人行为，进而被限流或锁定账号。建议保持较长的间隔并开启抖动。',
   },
   session: {
     title: '会话',
@@ -122,6 +126,8 @@ const zh: typeof en = {
     descLoggedOut: '已登出 —— 登录后轮询才能运行。',
     descUnknown: '未知 —— 登录以建立会话。',
     openAndLogin: '打开浏览器并登录', loggingInBtn: '登录中…', loginFailed: '登录失败',
+    keepOpenNote: '登录期间请保持本页面打开 —— 它会自动检测登录是否完成（首次 / Duo 登录可能需要几分钟）。',
+    dontCloseBrowserNote: '请勿关闭自动打开的浏览器窗口 —— 它会被复用来轮询课程和抢课，关掉它自动化就停了。可以把它最小化放在后台。',
     singleSessionNote: 'McGill 仅允许一个活动会话 —— 在别处登录会把自动化挤下线。',
   },
 };
@@ -174,6 +180,7 @@ const fr: typeof en = {
     emailRequired: 'Tous les champs courriel sont requis lorsque les notifications par courriel sont activées.',
     saveFailed: "Échec de l'enregistrement des paramètres.",
     dryRun: 'Mode simulation (dry-run)', dryRunAria: 'Mode simulation',
+    pacingNote: "La gigue et une faible fréquence de sondage rendent l'automatisation semblable à un humain — elles aident à éviter que les serveurs de McGill ne signalent une activité anormale / robotisée et limitent le débit ou verrouillent le compte. Gardez un intervalle assez élevé et laissez la gigue activée.",
   },
   session: {
     title: 'Session',
@@ -183,6 +190,8 @@ const fr: typeof en = {
     descLoggedOut: 'Déconnecté — connectez-vous pour lancer le sondage.',
     descUnknown: 'Inconnu — connectez-vous pour établir une session.',
     openAndLogin: 'Ouvrir le navigateur et se connecter', loggingInBtn: 'Connexion…', loginFailed: 'Échec de la connexion',
+    keepOpenNote: 'Gardez cette page ouverte pendant la connexion — elle détecte automatiquement la fin (une première connexion / Duo peut prendre quelques minutes).',
+    dontCloseBrowserNote: "Ne fermez pas la fenêtre du navigateur d'automatisation qui s'est ouverte — elle est réutilisée pour sonder les cours et s'inscrire ; la fermer arrête l'automatisation. Vous pouvez la réduire et la laisser en arrière-plan.",
     singleSessionNote: "McGill n'autorise qu'une seule session active — vous connecter ailleurs évincera l'automatisation.",
   },
 };

@@ -10,7 +10,7 @@ import { SchedulerToggle } from '../components/SchedulerToggle';
 
 export default function Dashboard() {
   const { t: tr } = useTranslation();
-  const { targets, session, scheduler } = useData();
+  const { targets, session, scheduler, budget } = useData();
   const { events, connected } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [schedErr, setSchedErr] = useState<string>();
@@ -20,10 +20,24 @@ export default function Dashboard() {
   // so the callbacks below can be genuinely stable and always read fresh data.
   const targetsRef = useRef(targets);
   const schedulerRef = useRef(scheduler);
+  const budgetRef = useRef(budget);
   useEffect(() => {
     targetsRef.current = targets;
     schedulerRef.current = scheduler;
+    budgetRef.current = budget;
   });
+
+  // Live-refresh the daily budget + target states whenever a new log event
+  // streams in (a query / register / status change always emits one), so the
+  // budget counters in the top ticker and the course cards update on their own
+  // instead of needing a manual page refresh. budget is shared via DataContext,
+  // so refetching it here also updates the always-visible ticker in the shell.
+  const lastEventId = events.length ? events[events.length - 1].id : undefined;
+  useEffect(() => {
+    if (!lastEventId) return;
+    void budgetRef.current.refetch();
+    void targetsRef.current.refetch();
+  }, [lastEventId]);
 
   const onToggleMode = useCallback(async (id: string, next: WatchMode) => {
     await api.updateTarget(id, { mode: next });

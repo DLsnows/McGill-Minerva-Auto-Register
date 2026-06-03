@@ -32,8 +32,12 @@ export default function Session() {
     refetchRef.current = session.refetch;
   });
 
-  // While logging in, poll the status until it resolves, with a ~36s safety cap.
-  // After the cap we re-enable the button (via `capped`) so a stuck login can be retried.
+  // While logging in, keep polling the status until it resolves. First-time /
+  // Duo logins routinely take minutes, so we poll every 3s for up to ~6 min
+  // (longer than the backend's login window) and stop only when the status
+  // leaves 'logging-in'. After ~40s we also flip `capped` to re-enable the
+  // button so a genuinely stuck login can be retried — but polling continues
+  // regardless, so a merely-slow login still updates the UI on its own.
   useEffect(() => {
     if (status !== 'logging-in') {
       setCapped(false);
@@ -44,10 +48,8 @@ export default function Session() {
     const id = setInterval(() => {
       n += 1;
       void refetchRef.current();
-      if (n >= 12) {
-        clearInterval(id);
-        setCapped(true);
-      }
+      if (n === 13) setCapped(true); // ~40s: allow retry, but keep polling
+      if (n >= 120) clearInterval(id); // ~6 min hard stop (safety net)
     }, 3000);
     return () => clearInterval(id);
   }, [status]);
@@ -84,6 +86,16 @@ export default function Session() {
           {busy || loggingIn ? t('session.loggingInBtn') : t('session.openAndLogin')}
         </button>
         {err && <div className="errbar">{err}</div>}
+        {status === 'logging-in' && (
+          <div style={{ color: 'var(--tx-2)', fontSize: 13, marginTop: 14 }}>
+            ⏳ {t('session.keepOpenNote')}
+          </div>
+        )}
+        {(status === 'authenticated' || status === 'logging-in') && (
+          <div className="banner" style={{ marginTop: 14, marginBottom: 0 }}>
+            ⚠️ {t('session.dontCloseBrowserNote')}
+          </div>
+        )}
         <div style={{ color: 'var(--tx-3)', fontSize: 12, marginTop: 14 }}>{t('session.singleSessionNote')}</div>
       </div>
     </div>

@@ -43,6 +43,17 @@ describe('api', () => {
     expect(out).toEqual({ started: true });
   });
 
+  it('bodyless POST sends no body and no JSON content-type (avoids Fastify empty-body 400)', async () => {
+    const f = mockFetch({ started: true });
+    vi.stubGlobal('fetch', f);
+    await api.login();
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe('/api/session/login');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeUndefined();
+    expect(init.headers).toBeUndefined();
+  });
+
   it('getScheduler GETs /api/scheduler', async () => {
     const f = mockFetch({ running: true });
     vi.stubGlobal('fetch', f);
