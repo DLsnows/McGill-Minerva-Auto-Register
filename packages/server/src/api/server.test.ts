@@ -304,4 +304,40 @@ describe('API', () => {
       rmSync(distDir, { recursive: true, force: true });
     }
   });
+
+  // Guards the @fastify/websocket registration-timing bug: a route declared
+  // synchronously before the plugin loads silently becomes a plain GET, and the
+  // upgrade 500s ("socket.on is not a function") — the client then reconnects
+  // forever. A real upgrade via injectWS must open and deliver the snapshot.
+  it('serves the recent-events snapshot over the /api/stream websocket', async () => {
+    const store = new Store(dir);
+    store.appendEvent({ level: 'info', message: 'stream hello' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+    });
+    await app2.ready();
+    // Attach the message listener via onInit: injectWS delivers the snapshot
+    // over in-memory streams the instant the connection opens, so a listener
+    // attached after `await injectWS()` would miss it.
+    const snapshot = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no websocket message received')), 2000);
+      void app2.injectWS('/api/stream', {}, {
+        onInit: (ws) =>
+          ws.on('message', (d) => {
+            clearTimeout(timer);
+            resolve(String(d));
+          }),
+      });
+    });
+    try {
+      const msg = JSON.parse(await snapshot) as { type: string; events: { message: string }[] };
+      expect(msg.type).toBe('recent');
+      expect(msg.events.some((e) => e.message === 'stream hello')).toBe(true);
+    } finally {
+      await app2.close();
+    }
+  });
 });

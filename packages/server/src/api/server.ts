@@ -190,15 +190,23 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   app.get('/api/budget', () => deps.budget.remaining());
 
   // --- live event stream ---
-  app.get('/api/stream', { websocket: true }, (socket: WebSocket) => {
-    clients.add(socket);
-    // Guard the initial send: a client may disconnect between add and send.
-    try {
-      socket.send(JSON.stringify({ type: 'recent', events: deps.store.recentEvents() }));
-    } catch {
-      clients.delete(socket);
-    }
-    socket.on('close', () => clients.delete(socket));
+  // WebSocket routes MUST be registered inside a `register(...)` so they're
+  // created after @fastify/websocket has loaded and its onRoute hook is active.
+  // Declaring the route synchronously at the top level (the plugin load is
+  // deferred) leaves it a plain GET — the handler then receives (request, reply)
+  // instead of the socket, and the upgrade 500s ("socket.on is not a function"),
+  // which the client sees as an endless reconnect loop.
+  void app.register(async (instance) => {
+    instance.get('/api/stream', { websocket: true }, (socket: WebSocket) => {
+      clients.add(socket);
+      // Guard the initial send: a client may disconnect between add and send.
+      try {
+        socket.send(JSON.stringify({ type: 'recent', events: deps.store.recentEvents() }));
+      } catch {
+        clients.delete(socket);
+      }
+      socket.on('close', () => clients.delete(socket));
+    });
   });
 
   // Serve the built web UI from packages/web/dist when present (one-process use).
