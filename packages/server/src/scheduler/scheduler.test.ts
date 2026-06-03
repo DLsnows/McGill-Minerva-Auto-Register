@@ -235,6 +235,38 @@ describe('Scheduler.runOnce', () => {
     expect(watcher.calls).toBe(3);
   });
 
+  it('stopping one unfindable target leaves the other targets polling', async () => {
+    const store = new Store(dir);
+    const good = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+    const bad = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '9999', mode: 'notify' });
+    let goodCalls = 0;
+    const watcher: Watcher = {
+      checkCourse: async (q) => {
+        if (q.targetCrn === '9999') return null; // this CRN is never in the results
+        goodCalls++;
+        return { stats: stats({ crn: '1814' }), decision: { action: 'NOOP', reason: 'full' } };
+      },
+    };
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher,
+      actor: new FakeActor({ kind: 'registered', crn: '1814' }),
+      session: new FakeSession(true),
+      now: () => NOW,
+      random: () => 0.5,
+    });
+
+    for (let i = 0; i < 4; i++) {
+      await scheduler.runOnce(bad.id);
+      await scheduler.runOnce(good.id);
+    }
+
+    expect(store.getTarget(bad.id)!.status).toBe('error'); // this one stopped
+    expect(store.getTarget(good.id)!.status).toBe('watching'); // the other unaffected
+    expect(goodCalls).toBe(4); // and it kept being polled every cycle
+  });
+
   it('skips a concurrent run of the same target (no double registration)', async () => {
     const store = new Store(dir);
     const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
