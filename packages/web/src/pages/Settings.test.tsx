@@ -60,6 +60,19 @@ describe('Settings', () => {
     await waitFor(() => expect(screen.getByText(/save boom/i)).toBeInTheDocument());
   });
 
+  it('saves the dry-run toggle', async () => {
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
+      pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false }, dryRun: true,
+    });
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Dry-run mode'));
+    await userEvent.click(screen.getByLabelText('Dry-run mode'));
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    await waitFor(() => expect(put).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true })));
+  });
+
   it('links to the email setup guide', async () => {
     mockAll();
     renderSettings();

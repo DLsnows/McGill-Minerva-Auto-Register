@@ -51,6 +51,7 @@ const en = {
     saveSettings: 'Save settings', saved: 'Saved ✓', loading: 'Loading settings…',
     emailRequired: 'All email fields are required when email notifications are enabled.',
     saveFailed: 'Failed to save settings.',
+    dryRun: 'Dry-run (rehearsal) mode', dryRunAria: 'Dry-run mode',
   },
   session: {
     title: 'Session',
@@ -111,6 +112,7 @@ const zh: typeof en = {
     saveSettings: '保存设置', saved: '已保存 ✓', loading: '加载设置中…',
     emailRequired: '启用邮件通知时,所有邮件字段均为必填。',
     saveFailed: '保存设置失败。',
+    dryRun: 'Dry-run(演练）模式', dryRunAria: '演练模式',
   },
   session: {
     title: '会话',
@@ -171,6 +173,7 @@ const fr: typeof en = {
     saveSettings: 'Enregistrer', saved: 'Enregistré ✓', loading: 'Chargement des paramètres…',
     emailRequired: 'Tous les champs courriel sont requis lorsque les notifications par courriel sont activées.',
     saveFailed: "Échec de l'enregistrement des paramètres.",
+    dryRun: 'Mode simulation (dry-run)', dryRunAria: 'Mode simulation',
   },
   session: {
     title: 'Session',
