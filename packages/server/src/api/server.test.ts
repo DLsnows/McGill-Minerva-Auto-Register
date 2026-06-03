@@ -196,8 +196,8 @@ describe('API', () => {
       // Still mid-login before the timeout fires
       let r = await app2.inject({ method: 'GET', url: '/api/session' });
       expect(r.json().status).toBe('logging-in');
-      // Advance past the 120s login timeout — the safety net resets the status
-      vi.advanceTimersByTime(120_000);
+      // Advance past the 6-min safety-net timeout — it resets the hung status
+      vi.advanceTimersByTime(360_000);
       r = await app2.inject({ method: 'GET', url: '/api/session' });
       expect(r.json().status).toBe('logged-out');
       await app2.close();

@@ -61,6 +61,7 @@ const en = {
     descLoggedOut: 'Logged out — log in to let polling run.',
     descUnknown: 'Unknown — log in to establish a session.',
     openAndLogin: 'Open browser & log in', loggingInBtn: 'Logging in…', loginFailed: 'Login failed',
+    keepOpenNote: 'Keep this page open while logging in — it checks for completion automatically (first-time / Duo logins can take a few minutes).',
     singleSessionNote: 'McGill allows one active session — logging in elsewhere will evict the automation.',
   },
 };
@@ -122,6 +123,7 @@ const zh: typeof en = {
     descLoggedOut: '已登出 —— 登录后轮询才能运行。',
     descUnknown: '未知 —— 登录以建立会话。',
     openAndLogin: '打开浏览器并登录', loggingInBtn: '登录中…', loginFailed: '登录失败',
+    keepOpenNote: '登录期间请保持本页面打开 —— 它会自动检测登录是否完成（首次 / Duo 登录可能需要几分钟）。',
     singleSessionNote: 'McGill 仅允许一个活动会话 —— 在别处登录会把自动化挤下线。',
   },
 };
@@ -183,6 +185,7 @@ const fr: typeof en = {
     descLoggedOut: 'Déconnecté — connectez-vous pour lancer le sondage.',
     descUnknown: 'Inconnu — connectez-vous pour établir une session.',
     openAndLogin: 'Ouvrir le navigateur et se connecter', loggingInBtn: 'Connexion…', loginFailed: 'Échec de la connexion',
+    keepOpenNote: 'Gardez cette page ouverte pendant la connexion — elle détecte automatiquement la fin (une première connexion / Duo peut prendre quelques minutes).',
     singleSessionNote: "McGill n'autorise qu'une seule session active — vous connecter ailleurs évincera l'automatisation.",
   },
 };

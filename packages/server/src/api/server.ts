@@ -9,9 +9,12 @@ import type { LogEvent, Settings } from '@autoregister/shared';
 import type { Budget } from '../budget/budget';
 import type { Store } from '../store/store';
 
-/** Cap how long a login attempt may run before the cached status is reset so
- * the user can retry (the browser/SSO flow can hang indefinitely otherwise). */
-const LOGIN_TIMEOUT_MS = 120_000;
+/** Safety net for a login that hangs outside the session flow's own control
+ * (e.g. `launch()` never resolving). Must exceed the SessionManager's internal
+ * login wait (session/config.ts LOGIN_TIMEOUT_MS = 5 min) so a legitimately
+ * slow login (first-time SSO / Duo) is never prematurely flipped to
+ * 'logged-out' while still in progress — the session flow resolves first. */
+const LOGIN_TIMEOUT_MS = 360_000;
 
 export interface ApiSession {
   launch(): Promise<void>;
