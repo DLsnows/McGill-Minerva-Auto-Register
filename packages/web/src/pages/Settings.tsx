@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { EmailConfig, Settings } from '@autoregister/shared';
 import { api } from '../lib/api';
 import { useData } from '../lib/DataContext';
@@ -19,7 +20,13 @@ function NumField({ label, value, onChange }: { label: string; value: number; on
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
       {label}
-      <input aria-label={label} type="number" style={inputStyle} value={value} onChange={(e) => onChange(Number(e.target.value))} />
+      <input
+        aria-label={label}
+        type="number"
+        style={inputStyle}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
     </label>
   );
 }
@@ -44,6 +51,7 @@ function TextField({
 }
 
 export default function SettingsPage() {
+  const { t } = useTranslation();
   const { settings } = useData();
   const [form, setForm] = useState<Settings | null>(null);
   const [email, setEmail] = useState<EmailConfig>(EMPTY_EMAIL);
@@ -57,13 +65,13 @@ export default function SettingsPage() {
     }
   }, [settings.data, form]);
 
-  if (!form) return <div className="empty">Loading settings…</div>;
+  if (!form) return <div className="empty">{t('settings.loading')}</div>;
 
   const emailComplete = Boolean(email.host && email.user && email.pass && email.to && email.port);
 
   const save = async () => {
     if (form.notify.email && !emailComplete) {
-      setErr('All email fields are required when email notifications are enabled.');
+      setErr(t('settings.emailRequired'));
       setSaved(false);
       return;
     }
@@ -77,59 +85,59 @@ export default function SettingsPage() {
       setSaved(true);
     } catch (e) {
       setSaved(false);
-      setErr(e instanceof Error ? e.message : 'Failed to save settings.');
+      setErr(e instanceof Error ? e.message : t('settings.saveFailed'));
     }
   };
 
   return (
     <div>
       <div className="col-h">
-        <h2 className="serif">Settings</h2>
+        <h2 className="serif">{t('settings.title')}</h2>
       </div>
 
       <div className="card glass">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-          <NumField label="Poll interval (min)" value={form.pollIntervalMinutes} onChange={(n) => setForm({ ...form, pollIntervalMinutes: n })} />
-          <NumField label="Jitter (min)" value={form.jitterMinutes} onChange={(n) => setForm({ ...form, jitterMinutes: n })} />
-          <NumField label="Query budget / day" value={form.queryBudget} onChange={(n) => setForm({ ...form, queryBudget: n })} />
-          <NumField label="Register budget / day" value={form.registerBudget} onChange={(n) => setForm({ ...form, registerBudget: n })} />
+          <NumField label={t('settings.pollInterval')} value={form.pollIntervalMinutes} onChange={(n) => setForm({ ...form, pollIntervalMinutes: n })} />
+          <NumField label={t('settings.jitter')} value={form.jitterMinutes} onChange={(n) => setForm({ ...form, jitterMinutes: n })} />
+          <NumField label={t('settings.queryBudget')} value={form.queryBudget} onChange={(n) => setForm({ ...form, queryBudget: n })} />
+          <NumField label={t('settings.registerBudget')} value={form.registerBudget} onChange={(n) => setForm({ ...form, registerBudget: n })} />
         </div>
 
         <div style={{ display: 'flex', gap: 18, marginTop: 14 }}>
           <label>
-            <input type="checkbox" aria-label="Desktop notifications" checked={form.notify.desktop} onChange={(e) => setForm({ ...form, notify: { ...form.notify, desktop: e.target.checked } })} /> Desktop
+            <input type="checkbox" aria-label={t('settings.desktopAria')} checked={form.notify.desktop} onChange={(e) => setForm({ ...form, notify: { ...form.notify, desktop: e.target.checked } })} /> {t('settings.desktop')}
           </label>
           <label>
-            <input type="checkbox" aria-label="Sound" checked={form.notify.sound} onChange={(e) => setForm({ ...form, notify: { ...form.notify, sound: e.target.checked } })} /> Sound
+            <input type="checkbox" aria-label={t('settings.soundAria')} checked={form.notify.sound} onChange={(e) => setForm({ ...form, notify: { ...form.notify, sound: e.target.checked } })} /> {t('settings.sound')}
           </label>
           <label>
-            <input type="checkbox" aria-label="Email notifications" checked={form.notify.email} onChange={(e) => setForm({ ...form, notify: { ...form.notify, email: e.target.checked } })} /> Email
+            <input type="checkbox" aria-label={t('settings.emailAria')} checked={form.notify.email} onChange={(e) => setForm({ ...form, notify: { ...form.notify, email: e.target.checked } })} /> {t('settings.email')}
           </label>
         </div>
       </div>
 
       <div className="col-h" style={{ marginTop: 22 }}>
-        <h2 className="serif">Email (SMTP)</h2>
+        <h2 className="serif">{t('settings.emailSection')}</h2>
         <a className="btn" href={DOC_URL} target="_blank" rel="noreferrer">
-          Setup guide ↗
+          {t('settings.setupGuide')}
         </a>
       </div>
       <div className="card glass">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-          <TextField label="SMTP host" value={email.host} onChange={(s) => setEmail({ ...email, host: s })} />
-          <TextField label="SMTP port" type="number" value={email.port} onChange={(s) => setEmail({ ...email, port: Number(s) })} />
-          <TextField label="SMTP user" value={email.user} onChange={(s) => setEmail({ ...email, user: s })} />
-          <TextField label="SMTP pass" type="password" value={email.pass} onChange={(s) => setEmail({ ...email, pass: s })} />
-          <TextField label="Email to" value={email.to} onChange={(s) => setEmail({ ...email, to: s })} />
+          <TextField label={t('settings.smtpHost')} value={email.host} onChange={(s) => setEmail({ ...email, host: s })} />
+          <TextField label={t('settings.smtpPort')} type="number" value={email.port} onChange={(s) => setEmail({ ...email, port: Number(s) })} />
+          <TextField label={t('settings.smtpUser')} value={email.user} onChange={(s) => setEmail({ ...email, user: s })} />
+          <TextField label={t('settings.smtpPass')} type="password" value={email.pass} onChange={(s) => setEmail({ ...email, pass: s })} />
+          <TextField label={t('settings.emailTo')} value={email.to} onChange={(s) => setEmail({ ...email, to: s })} />
         </div>
       </div>
 
       {err && <div className="errbar">{err}</div>}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14 }}>
         <button type="button" className="btn btn-accent" onClick={save}>
-          Save settings
+          {t('settings.saveSettings')}
         </button>
-        {saved && <span style={{ color: 'var(--color-green)', fontSize: 12 }}>Saved ✓</span>}
+        {saved && <span style={{ color: 'var(--color-green)', fontSize: 12 }}>{t('settings.saved')}</span>}
       </div>
     </div>
   );

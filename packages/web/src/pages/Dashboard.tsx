@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { WatchMode } from '@autoregister/shared';
 import { api } from '../lib/api';
 import { useData } from '../lib/DataContext';
@@ -8,6 +9,7 @@ import { Console } from '../components/Console';
 import { SchedulerToggle } from '../components/SchedulerToggle';
 
 export default function Dashboard() {
+  const { t: tr } = useTranslation();
   const { targets, session, scheduler } = useData();
   const { events, connected } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
@@ -53,12 +55,12 @@ export default function Dashboard() {
       else await api.startScheduler();
       await sch.refetch();
     } catch (e) {
-      setSchedErr(e instanceof Error ? e.message : 'Scheduler toggle failed.');
+      setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
     } finally {
       schedBusyRef.current = false;
       setSchedBusy(false);
     }
-  }, []);
+  }, [tr]);
 
   const list = targets.data ?? [];
   const sessionStatus = session.data?.status ?? 'unknown';
@@ -66,16 +68,12 @@ export default function Dashboard() {
 
   return (
     <>
-      {sessionDown && (
-        <div className="banner">
-          Session is not active — open the <strong>Session</strong> tab to log in so polling can run.
-        </div>
-      )}
+      {sessionDown && <div className="banner">{tr('dashboard.sessionBanner')}</div>}
 
       <div className="grid">
         <div>
           <div className="col-h">
-            <h2 className="serif">Watched Courses</h2>
+            <h2 className="serif">{tr('dashboard.watchedCourses')}</h2>
             <SchedulerToggle
               running={scheduler.data?.running ?? false}
               onStart={onToggleScheduler}
@@ -85,7 +83,7 @@ export default function Dashboard() {
           </div>
           {schedErr && <div className="errbar">{schedErr}</div>}
           {list.length === 0 ? (
-            <div className="empty glass">No courses watched yet. Add one from the Courses tab.</div>
+            <div className="empty glass">{tr('dashboard.empty')}</div>
           ) : (
             <div className="cards">
               {list.map((t) => (
@@ -103,7 +101,7 @@ export default function Dashboard() {
 
         <div>
           <div className="col-h">
-            <h2 className="serif">Live Console</h2>
+            <h2 className="serif">{tr('dashboard.liveConsole')}</h2>
           </div>
           <Console events={events} connected={connected} />
         </div>

@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
 import { useData } from '../lib/DataContext';
 import { CourseForm, type CourseFormValues } from '../components/CourseForm';
 import { StatusBadge } from '../components/StatusBadge';
 
 export default function Courses() {
+  const { t: tr } = useTranslation();
   const { targets } = useData();
   const [editing, setEditing] = useState<string | null>(null);
   const [err, setErr] = useState<string>();
@@ -19,7 +21,7 @@ export default function Courses() {
       await targets.refetch();
       return true;
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Operation failed.');
+      setErr(e instanceof Error ? e.message : tr('courses.opFailed'));
       return false;
     }
   };
@@ -48,23 +50,23 @@ export default function Courses() {
   return (
     <div>
       <div className="col-h">
-        <h2 className="serif">Add a course</h2>
+        <h2 className="serif">{tr('courses.addACourse')}</h2>
       </div>
-      <CourseForm key={addKey} submitLabel="Add course" onSubmit={add} />
+      <CourseForm key={addKey} submitLabel={tr('courses.addCourse')} onSubmit={add} />
       {err && <div className="errbar">{err}</div>}
 
       <div className="col-h" style={{ marginTop: 22 }}>
-        <h2 className="serif">Managed courses</h2>
+        <h2 className="serif">{tr('courses.managed')}</h2>
       </div>
       {list.length === 0 ? (
-        <div className="empty glass">No courses yet.</div>
+        <div className="empty glass">{tr('courses.empty')}</div>
       ) : (
         <div className="cards">
           {list.map((t) =>
             editing === t.id ? (
               <CourseForm
                 key={t.id}
-                submitLabel="Save"
+                submitLabel={tr('courses.save')}
                 initial={{
                   term: t.term, subject: t.subject, courseNumber: t.courseNumber, targetCrn: t.targetCrn,
                   faculty: t.faculty ?? '', label: t.label ?? '', mode: t.mode,
@@ -88,10 +90,10 @@ export default function Courses() {
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                   <button type="button" className="btn" onClick={() => setEditing(t.id)}>
-                    Edit
+                    {tr('courses.edit')}
                   </button>
                   <button type="button" className="btn" onClick={() => remove(t.id)}>
-                    Delete
+                    {tr('courses.delete')}
                   </button>
                 </div>
               </div>

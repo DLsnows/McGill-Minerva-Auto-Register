@@ -29,7 +29,7 @@ describe('Session', () => {
   it('shows the current status', async () => {
     mockAll('authenticated');
     renderSession();
-    await waitFor(() => expect(screen.getByText('authenticated')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Authenticated')).toBeInTheDocument());
   });
 
   it('triggers login on button click', async () => {

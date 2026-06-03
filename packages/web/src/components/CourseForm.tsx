@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { WatchMode } from '@autoregister/shared';
 
 export interface CourseFormValues {
@@ -22,24 +23,21 @@ interface Props {
   onCancel?: () => void;
 }
 
-const FIELDS: { key: keyof CourseFormValues; label: string }[] = [
-  { key: 'term', label: 'Term' },
-  { key: 'subject', label: 'Subject' },
-  { key: 'courseNumber', label: 'Course #' },
-  { key: 'targetCrn', label: 'Target CRN' },
-  { key: 'faculty', label: 'Faculty' },
-  { key: 'label', label: 'Label' },
+const FIELDS: { key: keyof CourseFormValues; labelKey: string }[] = [
+  { key: 'term', labelKey: 'form.term' },
+  { key: 'subject', labelKey: 'form.subject' },
+  { key: 'courseNumber', labelKey: 'form.courseNumber' },
+  { key: 'targetCrn', labelKey: 'form.targetCrn' },
+  { key: 'faculty', labelKey: 'form.faculty' },
+  { key: 'label', labelKey: 'form.label' },
 ];
 
 const inputStyle = {
-  padding: 8,
-  borderRadius: 8,
-  background: 'rgba(255,255,255,.04)',
-  border: '1px solid var(--bd)',
-  color: 'var(--tx)',
+  padding: 8, borderRadius: 8, background: 'rgba(255,255,255,.04)', border: '1px solid var(--bd)', color: 'var(--tx)',
 } as const;
 
 export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) {
+  const { t } = useTranslation();
   const [v, setV] = useState<CourseFormValues>(initial ?? EMPTY);
   const [err, setErr] = useState<string>();
 
@@ -59,7 +57,7 @@ export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) 
       label: v.label.trim(),
     };
     if (!trimmed.term || !trimmed.subject || !trimmed.courseNumber || !trimmed.targetCrn) {
-      setErr('Term, Subject, Course # and Target CRN are required.');
+      setErr(t('form.required'));
       return;
     }
     setErr(undefined);
@@ -71,9 +69,9 @@ export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
         {FIELDS.map((f) => (
           <label key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
-            {f.label}
+            {t(f.labelKey)}
             <input
-              aria-label={f.label}
+              aria-label={t(f.labelKey)}
               style={inputStyle}
               value={v[f.key] as string}
               onChange={(e) => update({ [f.key]: e.target.value })}
@@ -81,15 +79,15 @@ export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) 
           </label>
         ))}
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
-          Mode
+          {t('form.mode')}
           <select
-            aria-label="Mode"
+            aria-label={t('form.mode')}
             style={inputStyle}
             value={v.mode}
             onChange={(e) => update({ mode: e.target.value as WatchMode })}
           >
-            <option value="auto">auto</option>
-            <option value="notify">notify</option>
+            <option value="auto">{t('form.modeAuto')}</option>
+            <option value="notify">{t('form.modeNotify')}</option>
           </select>
         </label>
       </div>
@@ -100,7 +98,7 @@ export function CourseForm({ onSubmit, submitLabel, initial, onCancel }: Props) 
         </button>
         {onCancel && (
           <button type="button" className="btn" onClick={onCancel}>
-            Cancel
+            {t('form.cancel')}
           </button>
         )}
       </div>
