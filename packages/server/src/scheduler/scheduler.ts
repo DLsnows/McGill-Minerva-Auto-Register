@@ -38,6 +38,13 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Consecutive cycles a target's CRN may be absent from the search results
+ * before we stop watching it. After this many misses the CRN (or the term /
+ * subject / course number / faculty used to find it) is almost certainly wrong,
+ * and retrying only burns the daily query budget. Using a small streak rather
+ * than 1 absorbs a transient empty / late-rendering results page. */
+const NOT_FOUND_LIMIT = 3;
+
 /**
  * Orchestrates a single watch cycle per target: session check → query → decide
  * → auto-act or notify → update state → schedule next (jittered, budget-aware).
@@ -51,6 +58,8 @@ export class Scheduler {
   /** Targets with a runOnce currently executing — prevents the tick loop and a
    * manual `runTarget` (or two manual runs) from double-acting the same course. */
   private readonly inFlight = new Set<string>();
+  /** Per-target count of consecutive cycles where the CRN wasn't in the results. */
+  private readonly notFoundStreak = new Map<string, number>();
 
   constructor(private readonly deps: SchedulerDeps) {
     this.now = deps.now ?? Date.now;
@@ -117,10 +126,31 @@ export class Scheduler {
     budget.recordQuery(now);
 
     if (!check) {
-      this.log('warn', `Target CRN ${target.targetCrn} not found in results`, targetId);
+      // The query ran but the target CRN isn't among this course's sections.
+      // (A real network/parse failure throws above and is handled there.)
+      const streak = (this.notFoundStreak.get(targetId) ?? 0) + 1;
+      const where = `${target.subject} ${target.courseNumber} (${target.term})`;
+      const advice = 'check the CRN, term, subject, course number and faculty';
+      if (streak >= NOT_FOUND_LIMIT) {
+        this.notFoundStreak.delete(targetId);
+        store.updateTarget(targetId, { status: 'error' });
+        this.log(
+          'error',
+          `CRN ${target.targetCrn} not found in search results for ${where} after ${streak} attempts — ${advice}. Stopped watching.`,
+          targetId,
+        );
+        return; // stop polling — the configuration is almost certainly wrong
+      }
+      this.notFoundStreak.set(targetId, streak);
+      this.log(
+        'error',
+        `CRN ${target.targetCrn} not found in search results for ${where} (attempt ${streak}/${NOT_FOUND_LIMIT}) — ${advice}.`,
+        targetId,
+      );
       this.scheduleNext(target);
       return;
     }
+    this.notFoundStreak.delete(targetId); // found → clear any prior miss streak
     store.updateTarget(targetId, { lastStats: check.stats, lastPolledAt: now });
 
     const { action } = check.decision;

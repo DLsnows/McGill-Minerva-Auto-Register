@@ -203,6 +203,38 @@ describe('Scheduler.runOnce', () => {
     expect(store.recentEvents().some((e) => /DRY-RUN: would WAITLIST/.test(e.message))).toBe(true);
   });
 
+  it('stops watching (status error) after repeated CRN-not-found results', async () => {
+    const store = new Store(dir);
+    const watcher = new FakeWatcher(null); // target CRN never appears in the results
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher,
+      actor: new FakeActor({ kind: 'registered', crn: '1814' }),
+      session: new FakeSession(true),
+      now: () => NOW,
+      random: () => 0.5,
+    });
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '9999', mode: 'auto' });
+
+    // First misses log an error but keep watching (absorbs a transient blip).
+    await scheduler.runOnce(t.id);
+    await scheduler.runOnce(t.id);
+    expect(store.getTarget(t.id)!.status).toBe('watching');
+
+    // The third consecutive miss hits the limit → error + stop watching.
+    await scheduler.runOnce(t.id);
+    expect(store.getTarget(t.id)!.status).toBe('error');
+    expect(watcher.calls).toBe(3);
+    expect(
+      store.recentEvents().some((e) => e.level === 'error' && /not found in search results/i.test(e.message)),
+    ).toBe(true);
+
+    // Now stopped: a further run does not query again.
+    await scheduler.runOnce(t.id);
+    expect(watcher.calls).toBe(3);
+  });
+
   it('skips a concurrent run of the same target (no double registration)', async () => {
     const store = new Store(dir);
     const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });

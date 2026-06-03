@@ -20,4 +20,13 @@ describe('Console', () => {
     render(<Console events={[]} connected={false} />);
     expect(screen.getByText(/reconnecting/i)).toBeInTheDocument();
   });
+
+  it('lights the green dot when connected and the red dot when reconnecting', () => {
+    const { container, rerender } = render(<Console events={[]} connected={true} />);
+    expect(container.querySelector('.cg.on')).not.toBeNull();
+    expect(container.querySelector('.cr.on')).toBeNull();
+    rerender(<Console events={[]} connected={false} />);
+    expect(container.querySelector('.cr.on')).not.toBeNull();
+    expect(container.querySelector('.cg.on')).toBeNull();
+  });
 });
