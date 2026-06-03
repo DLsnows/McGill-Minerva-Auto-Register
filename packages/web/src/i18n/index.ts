@@ -19,7 +19,17 @@ const en = {
   form: {
     term: 'Term', subject: 'Subject', courseNumber: 'Course #', targetCrn: 'Target CRN',
     faculty: 'Faculty', label: 'Label', mode: 'Mode', modeAuto: 'auto', modeNotify: 'notify',
-    required: 'Term, Subject, Course # and Target CRN are required.', cancel: 'Cancel',
+    required: 'Term, Subject, Faculty, Course # and Target CRN are required.', cancel: 'Cancel',
+    ph: { term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', faculty: 'Faculty of Science', label: 'COMP 551' },
+    help: {
+      term: 'Term — Minerva term code; the last two digits are the season: Winter (Jan–Apr) = 01, Summer (May–Aug) = 05, Fall (Sep–Dec) = 09. e.g. Winter 2027 = 202701, Fall 2026 = 202609.',
+      subject: 'Subject — the course subject code, e.g. COMP for Computer Science.',
+      courseNumber: 'Course number — the number after the subject, e.g. 551 in COMP 551.',
+      targetCrn: 'Target CRN — the 4-digit Course Reference Number of the exact section you want, e.g. 2347.',
+      faculty: 'Faculty — the Minerva faculty/college (required for the search), e.g. Faculty of Science.',
+      label: 'Label — an optional display name for this watch, e.g. COMP 551.',
+      mode: 'Mode — auto registers/waitlists automatically when an opening appears; notify only alerts you.',
+    },
   },
   dashboard: {
     watchedCourses: 'Watched Courses', liveConsole: 'Live Console',
@@ -69,7 +79,17 @@ const zh: typeof en = {
   form: {
     term: '学期', subject: '科目', courseNumber: '课程号', targetCrn: '目标 CRN',
     faculty: '学院', label: '标签', mode: '模式', modeAuto: '自动', modeNotify: '提醒',
-    required: '学期、科目、课程号和目标 CRN 为必填。', cancel: '取消',
+    required: '学期、科目、学院、课程号和目标 CRN 为必填。', cancel: '取消',
+    ph: { term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', faculty: 'Faculty of Science', label: 'COMP 551' },
+    help: {
+      term: 'Term(学期）—— Minerva 学期代码,后两位代表季节:Winter 冬季(1–4 月）= 01、Summer 夏季(5–8 月）= 05、Fall 秋季(9–12 月）= 09。例:Winter 2027 = 202701、Fall 2026 = 202609。',
+      subject: 'Subject(科目）—— 课程科目代码,如 COMP(计算机科学）。',
+      courseNumber: 'Course #(课程号）—— 科目后面的编号,如 COMP 551 中的 551。',
+      targetCrn: 'Target CRN(目标 CRN）—— 你想要的那一节课的 4 位课程参考号,如 2347。',
+      faculty: 'Faculty(学院）—— Minerva 的学院,搜索时必填,如 Faculty of Science。',
+      label: 'Label(标签）—— 该监控的可选显示名,如 COMP 551。',
+      mode: 'Mode(模式）—— auto:出现空位时自动注册/候补;notify:仅提醒你。',
+    },
   },
   dashboard: {
     watchedCourses: '监控的课程', liveConsole: '实时控制台',
@@ -119,7 +139,17 @@ const fr: typeof en = {
   form: {
     term: 'Trimestre', subject: 'Matière', courseNumber: 'N° de cours', targetCrn: 'CRN cible',
     faculty: 'Faculté', label: 'Étiquette', mode: 'Mode', modeAuto: 'auto', modeNotify: 'notifier',
-    required: 'Trimestre, Matière, N° de cours et CRN cible sont requis.', cancel: 'Annuler',
+    required: 'Trimestre, Matière, Faculté, N° de cours et CRN cible sont requis.', cancel: 'Annuler',
+    ph: { term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', faculty: 'Faculty of Science', label: 'COMP 551' },
+    help: {
+      term: 'Term (Trimestre) — code de trimestre Minerva; les deux derniers chiffres = la saison : Hiver (jan.–avr.) = 01, Été (mai–août) = 05, Automne (sept.–déc.) = 09. p. ex. Hiver 2027 = 202701, Automne 2026 = 202609.',
+      subject: 'Subject (Matière) — le code de la matière, p. ex. COMP (informatique).',
+      courseNumber: 'Course # (N° de cours) — le numéro après la matière, p. ex. 551 dans COMP 551.',
+      targetCrn: 'Target CRN (CRN cible) — le numéro de référence à 4 chiffres de la section visée, p. ex. 2347.',
+      faculty: 'Faculty (Faculté) — la faculté Minerva (requise pour la recherche), p. ex. Faculty of Science.',
+      label: 'Label (Étiquette) — un nom d’affichage facultatif, p. ex. COMP 551.',
+      mode: 'Mode — auto inscrit/met en liste d’attente automatiquement; notify vous alerte seulement.',
+    },
   },
   dashboard: {
     watchedCourses: 'Cours surveillés', liveConsole: 'Console en direct',

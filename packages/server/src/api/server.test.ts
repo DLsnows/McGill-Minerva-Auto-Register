@@ -36,6 +36,7 @@ afterEach(async () => {
 const validTarget = {
   term: '202701',
   subject: 'COMP',
+  faculty: 'Faculty of Science',
   courseNumber: '551',
   targetCrn: '1814',
   mode: 'auto',
@@ -56,6 +57,18 @@ describe('API', () => {
 
   it('rejects an invalid target with 400', async () => {
     const r = await app.inject({ method: 'POST', url: '/api/targets', payload: { subject: 'COMP' } });
+    expect(r.statusCode).toBe(400);
+  });
+
+  it('rejects a target missing faculty with 400', async () => {
+    const noFaculty = {
+      term: validTarget.term,
+      subject: validTarget.subject,
+      courseNumber: validTarget.courseNumber,
+      targetCrn: validTarget.targetCrn,
+      mode: validTarget.mode,
+    };
+    const r = await app.inject({ method: 'POST', url: '/api/targets', payload: noFaculty });
     expect(r.statusCode).toBe(400);
   });
 
@@ -188,7 +201,7 @@ describe('API', () => {
 
   it('POST /api/targets/:id/run triggers runTarget for an existing target', async () => {
     const store = new Store(dir);
-    const t = store.addTarget({ term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'notify' });
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '2347', mode: 'notify' });
     const runTarget = vi.fn();
     const app2 = buildServer({
       store,
@@ -222,7 +235,7 @@ describe('API', () => {
 
   it('POST /api/targets/:id/run reports started:false for a non-watching target', async () => {
     const store = new Store(dir);
-    const t = store.addTarget({ term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto' });
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '2347', mode: 'auto' });
     store.updateTarget(t.id, { status: 'paused' });
     const runTarget = vi.fn();
     const app2 = buildServer({

@@ -36,7 +36,7 @@ const targetSchema = z.object({
   subject: z.string().min(1),
   courseNumber: z.string().min(1),
   targetCrn: z.string().min(1),
-  faculty: z.string().optional(),
+  faculty: z.string().min(1),
   label: z.string().optional(),
   mode: z.enum(['auto', 'notify']),
 });
