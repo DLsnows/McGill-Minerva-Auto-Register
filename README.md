@@ -12,15 +12,21 @@ from each section's seat counts — acting automatically or just notifying you.
 
 ## Requirements
 
-- **Node 22+**
-- A Chromium for Playwright (installed once, see below)
+- **Node.js 22+** — this also installs `npm`. Don't have Node yet? Download the
+  LTS installer from the official site: **https://nodejs.org**. (Without Node
+  installed, the `npm` / `npx` commands below won't exist.)
+- Playwright's Chromium browser (a one-time download — see Install).
 
 ## Install
 
 ```bash
-npm install
-npm run browser:install   # installs Playwright Chromium
+npm install                       # install dependencies
+npx playwright install chromium   # one-time: download the Chromium that Playwright drives
 ```
+
+> `npx playwright install chromium` downloads just the Chromium build the app
+> needs (not all three browsers). It's the reliable way to install it — it works
+> from the repo root regardless of the workspace layout.
 
 ## Run
 
@@ -39,9 +45,12 @@ Then open **http://127.0.0.1:4575** and:
 3. **Settings** tab → poll interval & jitter, daily query/register budgets,
    notification channels (desktop / sound / email — see
    [`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md)), and **Dry-run** mode.
-4. **Dashboard** → press **Start** to begin watching. The live console streams
-   each poll → decision → action. Use **⚡ Register now** to attempt a course
-   immediately.
+4. **Dashboard** → press **Start all** to begin watching. (On startup every
+   course is **paused**, and *Start all* is disabled until you're logged in — so
+   nothing polls until you explicitly start it. You can also **Pause / Resume**
+   each course individually on its card.) The live console streams each poll →
+   decision → action, newest on top, with a **Clear** button. Use
+   **⚡ Register now** on a card to attempt that course immediately.
 
 Language can be switched any time (中文 / EN / FR) from the top bar.
 
@@ -61,6 +70,21 @@ to confirm it behaves as expected, then turn dry-run off to let it act for real.
   daily **query budget** (default 100) and **register budget** (default 20) from
   running out — to look human and respect school limits.
 - **Per course**: `auto` registers/waitlists automatically; `notify` only alerts you.
+
+## Troubleshooting
+
+**Clicking *Open browser & log in* shows "Logged out" right away and no Chromium
+window opens.** This means Playwright's Chromium isn't installed. The login flow
+launches a real Chromium window; if the browser binary is missing, the launch
+fails and the session falls straight back to *Logged out* with no window. Install
+the browser once, then retry:
+
+```bash
+npx playwright install chromium
+```
+
+(If you ran `npm install` but skipped the Playwright browser download, this is
+the most common cause.)
 
 ## Development
 
