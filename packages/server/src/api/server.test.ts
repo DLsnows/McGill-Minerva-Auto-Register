@@ -305,7 +305,7 @@ describe('API', () => {
     }
   });
 
-  it('PUT /api/settings reschedules watching targets when the cadence changes', async () => {
+  it('PUT /api/settings reschedules only when the cadence actually changes', async () => {
     const store = new Store(dir);
     const rescheduleWatching = vi.fn();
     const app2 = buildServer({
@@ -314,10 +314,14 @@ describe('API', () => {
       session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
       scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false, rescheduleWatching },
     });
+    // Changed cadence (default is 30) → reschedule once.
     await app2.inject({ method: 'PUT', url: '/api/settings', payload: { pollIntervalMinutes: 15 } });
     expect(rescheduleWatching).toHaveBeenCalledTimes(1);
-    // A non-cadence change must NOT reschedule.
+    // Same value sent again (UI saves the whole object) → no reschedule.
     rescheduleWatching.mockClear();
+    await app2.inject({ method: 'PUT', url: '/api/settings', payload: { pollIntervalMinutes: 15 } });
+    expect(rescheduleWatching).not.toHaveBeenCalled();
+    // An unrelated change → no reschedule.
     await app2.inject({ method: 'PUT', url: '/api/settings', payload: { queryBudget: 50 } });
     expect(rescheduleWatching).not.toHaveBeenCalled();
     await app2.close();
