@@ -47,13 +47,13 @@ describe('Dashboard', () => {
     await waitFor(() => expect(screen.getByText(/No courses watched/i)).toBeInTheDocument());
   });
 
-  it('starts the scheduler from the Dashboard toggle', async () => {
+  it('starts all from the Dashboard master toggle', async () => {
     mockApi([], 'authenticated');
-    const start = vi.spyOn(api, 'startScheduler').mockResolvedValue({ running: true });
+    const startAll = vi.spyOn(api, 'startAll').mockResolvedValue({ running: true, resumed: 0 });
     renderDashboard();
-    await waitFor(() => screen.getByRole('button', { name: /start/i }));
-    await userEvent.click(screen.getByRole('button', { name: /start/i }));
-    expect(start).toHaveBeenCalled();
+    await waitFor(() => screen.getByRole('button', { name: /start all/i }));
+    await userEvent.click(screen.getByRole('button', { name: /start all/i }));
+    expect(startAll).toHaveBeenCalled();
   });
 
   it('refetches budget + targets when a log event streams in (live update, no manual refresh)', async () => {
@@ -76,10 +76,10 @@ describe('Dashboard', () => {
 
   it('surfaces a scheduler toggle error', async () => {
     mockApi([], 'authenticated');
-    vi.spyOn(api, 'startScheduler').mockRejectedValue(new Error('sched boom'));
+    vi.spyOn(api, 'startAll').mockRejectedValue(new Error('sched boom'));
     renderDashboard();
-    await waitFor(() => screen.getByRole('button', { name: /start/i }));
-    await userEvent.click(screen.getByRole('button', { name: /start/i }));
+    await waitFor(() => screen.getByRole('button', { name: /start all/i }));
+    await userEvent.click(screen.getByRole('button', { name: /start all/i }));
     await waitFor(() => expect(screen.getByText(/sched boom/i)).toBeInTheDocument());
   });
 });

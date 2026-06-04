@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { WatchMode } from '@autoregister/shared';
+import type { WatchMode, WatchStatus } from '@autoregister/shared';
 import { api } from '../lib/api';
 import { useData } from '../lib/DataContext';
 import { useEventStream } from '../lib/useEventStream';
@@ -44,6 +44,14 @@ export default function Dashboard() {
     await targetsRef.current.refetch();
   }, []);
 
+  // Per-course pause/resume. Resuming a single course also makes sure the engine
+  // is running, otherwise flipping it to 'watching' alone wouldn't poll anything.
+  const onTogglePolling = useCallback(async (id: string, next: WatchStatus) => {
+    await api.updateTarget(id, { status: next });
+    if (next === 'watching') await api.startScheduler();
+    await Promise.all([targetsRef.current.refetch(), schedulerRef.current.refetch()]);
+  }, []);
+
   const onRun = useCallback(async (id: string) => {
     setRunning((s) => new Set(s).add(id));
     try {
@@ -65,9 +73,10 @@ export default function Dashboard() {
     setSchedErr(undefined);
     const sch = schedulerRef.current;
     try {
-      if (sch.data?.running) await api.stopScheduler();
-      else await api.startScheduler();
-      await sch.refetch();
+      // "Start all" / "Stop all": bulk-resume/pause the course statuses too.
+      if (sch.data?.running) await api.stopAll();
+      else await api.startAll();
+      await Promise.all([sch.refetch(), targetsRef.current.refetch()]);
     } catch (e) {
       setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
     } finally {
@@ -106,6 +115,7 @@ export default function Dashboard() {
                   target={t}
                   onToggleMode={onToggleMode}
                   onRun={onRun}
+                  onTogglePolling={onTogglePolling}
                   running={running.has(t.id)}
                 />
               ))}

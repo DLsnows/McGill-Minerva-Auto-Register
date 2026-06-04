@@ -62,6 +62,8 @@ export const api = {
   getScheduler: () => req<SchedulerState>('/api/scheduler'),
   startScheduler: () => post<{ running: boolean }>('/api/scheduler/start'),
   stopScheduler: () => post<{ running: boolean }>('/api/scheduler/stop'),
+  startAll: () => post<{ running: boolean; resumed: number }>('/api/scheduler/start-all'),
+  stopAll: () => post<{ running: boolean; paused: number }>('/api/scheduler/stop-all'),
 
   getEvents: (limit = 200) => req<LogEvent[]>(`/api/events?limit=${limit}`),
   getBudget: () => req<BudgetRemaining>('/api/budget'),
