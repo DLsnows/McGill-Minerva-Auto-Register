@@ -11,9 +11,10 @@ import { SchedulerToggle } from '../components/SchedulerToggle';
 export default function Dashboard() {
   const { t: tr } = useTranslation();
   const { targets, session, scheduler, budget } = useData();
-  const { events, connected } = useEventStream();
+  const { events, connected, clear } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [schedErr, setSchedErr] = useState<string>();
+  const [clearErr, setClearErr] = useState<string>();
   const [schedBusy, setSchedBusy] = useState(false);
 
   // `targets`/`scheduler` are fresh objects each render; reach them through refs
@@ -45,6 +46,23 @@ export default function Dashboard() {
     await api.updateTarget(id, { mode: next });
     await targetsRef.current.refetch();
   }, []);
+
+  // Clear the console: wipe the server-side log (so a reconnect won't re-seed the
+  // old lines), then the locally-held events. Only clear locally once the server
+  // call succeeds — otherwise surface the error and leave the log intact to retry.
+  const onClearConsole = useCallback(
+    async () => {
+      // Own error state — must not touch (or be clobbered by) scheduler errors.
+      setClearErr(undefined);
+      try {
+        await api.clearEvents();
+        clear();
+      } catch (e) {
+        setClearErr(e instanceof Error ? e.message : tr('console.clearFailed'));
+      }
+    },
+    [clear, tr],
+  );
 
   // Per-course pause/resume. Resuming a single course also makes sure the engine
   // is running, otherwise flipping it to 'watching' alone wouldn't poll anything.
@@ -150,7 +168,8 @@ export default function Dashboard() {
           <div className="col-h">
             <h2 className="serif">{tr('dashboard.liveConsole')}</h2>
           </div>
-          <Console events={events} connected={connected} />
+          {clearErr && <div className="errbar">{clearErr}</div>}
+          <Console events={events} connected={connected} onClear={onClearConsole} />
         </div>
       </div>
     </>

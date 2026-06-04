@@ -138,6 +138,22 @@ describe('API', () => {
     await app2.close();
   });
 
+  it('DELETE /api/events clears the event log', async () => {
+    const store = new Store(dir);
+    store.appendEvent({ level: 'info', message: 'x' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+    });
+    expect((await app2.inject({ method: 'GET', url: '/api/events' })).json()).toHaveLength(1);
+    const del = await app2.inject({ method: 'DELETE', url: '/api/events' });
+    expect(del.json()).toEqual({ ok: true });
+    expect((await app2.inject({ method: 'GET', url: '/api/events' })).json()).toEqual([]);
+    await app2.close();
+  });
+
   it('broadcast removes dead clients from the set', async () => {
     const { broadcast } = await import('./server');
     const clients = new Set<{ send: () => void }>();

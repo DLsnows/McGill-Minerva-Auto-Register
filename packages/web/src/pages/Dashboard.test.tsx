@@ -6,7 +6,11 @@ import Dashboard from './Dashboard';
 import { api } from '../lib/api';
 
 vi.mock('../lib/useEventStream', () => ({
-  useEventStream: () => ({ events: [{ id: 'e', ts: Date.now(), level: 'info', message: 'hello-console' }], connected: true }),
+  useEventStream: () => ({
+    events: [{ id: 'e', ts: Date.now(), level: 'info', message: 'hello-console' }],
+    connected: true,
+    clear: () => {},
+  }),
 }));
 
 function mockApi(targets: Awaited<ReturnType<typeof api.getTargets>>, sessionStatus: 'authenticated' | 'logged-out') {
@@ -64,6 +68,24 @@ describe('Dashboard', () => {
     );
     renderDashboard();
     await waitFor(() => expect(screen.getByRole('button', { name: /stop all/i })).toBeInTheDocument());
+  });
+
+  it('clears the console from the Clear button', async () => {
+    mockApi([], 'authenticated');
+    const clearEvents = vi.spyOn(api, 'clearEvents').mockResolvedValue({ ok: true });
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /clear/i }));
+    await userEvent.click(screen.getByRole('button', { name: /clear/i }));
+    expect(clearEvents).toHaveBeenCalled();
+  });
+
+  it('surfaces a console-clear failure with its own message', async () => {
+    mockApi([], 'authenticated');
+    vi.spyOn(api, 'clearEvents').mockRejectedValue(new Error('clear boom'));
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /clear/i }));
+    await userEvent.click(screen.getByRole('button', { name: /clear/i }));
+    await waitFor(() => expect(screen.getByText(/clear boom/i)).toBeInTheDocument());
   });
 
   it('pauses a single course from its card', async () => {

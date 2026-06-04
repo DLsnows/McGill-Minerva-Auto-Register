@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LogEvent } from '@autoregister/shared';
 
 interface StreamState {
   events: LogEvent[];
   connected: boolean;
+  /** Clear the locally-held events (the displayed log). */
+  clear: () => void;
 }
 
 /** Subscribe to /api/stream: seed from the `recent` snapshot, append `event`
@@ -58,5 +60,7 @@ export function useEventStream(max = 500): StreamState {
     };
   }, [max]);
 
-  return { events, connected };
+  const clear = useCallback(() => setEvents([]), []);
+
+  return { events, connected, clear };
 }
