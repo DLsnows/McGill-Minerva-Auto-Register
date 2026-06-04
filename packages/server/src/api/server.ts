@@ -26,6 +26,9 @@ export interface ApiScheduler {
   stop(): void;
   runTarget(id: string): void;
   isRunning(): boolean;
+  /** Re-apply the poll cadence to already-scheduled targets (after a settings
+   * change). Optional so lightweight test doubles can omit it. */
+  rescheduleWatching?(): void;
 }
 export interface ApiDeps {
   store: Store;
@@ -126,7 +129,20 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   app.put('/api/settings', (req, reply) => {
     const parsed = settingsSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    return deps.store.setSettings(parsed.data as Partial<Settings>);
+    // Compare against the current values first: the UI saves the whole settings
+    // object, so the cadence fields are always present even when unchanged. Only
+    // reschedule when a value actually changed, otherwise an unrelated save (e.g.
+    // toggling dry-run) would needlessly re-jitter every target's next poll.
+    const before = deps.store.getSettings();
+    const cadenceChanged =
+      (parsed.data.pollIntervalMinutes !== undefined &&
+        parsed.data.pollIntervalMinutes !== before.pollIntervalMinutes) ||
+      (parsed.data.jitterMinutes !== undefined && parsed.data.jitterMinutes !== before.jitterMinutes);
+    const updated = deps.store.setSettings(parsed.data as Partial<Settings>);
+    // Re-apply a changed cadence to already-scheduled targets now, so it takes
+    // effect immediately rather than only from each target's next cycle.
+    if (cadenceChanged) deps.scheduler.rescheduleWatching?.();
+    return updated;
   });
 
   // --- session ---

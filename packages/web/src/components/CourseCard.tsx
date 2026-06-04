@@ -4,6 +4,7 @@ import { StatGrid } from './StatGrid';
 import { StatusBadge } from './StatusBadge';
 import { ModeToggle } from './ModeToggle';
 import { fmtRelative } from '../lib/format';
+import { useNow } from '../lib/useNow';
 
 interface Props {
   target: WatchTarget;
@@ -23,6 +24,7 @@ const RESUMABLE: WatchStatus[] = ['paused'];
 
 export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, running, loggedIn = true }: Props) {
   const { t } = useTranslation();
+  const now = useNow(30_000); // ticks so "last poll Nm ago" stays current
   const title = target.label ?? `${target.subject} ${target.courseNumber}`;
   const canRun = target.status === 'watching';
   const canPause = PAUSABLE.includes(target.status);
@@ -68,7 +70,7 @@ export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, runni
       </div>
 
       <div className="meta">
-        {target.lastPolledAt ? t('card.lastPoll', { rel: fmtRelative(target.lastPolledAt) }) : t('card.notPolled')}
+        {target.lastPolledAt ? t('card.lastPoll', { rel: fmtRelative(target.lastPolledAt, now) }) : t('card.notPolled')}
       </div>
     </div>
   );
