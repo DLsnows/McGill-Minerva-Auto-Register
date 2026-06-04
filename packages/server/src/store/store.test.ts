@@ -53,6 +53,16 @@ describe('Store', () => {
     expect(new Store(dir).getTarget(a.id)!.status).toBe('paused');
   });
 
+  it('clearEvents empties the persisted log', () => {
+    const s = new Store(dir);
+    s.appendEvent({ level: 'info', message: 'a' });
+    s.appendEvent({ level: 'ok', message: 'b' });
+    expect(s.recentEvents()).toHaveLength(2);
+    s.clearEvents();
+    expect(s.recentEvents()).toEqual([]);
+    expect(new Store(dir).recentEvents()).toEqual([]); // persisted across reload
+  });
+
   it('updates and removes targets', () => {
     const s = new Store(dir);
     const t = s.addTarget(sampleTarget);

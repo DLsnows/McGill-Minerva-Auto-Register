@@ -11,7 +11,7 @@ import { SchedulerToggle } from '../components/SchedulerToggle';
 export default function Dashboard() {
   const { t: tr } = useTranslation();
   const { targets, session, scheduler, budget } = useData();
-  const { events, connected } = useEventStream();
+  const { events, connected, clear } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [schedErr, setSchedErr] = useState<string>();
   const [schedBusy, setSchedBusy] = useState(false);
@@ -45,6 +45,16 @@ export default function Dashboard() {
     await api.updateTarget(id, { mode: next });
     await targetsRef.current.refetch();
   }, []);
+
+  // Clear the console: wipe the server-side log (so a reconnect won't re-seed the
+  // old lines) and the locally-held events.
+  const onClearConsole = useCallback(async () => {
+    try {
+      await api.clearEvents();
+    } finally {
+      clear();
+    }
+  }, [clear]);
 
   // Per-course pause/resume. Resuming a single course also makes sure the engine
   // is running, otherwise flipping it to 'watching' alone wouldn't poll anything.
@@ -150,7 +160,7 @@ export default function Dashboard() {
           <div className="col-h">
             <h2 className="serif">{tr('dashboard.liveConsole')}</h2>
           </div>
-          <Console events={events} connected={connected} />
+          <Console events={events} connected={connected} onClear={onClearConsole} />
         </div>
       </div>
     </>

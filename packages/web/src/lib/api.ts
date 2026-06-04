@@ -66,5 +66,6 @@ export const api = {
   stopAll: () => post<{ running: boolean; paused: number }>('/api/scheduler/stop-all'),
 
   getEvents: (limit = 200) => req<LogEvent[]>(`/api/events?limit=${limit}`),
+  clearEvents: () => req<{ ok: true }>('/api/events', { method: 'DELETE' }),
   getBudget: () => req<BudgetRemaining>('/api/budget'),
 };

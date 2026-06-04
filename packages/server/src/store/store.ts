@@ -158,6 +158,12 @@ export class Store {
     return this.data.events.slice(-limit);
   }
 
+  /** Clear the persisted event log (the live console "Clear" button). */
+  clearEvents(): void {
+    this.data.events = [];
+    this.save();
+  }
+
   // --- settings ---
   getSettings(): Settings {
     return { ...this.data.settings };

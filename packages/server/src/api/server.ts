@@ -202,6 +202,11 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     const limit = Number.isFinite(parsed) ? Math.max(0, parsed) : 200;
     return deps.store.recentEvents(limit);
   });
+  // Clear the persisted event log (the live console "Clear" button).
+  app.delete('/api/events', () => {
+    deps.store.clearEvents();
+    return { ok: true };
+  });
   app.get('/api/budget', () => deps.budget.remaining());
 
   // --- live event stream ---

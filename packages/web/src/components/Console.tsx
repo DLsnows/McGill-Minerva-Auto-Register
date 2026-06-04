@@ -11,17 +11,26 @@ const LEVEL_CLASS: Record<LogLevel, string> = {
   error: 'l-err',
 };
 
-export function Console({ events, connected }: { events: LogEvent[]; connected: boolean }) {
+interface Props {
+  events: LogEvent[];
+  connected: boolean;
+  onClear?: () => void;
+}
+
+export function Console({ events, connected, onClear }: Props) {
   const { t } = useTranslation();
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = logRef.current;
     if (!el) return;
-    // Only auto-scroll if the user is already near the bottom, so scrolling up
-    // to read older lines isn't interrupted by new events.
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    if (nearBottom) el.scrollTop = el.scrollHeight;
+    // Newest is rendered at the top, so keep the view pinned to the top when the
+    // user is already near it — without yanking them back if they scrolled down
+    // to read older lines.
+    if (el.scrollTop < 80) el.scrollTop = 0;
   }, [events]);
+
+  // Newest first (the stream stores events oldest-last).
+  const ordered = [...events].reverse();
 
   return (
     <div className="console glass">
@@ -32,9 +41,14 @@ export function Console({ events, connected }: { events: LogEvent[]; connected: 
         <span className="t" role="status">
           autoregister · {connected ? t('console.liveStream') : t('console.reconnecting')}
         </span>
+        {onClear && (
+          <button type="button" className="console-clear" onClick={onClear}>
+            {t('console.clear')}
+          </button>
+        )}
       </div>
       <div className="log" ref={logRef}>
-        {events.map((e) => (
+        {ordered.map((e) => (
           <div className="ln" key={e.id}>
             <span className="ts">{fmtClock(e.ts)}</span>{' '}
             <span className={LEVEL_CLASS[e.level]}>{e.message}</span>

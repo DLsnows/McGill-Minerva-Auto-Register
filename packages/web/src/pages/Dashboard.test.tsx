@@ -6,7 +6,11 @@ import Dashboard from './Dashboard';
 import { api } from '../lib/api';
 
 vi.mock('../lib/useEventStream', () => ({
-  useEventStream: () => ({ events: [{ id: 'e', ts: Date.now(), level: 'info', message: 'hello-console' }], connected: true }),
+  useEventStream: () => ({
+    events: [{ id: 'e', ts: Date.now(), level: 'info', message: 'hello-console' }],
+    connected: true,
+    clear: () => {},
+  }),
 }));
 
 function mockApi(targets: Awaited<ReturnType<typeof api.getTargets>>, sessionStatus: 'authenticated' | 'logged-out') {
