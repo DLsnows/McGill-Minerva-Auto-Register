@@ -267,6 +267,47 @@ describe('Scheduler.runOnce', () => {
     expect(goodCalls).toBe(4); // and it kept being polled every cycle
   });
 
+  it('stops a target after repeated registration errors (any error trips the breaker)', async () => {
+    const { scheduler, store, target } = setup({
+      decision: { action: 'REGISTER', reason: 'rem>0' },
+      outcome: { kind: 'error', crn: '1814', message: 'Level Restriction' },
+    });
+    await scheduler.runOnce(target.id);
+    await scheduler.runOnce(target.id);
+    expect(store.getTarget(target.id)!.status).toBe('watching'); // still retrying
+    await scheduler.runOnce(target.id);
+    expect(store.getTarget(target.id)!.status).toBe('error'); // 3rd consecutive → stop
+  });
+
+  it('only CONSECUTIVE failures stop a target — a clean cycle resets the streak', async () => {
+    const store = new Store(dir);
+    let kind: RegisterOutcome['kind'] = 'error';
+    const watcher: Watcher = {
+      checkCourse: async () => ({ stats: stats(), decision: { action: 'REGISTER', reason: 'rem>0' } }),
+    };
+    const actor: Actor = {
+      act: async () =>
+        kind === 'error'
+          ? { kind: 'error', crn: '1814', message: 'x' }
+          : { kind: 'waitlist-full', crn: '1814' },
+    };
+    const scheduler = new Scheduler({
+      store, budget: new Budget(store), watcher, actor,
+      session: new FakeSession(true), now: () => NOW, random: () => 0.5,
+    });
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+
+    await scheduler.runOnce(t.id); // fail 1
+    await scheduler.runOnce(t.id); // fail 2
+    kind = 'waitlist-full';
+    await scheduler.runOnce(t.id); // clean cycle → streak reset
+    expect(store.getTarget(t.id)!.status).toBe('watching');
+    kind = 'error';
+    await scheduler.runOnce(t.id); // fail 1 (after reset)
+    await scheduler.runOnce(t.id); // fail 2
+    expect(store.getTarget(t.id)!.status).toBe('watching'); // not stopped — needs 3 in a row
+  });
+
   it('skips a concurrent run of the same target (no double registration)', async () => {
     const store = new Store(dir);
     const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
