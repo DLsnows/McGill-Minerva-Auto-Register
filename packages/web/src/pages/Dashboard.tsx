@@ -48,13 +48,23 @@ export default function Dashboard() {
 
   // Per-course pause/resume. Resuming a single course also makes sure the engine
   // is running, otherwise flipping it to 'watching' alone wouldn't poll anything.
-  const onTogglePolling = useCallback(async (id: string, next: WatchStatus) => {
-    // No resuming/starting a task while logged out (the button is disabled too).
-    if (next === 'watching' && sessionRef.current.data?.status !== 'authenticated') return;
-    await api.updateTarget(id, { status: next });
-    if (next === 'watching') await api.startScheduler();
-    await Promise.all([targetsRef.current.refetch(), schedulerRef.current.refetch()]);
-  }, []);
+  const onTogglePolling = useCallback(
+    async (id: string, next: WatchStatus) => {
+      // No resuming/starting a task while logged out (the button is disabled too).
+      if (next === 'watching' && sessionRef.current.data?.status !== 'authenticated') return;
+      setSchedErr(undefined);
+      try {
+        await api.updateTarget(id, { status: next });
+        if (next === 'watching') await api.startScheduler();
+      } catch (e) {
+        setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
+      } finally {
+        // Always reconcile the UI with the server's real state.
+        await Promise.all([targetsRef.current.refetch(), schedulerRef.current.refetch()]);
+      }
+    },
+    [tr],
+  );
 
   const onRun = useCallback(async (id: string) => {
     setRunning((s) => new Set(s).add(id));

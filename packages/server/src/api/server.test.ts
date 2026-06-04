@@ -39,7 +39,7 @@ const validTarget = {
   faculty: 'Faculty of Science',
   courseNumber: '551',
   targetCrn: '1814',
-  mode: 'auto',
+  mode: 'auto' as const,
 };
 
 describe('API', () => {

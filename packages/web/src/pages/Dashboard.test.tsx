@@ -66,6 +66,18 @@ describe('Dashboard', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /stop all/i })).toBeInTheDocument());
   });
 
+  it('pauses a single course from its card', async () => {
+    mockApi(
+      [{ id: 'w1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 }],
+      'authenticated',
+    );
+    const update = vi.spyOn(api, 'updateTarget').mockResolvedValue({} as never);
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /pause/i }));
+    await userEvent.click(screen.getByRole('button', { name: /pause/i }));
+    expect(update).toHaveBeenCalledWith('w1', { status: 'paused' });
+  });
+
   it('disables "Start all" when not logged in', async () => {
     mockApi(
       [{ id: 'p1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'paused', createdAt: 0 }],
