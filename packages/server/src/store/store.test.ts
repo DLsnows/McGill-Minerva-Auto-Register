@@ -37,6 +37,22 @@ describe('Store', () => {
     expect(() => s.addTarget({ ...sampleTarget, faculty: '' })).toThrow(/faculty/);
   });
 
+  it('pauseAllWatching resets only watching targets to paused', () => {
+    const s = new Store(dir);
+    const a = s.addTarget(sampleTarget); // watching (default)
+    const b = s.addTarget({ ...sampleTarget, targetCrn: '2222' });
+    const c = s.addTarget({ ...sampleTarget, targetCrn: '3333' });
+    s.updateTarget(b.id, { status: 'registered' });
+    s.updateTarget(c.id, { status: 'error' });
+    const n = s.pauseAllWatching();
+    expect(n).toBe(1);
+    expect(s.getTarget(a.id)!.status).toBe('paused'); // watching → paused
+    expect(s.getTarget(b.id)!.status).toBe('registered'); // terminal untouched
+    expect(s.getTarget(c.id)!.status).toBe('error'); // error untouched
+    // Persisted across reload.
+    expect(new Store(dir).getTarget(a.id)!.status).toBe('paused');
+  });
+
   it('updates and removes targets', () => {
     const s = new Store(dir);
     const t = s.addTarget(sampleTarget);

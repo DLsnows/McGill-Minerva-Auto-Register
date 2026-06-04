@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { WatchMode } from '@autoregister/shared';
+import type { WatchMode, WatchStatus } from '@autoregister/shared';
 import { api } from '../lib/api';
 import { useData } from '../lib/DataContext';
 import { useEventStream } from '../lib/useEventStream';
@@ -21,10 +21,12 @@ export default function Dashboard() {
   const targetsRef = useRef(targets);
   const schedulerRef = useRef(scheduler);
   const budgetRef = useRef(budget);
+  const sessionRef = useRef(session);
   useEffect(() => {
     targetsRef.current = targets;
     schedulerRef.current = scheduler;
     budgetRef.current = budget;
+    sessionRef.current = session;
   });
 
   // Live-refresh the daily budget + target states whenever a new log event
@@ -44,6 +46,26 @@ export default function Dashboard() {
     await targetsRef.current.refetch();
   }, []);
 
+  // Per-course pause/resume. Resuming a single course also makes sure the engine
+  // is running, otherwise flipping it to 'watching' alone wouldn't poll anything.
+  const onTogglePolling = useCallback(
+    async (id: string, next: WatchStatus) => {
+      // No resuming/starting a task while logged out (the button is disabled too).
+      if (next === 'watching' && sessionRef.current.data?.status !== 'authenticated') return;
+      setSchedErr(undefined);
+      try {
+        await api.updateTarget(id, { status: next });
+        if (next === 'watching') await api.startScheduler();
+      } catch (e) {
+        setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
+      } finally {
+        // Always reconcile the UI with the server's real state.
+        await Promise.all([targetsRef.current.refetch(), schedulerRef.current.refetch()]);
+      }
+    },
+    [tr],
+  );
+
   const onRun = useCallback(async (id: string) => {
     setRunning((s) => new Set(s).add(id));
     try {
@@ -60,14 +82,20 @@ export default function Dashboard() {
   const schedBusyRef = useRef(false);
   const onToggleScheduler = useCallback(async () => {
     if (schedBusyRef.current) return; // ignore a click while a toggle is already in flight
+    // Drive the action off whether anything is actually being watched (so it
+    // matches the button label), not the raw engine flag: when every course is
+    // paused/error/done, the master button is "Start all".
+    const anyWatching = (targetsRef.current.data ?? []).some((t) => t.status === 'watching');
+    const loggedIn = sessionRef.current.data?.status === 'authenticated';
+    if (!anyWatching && !loggedIn) return; // can't "Start all" while logged out
     schedBusyRef.current = true;
     setSchedBusy(true);
     setSchedErr(undefined);
     const sch = schedulerRef.current;
     try {
-      if (sch.data?.running) await api.stopScheduler();
-      else await api.startScheduler();
-      await sch.refetch();
+      if (anyWatching) await api.stopAll();
+      else await api.startAll();
+      await Promise.all([sch.refetch(), targetsRef.current.refetch()]);
     } catch (e) {
       setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
     } finally {
@@ -77,7 +105,9 @@ export default function Dashboard() {
   }, [tr]);
 
   const list = targets.data ?? [];
+  const anyWatching = list.some((t) => t.status === 'watching');
   const sessionStatus = session.data?.status ?? 'unknown';
+  const loggedIn = sessionStatus === 'authenticated';
   const sessionDown = sessionStatus === 'logged-out' || sessionStatus === 'unknown';
 
   return (
@@ -89,10 +119,11 @@ export default function Dashboard() {
           <div className="col-h">
             <h2 className="serif">{tr('dashboard.watchedCourses')}</h2>
             <SchedulerToggle
-              running={scheduler.data?.running ?? false}
+              running={anyWatching}
               onStart={onToggleScheduler}
               onStop={onToggleScheduler}
               busy={schedBusy}
+              canStart={loggedIn}
             />
           </div>
           {schedErr && <div className="errbar">{schedErr}</div>}
@@ -106,7 +137,9 @@ export default function Dashboard() {
                   target={t}
                   onToggleMode={onToggleMode}
                   onRun={onRun}
+                  onTogglePolling={onTogglePolling}
                   running={running.has(t.id)}
+                  loggedIn={loggedIn}
                 />
               ))}
             </div>

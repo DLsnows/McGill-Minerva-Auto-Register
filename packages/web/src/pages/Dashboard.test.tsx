@@ -47,13 +47,53 @@ describe('Dashboard', () => {
     await waitFor(() => expect(screen.getByText(/No courses watched/i)).toBeInTheDocument());
   });
 
-  it('starts the scheduler from the Dashboard toggle', async () => {
-    mockApi([], 'authenticated');
-    const start = vi.spyOn(api, 'startScheduler').mockResolvedValue({ running: true });
+  it('master toggle reads "Start all" when every course is paused/terminal', async () => {
+    mockApi(
+      [{ id: 'p1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'paused', createdAt: 0 }],
+      'authenticated',
+    );
     renderDashboard();
-    await waitFor(() => screen.getByRole('button', { name: /start/i }));
-    await userEvent.click(screen.getByRole('button', { name: /start/i }));
-    expect(start).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole('button', { name: /start all/i })).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /stop all/i })).toBeNull();
+  });
+
+  it('master toggle reads "Stop all" when a course is watching', async () => {
+    mockApi(
+      [{ id: 'w1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 }],
+      'authenticated',
+    );
+    renderDashboard();
+    await waitFor(() => expect(screen.getByRole('button', { name: /stop all/i })).toBeInTheDocument());
+  });
+
+  it('pauses a single course from its card', async () => {
+    mockApi(
+      [{ id: 'w1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 }],
+      'authenticated',
+    );
+    const update = vi.spyOn(api, 'updateTarget').mockResolvedValue({} as never);
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /pause/i }));
+    await userEvent.click(screen.getByRole('button', { name: /pause/i }));
+    expect(update).toHaveBeenCalledWith('w1', { status: 'paused' });
+  });
+
+  it('disables "Start all" when not logged in', async () => {
+    mockApi(
+      [{ id: 'p1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'paused', createdAt: 0 }],
+      'logged-out',
+    );
+    renderDashboard();
+    await waitFor(() => expect(screen.getByRole('button', { name: /start all/i })).toBeDisabled());
+  });
+
+  it('starts all from the Dashboard master toggle', async () => {
+    mockApi([], 'authenticated');
+    const startAll = vi.spyOn(api, 'startAll').mockResolvedValue({ running: true, resumed: 0 });
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /start all/i }));
+    await userEvent.click(screen.getByRole('button', { name: /start all/i }));
+    expect(startAll).toHaveBeenCalled();
   });
 
   it('refetches budget + targets when a log event streams in (live update, no manual refresh)', async () => {
@@ -76,10 +116,10 @@ describe('Dashboard', () => {
 
   it('surfaces a scheduler toggle error', async () => {
     mockApi([], 'authenticated');
-    vi.spyOn(api, 'startScheduler').mockRejectedValue(new Error('sched boom'));
+    vi.spyOn(api, 'startAll').mockRejectedValue(new Error('sched boom'));
     renderDashboard();
-    await waitFor(() => screen.getByRole('button', { name: /start/i }));
-    await userEvent.click(screen.getByRole('button', { name: /start/i }));
+    await waitFor(() => screen.getByRole('button', { name: /start all/i }));
+    await userEvent.click(screen.getByRole('button', { name: /start all/i }));
     await waitFor(() => expect(screen.getByText(/sched boom/i)).toBeInTheDocument());
   });
 });

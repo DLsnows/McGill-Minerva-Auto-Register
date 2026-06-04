@@ -39,7 +39,7 @@ const validTarget = {
   faculty: 'Faculty of Science',
   courseNumber: '551',
   targetCrn: '1814',
-  mode: 'auto',
+  mode: 'auto' as const,
 };
 
 describe('API', () => {
@@ -303,6 +303,47 @@ describe('API', () => {
       else process.env.AUTOREG_WEB_DIST = prev;
       rmSync(distDir, { recursive: true, force: true });
     }
+  });
+
+  it('POST /api/scheduler/start-all resumes paused targets (not error) and starts the engine', async () => {
+    const store = new Store(dir);
+    const start = vi.fn();
+    const a = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    const b = store.addTarget({ ...validTarget, targetCrn: '2222' });
+    store.updateTarget(a.id, { status: 'paused' });
+    store.updateTarget(b.id, { status: 'error' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+    });
+    const r = await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' });
+    expect(r.json()).toMatchObject({ running: true, resumed: 1 });
+    expect(store.getTarget(a.id)!.status).toBe('watching'); // paused → watching
+    expect(store.getTarget(b.id)!.status).toBe('error'); // error left untouched
+    expect(start).toHaveBeenCalled();
+    await app2.close();
+  });
+
+  it('POST /api/scheduler/stop-all pauses watching targets and stops the engine', async () => {
+    const store = new Store(dir);
+    const stop = vi.fn();
+    const a = store.addTarget({ ...validTarget, targetCrn: '1111' }); // watching by default
+    const b = store.addTarget({ ...validTarget, targetCrn: '2222' });
+    store.updateTarget(b.id, { status: 'registered' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop, runTarget: () => undefined, isRunning: () => true },
+    });
+    const r = await app2.inject({ method: 'POST', url: '/api/scheduler/stop-all' });
+    expect(r.json()).toMatchObject({ running: false, paused: 1 });
+    expect(store.getTarget(a.id)!.status).toBe('paused'); // watching → paused
+    expect(store.getTarget(b.id)!.status).toBe('registered'); // terminal left untouched
+    expect(stop).toHaveBeenCalled();
+    await app2.close();
   });
 
   // Guards the @fastify/websocket registration-timing bug: a route declared

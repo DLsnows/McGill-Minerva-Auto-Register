@@ -177,6 +177,21 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     deps.scheduler.stop();
     return { running: false };
   });
+  // "Start all": resume every PAUSED target (error / registered / waitlisted /
+  // stopped are intentionally left untouched), then start the engine.
+  app.post('/api/scheduler/start-all', () => {
+    const resumed = deps.store.listTargets().filter((t) => t.status === 'paused');
+    for (const t of resumed) deps.store.updateTarget(t.id, { status: 'watching' });
+    deps.scheduler.start();
+    return { running: true, resumed: resumed.length };
+  });
+  // "Stop all": pause every actively-watching target, then stop the engine.
+  app.post('/api/scheduler/stop-all', () => {
+    const paused = deps.store.listTargets().filter((t) => t.status === 'watching');
+    for (const t of paused) deps.store.updateTarget(t.id, { status: 'paused' });
+    deps.scheduler.stop();
+    return { running: false, paused: paused.length };
+  });
 
   // --- events + budget ---
   app.get('/api/events', (req) => {
