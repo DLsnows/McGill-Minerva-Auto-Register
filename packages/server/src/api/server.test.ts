@@ -305,6 +305,24 @@ describe('API', () => {
     }
   });
 
+  it('PUT /api/settings reschedules watching targets when the cadence changes', async () => {
+    const store = new Store(dir);
+    const rescheduleWatching = vi.fn();
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false, rescheduleWatching },
+    });
+    await app2.inject({ method: 'PUT', url: '/api/settings', payload: { pollIntervalMinutes: 15 } });
+    expect(rescheduleWatching).toHaveBeenCalledTimes(1);
+    // A non-cadence change must NOT reschedule.
+    rescheduleWatching.mockClear();
+    await app2.inject({ method: 'PUT', url: '/api/settings', payload: { queryBudget: 50 } });
+    expect(rescheduleWatching).not.toHaveBeenCalled();
+    await app2.close();
+  });
+
   it('POST /api/scheduler/start-all resumes paused targets (not error) and starts the engine', async () => {
     const store = new Store(dir);
     const start = vi.fn();

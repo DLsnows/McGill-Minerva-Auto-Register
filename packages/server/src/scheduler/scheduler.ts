@@ -282,6 +282,15 @@ export class Scheduler {
     store.updateTarget(target.id, { nextPollAt: now + nextMin * 60_000 });
   }
 
+  /** Recompute the next poll time for every watching target. Called after a
+   * settings change (interval / jitter) so the new cadence takes effect
+   * immediately instead of only from each target's next cycle. */
+  rescheduleWatching(): void {
+    for (const t of this.deps.store.listTargets()) {
+      if (t.status === 'watching') this.scheduleNext(t);
+    }
+  }
+
   /** Schedule the next poll just after the local-midnight daily budget reset. */
   private scheduleAfterReset(target: WatchTarget, now: number): void {
     const buffer = Math.round(this.random() * 5 + 1) * 60_000; // 1–6 min past midnight

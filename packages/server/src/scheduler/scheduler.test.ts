@@ -308,6 +308,21 @@ describe('Scheduler.runOnce', () => {
     expect(store.getTarget(t.id)!.status).toBe('watching'); // not stopped — needs 3 in a row
   });
 
+  it('rescheduleWatching recomputes nextPollAt for watching targets only', () => {
+    const { store, scheduler, target } = setup({ decision: { action: 'NOOP', reason: 'x' } });
+    const paused = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '2222', mode: 'auto' });
+    const STALE = NOW + 9_000_000; // far-future, as if scheduled under an old long interval
+    store.updateTarget(target.id, { nextPollAt: STALE });
+    store.updateTarget(paused.id, { status: 'paused', nextPollAt: STALE });
+
+    scheduler.rescheduleWatching();
+
+    const watched = store.getTarget(target.id)!;
+    expect(watched.nextPollAt!).toBeGreaterThan(NOW);
+    expect(watched.nextPollAt!).toBeLessThan(STALE); // recomputed sooner under the new cadence
+    expect(store.getTarget(paused.id)!.nextPollAt).toBe(STALE); // paused → untouched
+  });
+
   it('skips a concurrent run of the same target (no double registration)', async () => {
     const store = new Store(dir);
     const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });

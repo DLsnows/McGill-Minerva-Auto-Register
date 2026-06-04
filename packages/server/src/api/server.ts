@@ -26,6 +26,9 @@ export interface ApiScheduler {
   stop(): void;
   runTarget(id: string): void;
   isRunning(): boolean;
+  /** Re-apply the poll cadence to already-scheduled targets (after a settings
+   * change). Optional so lightweight test doubles can omit it. */
+  rescheduleWatching?(): void;
 }
 export interface ApiDeps {
   store: Store;
@@ -126,7 +129,14 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   app.put('/api/settings', (req, reply) => {
     const parsed = settingsSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    return deps.store.setSettings(parsed.data as Partial<Settings>);
+    const updated = deps.store.setSettings(parsed.data as Partial<Settings>);
+    // If the polling cadence changed, re-apply it to already-scheduled targets
+    // now so the new interval/jitter takes effect immediately rather than only
+    // from each target's next cycle.
+    if (parsed.data.pollIntervalMinutes !== undefined || parsed.data.jitterMinutes !== undefined) {
+      deps.scheduler.rescheduleWatching?.();
+    }
+    return updated;
   });
 
   // --- session ---
