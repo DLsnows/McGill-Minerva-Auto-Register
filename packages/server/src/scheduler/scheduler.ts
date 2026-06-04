@@ -38,6 +38,15 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Consecutive failed cycles a target may have before we stop watching it. Any
+ * error counts: a query/parse exception, the CRN missing from the results, a
+ * registration exception, or a registration error outcome. After this many
+ * consecutive failures something is persistently wrong (bad CRN / course
+ * details, an eligibility restriction, a Minerva change…) and retrying only
+ * burns the daily budget. A small streak (not 1) absorbs a transient blip; any
+ * clean cycle resets it. */
+const FAILURE_LIMIT = 3;
+
 /**
  * Orchestrates a single watch cycle per target: session check → query → decide
  * → auto-act or notify → update state → schedule next (jittered, budget-aware).
@@ -51,6 +60,8 @@ export class Scheduler {
   /** Targets with a runOnce currently executing — prevents the tick loop and a
    * manual `runTarget` (or two manual runs) from double-acting the same course. */
   private readonly inFlight = new Set<string>();
+  /** Per-target count of consecutive failed cycles (any error kind). */
+  private readonly failureStreak = new Map<string, number>();
 
   constructor(private readonly deps: SchedulerDeps) {
     this.now = deps.now ?? Date.now;
@@ -110,14 +121,18 @@ export class Scheduler {
       check = await this.deps.watcher.checkCourse(query);
     } catch (e) {
       budget.recordQuery(now);
-      this.log('error', `Query failed: ${errMsg(e)}`, targetId);
+      if (this.noteFailure(target, `Query failed: ${errMsg(e)}`)) return;
       this.scheduleNext(target);
       return;
     }
     budget.recordQuery(now);
 
     if (!check) {
-      this.log('warn', `Target CRN ${target.targetCrn} not found in results`, targetId);
+      // The query ran but the target CRN isn't among this course's sections.
+      // (A real network/parse failure throws above and is handled there.)
+      const where = `${target.subject} ${target.courseNumber} (${target.term})`;
+      const msg = `CRN ${target.targetCrn} not found in search results for ${where} — check the CRN, term, subject, course number and faculty`;
+      if (this.noteFailure(target, msg)) return;
       this.scheduleNext(target);
       return;
     }
@@ -125,6 +140,7 @@ export class Scheduler {
 
     const { action } = check.decision;
     if (action === 'NOOP') {
+      this.noteSuccess(targetId);
       this.log('info', `No opening — ${check.decision.reason}`, targetId);
       this.scheduleNext(target);
       return;
@@ -136,12 +152,14 @@ export class Scheduler {
     });
 
     if (!opts.force && target.mode === 'notify') {
+      this.noteSuccess(targetId);
       this.log('ok', `Notify-only: ${action} available — awaiting your go.`, targetId, { action });
       this.scheduleNext(target);
       return;
     }
 
     if (store.getSettings().dryRun) {
+      this.noteSuccess(targetId);
       this.log(
         'action',
         `DRY-RUN: would ${action} ${target.targetCrn} — ${check.decision.reason}`,
@@ -154,6 +172,7 @@ export class Scheduler {
 
     // auto mode → act
     if (!budget.canRegister(now)) {
+      this.noteSuccess(targetId);
       this.log('warn', 'Daily register budget reached — will retry next cycle', targetId);
       this.scheduleNext(target);
       return;
@@ -164,13 +183,35 @@ export class Scheduler {
       outcome = await this.deps.actor.act(target.term, target.targetCrn, action);
     } catch (e) {
       budget.recordRegister(now);
-      this.log('error', `Registration attempt threw: ${errMsg(e)}`, targetId);
+      if (this.noteFailure(target, `Registration attempt threw: ${errMsg(e)}`)) return;
       this.scheduleNext(target);
       return;
     }
     budget.recordRegister(now);
 
     this.applyOutcome(target, outcome);
+  }
+
+  /** Record a failed cycle for one target and log `message` at error level (with
+   * the running failure count). Returns true if this was the FAILURE_LIMIT-th
+   * consecutive failure — the target is then set to 'error' and the caller must
+   * NOT reschedule it (only this one target stops; others keep polling). */
+  private noteFailure(target: WatchTarget, message: string, data?: unknown): boolean {
+    const streak = (this.failureStreak.get(target.id) ?? 0) + 1;
+    if (streak >= FAILURE_LIMIT) {
+      this.failureStreak.delete(target.id);
+      this.deps.store.updateTarget(target.id, { status: 'error' });
+      this.log('error', `${message} — stopped watching after ${streak} consecutive failures.`, target.id, data);
+      return true;
+    }
+    this.failureStreak.set(target.id, streak);
+    this.log('error', `${message} (failure ${streak}/${FAILURE_LIMIT}) — will retry.`, target.id, data);
+    return false;
+  }
+
+  /** Clear a target's consecutive-failure streak after a clean cycle. */
+  private noteSuccess(targetId: string): void {
+    this.failureStreak.delete(targetId);
   }
 
   /** Trigger an immediate forced run for one target (one-click "Register now").
@@ -185,26 +226,30 @@ export class Scheduler {
     const label = target.label ?? target.targetCrn;
     switch (outcome.kind) {
       case 'registered':
+        this.noteSuccess(target.id);
         this.deps.store.updateTarget(target.id, { status: 'registered' });
         this.log('ok', `Registered ${label}! 🎉`, target.id, outcome);
         return; // stop watching
       case 'waitlisted':
+        this.noteSuccess(target.id);
         this.deps.store.updateTarget(target.id, { status: 'waitlisted' });
         this.log('ok', `Joined waitlist for ${label}.`, target.id, outcome);
         return; // stop watching
       case 'waitlist-full':
       case 'closed':
       case 'not-found':
+        this.noteSuccess(target.id);
         this.log('info', `No action taken (${outcome.kind})`, target.id, outcome);
         this.scheduleNext(target);
         return;
       case 'waitlist-available':
+        this.noteSuccess(target.id);
         this.log('warn', 'Open-space reserved for waitlist; will reassess next cycle', target.id, outcome);
         this.scheduleNext(target);
         return;
       case 'error':
       default:
-        this.log('error', `Registration error: ${outcome.message ?? 'unknown'}`, target.id, outcome);
+        if (this.noteFailure(target, `Registration error: ${outcome.message ?? 'unknown'}`, outcome)) return;
         this.scheduleNext(target);
         return;
     }

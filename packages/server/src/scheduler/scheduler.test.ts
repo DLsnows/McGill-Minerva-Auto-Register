@@ -203,6 +203,111 @@ describe('Scheduler.runOnce', () => {
     expect(store.recentEvents().some((e) => /DRY-RUN: would WAITLIST/.test(e.message))).toBe(true);
   });
 
+  it('stops watching (status error) after repeated CRN-not-found results', async () => {
+    const store = new Store(dir);
+    const watcher = new FakeWatcher(null); // target CRN never appears in the results
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher,
+      actor: new FakeActor({ kind: 'registered', crn: '1814' }),
+      session: new FakeSession(true),
+      now: () => NOW,
+      random: () => 0.5,
+    });
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '9999', mode: 'auto' });
+
+    // First misses log an error but keep watching (absorbs a transient blip).
+    await scheduler.runOnce(t.id);
+    await scheduler.runOnce(t.id);
+    expect(store.getTarget(t.id)!.status).toBe('watching');
+
+    // The third consecutive miss hits the limit → error + stop watching.
+    await scheduler.runOnce(t.id);
+    expect(store.getTarget(t.id)!.status).toBe('error');
+    expect(watcher.calls).toBe(3);
+    expect(
+      store.recentEvents().some((e) => e.level === 'error' && /not found in search results/i.test(e.message)),
+    ).toBe(true);
+
+    // Now stopped: a further run does not query again.
+    await scheduler.runOnce(t.id);
+    expect(watcher.calls).toBe(3);
+  });
+
+  it('stopping one unfindable target leaves the other targets polling', async () => {
+    const store = new Store(dir);
+    const good = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+    const bad = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '9999', mode: 'notify' });
+    let goodCalls = 0;
+    const watcher: Watcher = {
+      checkCourse: async (q) => {
+        if (q.targetCrn === '9999') return null; // this CRN is never in the results
+        goodCalls++;
+        return { stats: stats({ crn: '1814' }), decision: { action: 'NOOP', reason: 'full' } };
+      },
+    };
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher,
+      actor: new FakeActor({ kind: 'registered', crn: '1814' }),
+      session: new FakeSession(true),
+      now: () => NOW,
+      random: () => 0.5,
+    });
+
+    for (let i = 0; i < 4; i++) {
+      await scheduler.runOnce(bad.id);
+      await scheduler.runOnce(good.id);
+    }
+
+    expect(store.getTarget(bad.id)!.status).toBe('error'); // this one stopped
+    expect(store.getTarget(good.id)!.status).toBe('watching'); // the other unaffected
+    expect(goodCalls).toBe(4); // and it kept being polled every cycle
+  });
+
+  it('stops a target after repeated registration errors (any error trips the breaker)', async () => {
+    const { scheduler, store, target } = setup({
+      decision: { action: 'REGISTER', reason: 'rem>0' },
+      outcome: { kind: 'error', crn: '1814', message: 'Level Restriction' },
+    });
+    await scheduler.runOnce(target.id);
+    await scheduler.runOnce(target.id);
+    expect(store.getTarget(target.id)!.status).toBe('watching'); // still retrying
+    await scheduler.runOnce(target.id);
+    expect(store.getTarget(target.id)!.status).toBe('error'); // 3rd consecutive → stop
+  });
+
+  it('only CONSECUTIVE failures stop a target — a clean cycle resets the streak', async () => {
+    const store = new Store(dir);
+    let kind: RegisterOutcome['kind'] = 'error';
+    const watcher: Watcher = {
+      checkCourse: async () => ({ stats: stats(), decision: { action: 'REGISTER', reason: 'rem>0' } }),
+    };
+    const actor: Actor = {
+      act: async () =>
+        kind === 'error'
+          ? { kind: 'error', crn: '1814', message: 'x' }
+          : { kind: 'waitlist-full', crn: '1814' },
+    };
+    const scheduler = new Scheduler({
+      store, budget: new Budget(store), watcher, actor,
+      session: new FakeSession(true), now: () => NOW, random: () => 0.5,
+    });
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+
+    await scheduler.runOnce(t.id); // fail 1
+    await scheduler.runOnce(t.id); // fail 2
+    kind = 'waitlist-full';
+    await scheduler.runOnce(t.id); // clean cycle → streak reset
+    expect(store.getTarget(t.id)!.status).toBe('watching');
+    kind = 'error';
+    await scheduler.runOnce(t.id); // fail 1 (after reset)
+    await scheduler.runOnce(t.id); // fail 2
+    expect(store.getTarget(t.id)!.status).toBe('watching'); // not stopped — needs 3 in a row
+  });
+
   it('skips a concurrent run of the same target (no double registration)', async () => {
     const store = new Store(dir);
     const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });

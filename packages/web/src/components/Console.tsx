@@ -26,8 +26,12 @@ export function Console({ events, connected }: { events: LogEvent[]; connected: 
   return (
     <div className="console glass">
       <div className="bar">
-        <span className="c cr" /> <span className="c cy" /> <span className="c cg" />
-        <span className="t">autoregister · {connected ? t('console.liveStream') : t('console.reconnecting')}</span>
+        <span className={`c cr${connected ? '' : ' on'}`} aria-hidden="true" />{' '}
+        <span className="c cy" aria-hidden="true" />{' '}
+        <span className={`c cg${connected ? ' on' : ''}`} aria-hidden="true" />
+        <span className="t" role="status">
+          autoregister · {connected ? t('console.liveStream') : t('console.reconnecting')}
+        </span>
       </div>
       <div className="log" ref={logRef}>
         {events.map((e) => (
