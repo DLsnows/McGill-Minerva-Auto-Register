@@ -57,8 +57,14 @@ describe('CourseCard', () => {
     expect(onTogglePolling).toHaveBeenCalledWith('t1', 'watching');
   });
 
-  it('offers a Resume control for an errored course (manual retry)', () => {
-    render(<CourseCard target={{ ...target, status: 'error' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />);
-    expect(screen.getByRole('button', { name: /resume/i })).toBeInTheDocument();
+  it('does NOT offer Pause/Resume for terminal states (error, registered)', () => {
+    const { rerender } = render(
+      <CourseCard target={{ ...target, status: 'error' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />,
+    );
+    expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
+    rerender(<CourseCard target={{ ...target, status: 'registered' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />);
+    expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
   });
 });

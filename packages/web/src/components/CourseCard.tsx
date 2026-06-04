@@ -13,9 +13,11 @@ interface Props {
   running?: boolean;
 }
 
-// Which statuses expose a Pause / Resume control (terminal success states don't).
+// Only an actively-watching course can be paused, and only a paused course can
+// be resumed. 'error' and the completed states (registered / waitlisted) are
+// terminal — they cannot be resumed from here.
 const PAUSABLE: WatchStatus[] = ['watching'];
-const RESUMABLE: WatchStatus[] = ['paused', 'error', 'stopped'];
+const RESUMABLE: WatchStatus[] = ['paused'];
 
 export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, running }: Props) {
   const { t } = useTranslation();
