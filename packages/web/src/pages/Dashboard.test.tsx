@@ -47,6 +47,25 @@ describe('Dashboard', () => {
     await waitFor(() => expect(screen.getByText(/No courses watched/i)).toBeInTheDocument());
   });
 
+  it('master toggle reads "Start all" when every course is paused/terminal', async () => {
+    mockApi(
+      [{ id: 'p1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'paused', createdAt: 0 }],
+      'authenticated',
+    );
+    renderDashboard();
+    await waitFor(() => expect(screen.getByRole('button', { name: /start all/i })).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /stop all/i })).toBeNull();
+  });
+
+  it('master toggle reads "Stop all" when a course is watching', async () => {
+    mockApi(
+      [{ id: 'w1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 }],
+      'authenticated',
+    );
+    renderDashboard();
+    await waitFor(() => expect(screen.getByRole('button', { name: /stop all/i })).toBeInTheDocument());
+  });
+
   it('starts all from the Dashboard master toggle', async () => {
     mockApi([], 'authenticated');
     const startAll = vi.spyOn(api, 'startAll').mockResolvedValue({ running: true, resumed: 0 });

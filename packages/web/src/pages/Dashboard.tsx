@@ -72,9 +72,12 @@ export default function Dashboard() {
     setSchedBusy(true);
     setSchedErr(undefined);
     const sch = schedulerRef.current;
+    // Drive the action off whether anything is actually being watched (so it
+    // matches the button label), not the raw engine flag: when every course is
+    // paused/error/done, the master button is "Start all".
+    const anyWatching = (targetsRef.current.data ?? []).some((t) => t.status === 'watching');
     try {
-      // "Start all" / "Stop all": bulk-resume/pause the course statuses too.
-      if (sch.data?.running) await api.stopAll();
+      if (anyWatching) await api.stopAll();
       else await api.startAll();
       await Promise.all([sch.refetch(), targetsRef.current.refetch()]);
     } catch (e) {
@@ -86,6 +89,7 @@ export default function Dashboard() {
   }, [tr]);
 
   const list = targets.data ?? [];
+  const anyWatching = list.some((t) => t.status === 'watching');
   const sessionStatus = session.data?.status ?? 'unknown';
   const sessionDown = sessionStatus === 'logged-out' || sessionStatus === 'unknown';
 
@@ -98,7 +102,7 @@ export default function Dashboard() {
           <div className="col-h">
             <h2 className="serif">{tr('dashboard.watchedCourses')}</h2>
             <SchedulerToggle
-              running={scheduler.data?.running ?? false}
+              running={anyWatching}
               onStart={onToggleScheduler}
               onStop={onToggleScheduler}
               busy={schedBusy}
