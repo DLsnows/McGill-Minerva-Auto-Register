@@ -66,6 +66,15 @@ describe('Dashboard', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /stop all/i })).toBeInTheDocument());
   });
 
+  it('disables "Start all" when not logged in', async () => {
+    mockApi(
+      [{ id: 'p1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'paused', createdAt: 0 }],
+      'logged-out',
+    );
+    renderDashboard();
+    await waitFor(() => expect(screen.getByRole('button', { name: /start all/i })).toBeDisabled());
+  });
+
   it('starts all from the Dashboard master toggle', async () => {
     mockApi([], 'authenticated');
     const startAll = vi.spyOn(api, 'startAll').mockResolvedValue({ running: true, resumed: 0 });

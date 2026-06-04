@@ -57,6 +57,17 @@ describe('CourseCard', () => {
     expect(onTogglePolling).toHaveBeenCalledWith('t1', 'watching');
   });
 
+  it('disables Resume and Register now when not logged in (Pause stays enabled)', () => {
+    const { rerender } = render(
+      <CourseCard target={{ ...target, status: 'paused' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} loggedIn={false} />,
+    );
+    expect(screen.getByRole('button', { name: /resume/i })).toBeDisabled();
+
+    rerender(<CourseCard target={target} onToggleMode={noop} onRun={noop} onTogglePolling={noop} loggedIn={false} />);
+    expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /pause/i })).toBeEnabled();
+  });
+
   it('does NOT offer Pause/Resume for terminal states (error, registered)', () => {
     const { rerender } = render(
       <CourseCard target={{ ...target, status: 'error' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />,

@@ -11,6 +11,8 @@ interface Props {
   onRun: (id: string) => void;
   onTogglePolling: (id: string, next: WatchStatus) => void;
   running?: boolean;
+  /** When false (not logged in), resuming and one-click run are blocked. */
+  loggedIn?: boolean;
 }
 
 // Only an actively-watching course can be paused, and only a paused course can
@@ -19,7 +21,7 @@ interface Props {
 const PAUSABLE: WatchStatus[] = ['watching'];
 const RESUMABLE: WatchStatus[] = ['paused'];
 
-export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, running }: Props) {
+export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, running, loggedIn = true }: Props) {
   const { t } = useTranslation();
   const title = target.label ?? `${target.subject} ${target.courseNumber}`;
   const canRun = target.status === 'watching';
@@ -46,6 +48,8 @@ export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, runni
             <button
               type="button"
               className="btn"
+              disabled={canResume && !loggedIn}
+              title={canResume && !loggedIn ? t('scheduler.loginFirst') : undefined}
               onClick={() => onTogglePolling(target.id, canPause ? 'paused' : 'watching')}
             >
               {canPause ? t('card.pause') : t('card.resume')}
@@ -54,7 +58,8 @@ export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, runni
           <button
             type="button"
             className="btn btn-accent"
-            disabled={!canRun || running}
+            disabled={!canRun || running || !loggedIn}
+            title={canRun && !loggedIn ? t('scheduler.loginFirst') : undefined}
             onClick={() => onRun(target.id)}
           >
             {running ? t('card.running') : t('card.registerNow')}

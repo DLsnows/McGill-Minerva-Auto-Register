@@ -21,10 +21,12 @@ export default function Dashboard() {
   const targetsRef = useRef(targets);
   const schedulerRef = useRef(scheduler);
   const budgetRef = useRef(budget);
+  const sessionRef = useRef(session);
   useEffect(() => {
     targetsRef.current = targets;
     schedulerRef.current = scheduler;
     budgetRef.current = budget;
+    sessionRef.current = session;
   });
 
   // Live-refresh the daily budget + target states whenever a new log event
@@ -47,6 +49,8 @@ export default function Dashboard() {
   // Per-course pause/resume. Resuming a single course also makes sure the engine
   // is running, otherwise flipping it to 'watching' alone wouldn't poll anything.
   const onTogglePolling = useCallback(async (id: string, next: WatchStatus) => {
+    // No resuming/starting a task while logged out (the button is disabled too).
+    if (next === 'watching' && sessionRef.current.data?.status !== 'authenticated') return;
     await api.updateTarget(id, { status: next });
     if (next === 'watching') await api.startScheduler();
     await Promise.all([targetsRef.current.refetch(), schedulerRef.current.refetch()]);
@@ -68,14 +72,16 @@ export default function Dashboard() {
   const schedBusyRef = useRef(false);
   const onToggleScheduler = useCallback(async () => {
     if (schedBusyRef.current) return; // ignore a click while a toggle is already in flight
-    schedBusyRef.current = true;
-    setSchedBusy(true);
-    setSchedErr(undefined);
-    const sch = schedulerRef.current;
     // Drive the action off whether anything is actually being watched (so it
     // matches the button label), not the raw engine flag: when every course is
     // paused/error/done, the master button is "Start all".
     const anyWatching = (targetsRef.current.data ?? []).some((t) => t.status === 'watching');
+    const loggedIn = sessionRef.current.data?.status === 'authenticated';
+    if (!anyWatching && !loggedIn) return; // can't "Start all" while logged out
+    schedBusyRef.current = true;
+    setSchedBusy(true);
+    setSchedErr(undefined);
+    const sch = schedulerRef.current;
     try {
       if (anyWatching) await api.stopAll();
       else await api.startAll();
@@ -91,6 +97,7 @@ export default function Dashboard() {
   const list = targets.data ?? [];
   const anyWatching = list.some((t) => t.status === 'watching');
   const sessionStatus = session.data?.status ?? 'unknown';
+  const loggedIn = sessionStatus === 'authenticated';
   const sessionDown = sessionStatus === 'logged-out' || sessionStatus === 'unknown';
 
   return (
@@ -106,6 +113,7 @@ export default function Dashboard() {
               onStart={onToggleScheduler}
               onStop={onToggleScheduler}
               busy={schedBusy}
+              canStart={loggedIn}
             />
           </div>
           {schedErr && <div className="errbar">{schedErr}</div>}
@@ -121,6 +129,7 @@ export default function Dashboard() {
                   onRun={onRun}
                   onTogglePolling={onTogglePolling}
                   running={running.has(t.id)}
+                  loggedIn={loggedIn}
                 />
               ))}
             </div>
