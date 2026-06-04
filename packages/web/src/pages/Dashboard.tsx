@@ -47,14 +47,20 @@ export default function Dashboard() {
   }, []);
 
   // Clear the console: wipe the server-side log (so a reconnect won't re-seed the
-  // old lines) and the locally-held events.
-  const onClearConsole = useCallback(async () => {
-    try {
-      await api.clearEvents();
-    } finally {
-      clear();
-    }
-  }, [clear]);
+  // old lines), then the locally-held events. Only clear locally once the server
+  // call succeeds — otherwise surface the error and leave the log intact to retry.
+  const onClearConsole = useCallback(
+    async () => {
+      setSchedErr(undefined);
+      try {
+        await api.clearEvents();
+        clear();
+      } catch (e) {
+        setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
+      }
+    },
+    [clear, tr],
+  );
 
   // Per-course pause/resume. Resuming a single course also makes sure the engine
   // is running, otherwise flipping it to 'watching' alone wouldn't poll anything.
