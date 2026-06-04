@@ -14,6 +14,7 @@ export default function Dashboard() {
   const { events, connected, clear } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [schedErr, setSchedErr] = useState<string>();
+  const [clearErr, setClearErr] = useState<string>();
   const [schedBusy, setSchedBusy] = useState(false);
 
   // `targets`/`scheduler` are fresh objects each render; reach them through refs
@@ -51,12 +52,13 @@ export default function Dashboard() {
   // call succeeds — otherwise surface the error and leave the log intact to retry.
   const onClearConsole = useCallback(
     async () => {
-      setSchedErr(undefined);
+      // Own error state — must not touch (or be clobbered by) scheduler errors.
+      setClearErr(undefined);
       try {
         await api.clearEvents();
         clear();
       } catch (e) {
-        setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
+        setClearErr(e instanceof Error ? e.message : tr('console.clearFailed'));
       }
     },
     [clear, tr],
@@ -166,6 +168,7 @@ export default function Dashboard() {
           <div className="col-h">
             <h2 className="serif">{tr('dashboard.liveConsole')}</h2>
           </div>
+          {clearErr && <div className="errbar">{clearErr}</div>}
           <Console events={events} connected={connected} onClear={onClearConsole} />
         </div>
       </div>

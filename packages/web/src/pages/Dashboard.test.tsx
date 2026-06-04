@@ -79,6 +79,15 @@ describe('Dashboard', () => {
     expect(clearEvents).toHaveBeenCalled();
   });
 
+  it('surfaces a console-clear failure with its own message', async () => {
+    mockApi([], 'authenticated');
+    vi.spyOn(api, 'clearEvents').mockRejectedValue(new Error('clear boom'));
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /clear/i }));
+    await userEvent.click(screen.getByRole('button', { name: /clear/i }));
+    await waitFor(() => expect(screen.getByText(/clear boom/i)).toBeInTheDocument());
+  });
+
   it('pauses a single course from its card', async () => {
     mockApi(
       [{ id: 'w1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 }],
