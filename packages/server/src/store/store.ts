@@ -128,6 +128,21 @@ export class Store {
     this.save();
   }
 
+  /** Reset every actively-watching target to 'paused'. Called once on startup so
+   * the app never resumes polling on its own — the user starts watching
+   * explicitly (per-course or "Start all"). Returns how many were paused. */
+  pauseAllWatching(): number {
+    let n = 0;
+    for (const t of this.data.targets) {
+      if (t.status === 'watching') {
+        t.status = 'paused';
+        n++;
+      }
+    }
+    if (n > 0) this.save();
+    return n;
+  }
+
   // --- events (capped, newest last) ---
   appendEvent(event: Omit<LogEvent, 'id' | 'ts'> & { ts?: number }): LogEvent {
     const ev: LogEvent = { ...event, id: randomUUID(), ts: event.ts ?? Date.now() };
