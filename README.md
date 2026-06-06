@@ -66,12 +66,14 @@ npx playwright install chromium   # download the browser it controls (one time)
 npm run serve                     # start the app
 ```
 
-After `npm run serve`, **leave this window open** — closing it shuts the app
-down.
+While the app is running, **keep its windows open**: this terminal window (it
+*is* the app — closing it shuts the app down) and, once you log in, the Chromium
+browser window it opens for your McGill session (closing that logs the
+automation out). You can minimize them, just don't close them.
 
 **To stop the app** when you're done, click the terminal window and press
-**Ctrl + C** (hold **Ctrl**, press **C**). That's the proper way to quit — don't
-just close the window. To start it again later, run `npm run serve` once more.
+**Ctrl + C** (hold **Ctrl**, press **C**) — that's the proper way to quit. To
+start it again later, run `npm run serve` once more.
 
 > **Every time after this**, you only need to open the terminal in the folder
 > (step 3) and run `npm run serve`. The two install commands are one-time setup.
