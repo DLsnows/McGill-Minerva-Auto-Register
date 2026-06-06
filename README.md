@@ -10,6 +10,81 @@ from each section's seat counts — acting automatically or just notifying you.
 > accordance with McGill's terms of use. There is a **dry-run** mode (below) to
 > rehearse safely before letting it act for real.
 
+## First time? Step-by-step setup (no command-line experience needed)
+
+This walks you through everything from zero — you do **not** need to know how to
+use a terminal. If you've done this kind of thing before, the concise
+[Requirements](#requirements) / [Install](#install) / [Run](#run) sections below
+are all you need.
+
+### 1. Install Node.js (one time)
+
+This app runs on **Node.js**. Go to **https://nodejs.org**, click the big green
+**LTS** download button, open the downloaded file, and click **Next** through
+the installer (the default options are fine). This also installs `npm`, which
+the commands further down use. Without it, those commands won't exist.
+
+### 2. Download the app
+
+1. Open the project page: **https://github.com/DLsnows/McGill-Minerva-Auto-Register**
+2. Near the top-left, the branch selector should say **`prod`** — that's the
+   default branch, so it already does. (`prod` is the version to download.)
+3. Click the green **`< > Code`** button, then **Download ZIP**.
+4. Find the downloaded `.zip` (usually in your **Downloads** folder). On
+   **Windows**, right-click it → **Extract All**; on **Mac**, double-click it.
+   You'll get a folder named something like `McGill-Minerva-Auto-Register-prod`.
+   Move it somewhere easy to find, like your **Desktop**.
+
+### 3. Open a terminal *inside* that folder
+
+A "terminal" is just a window where you type commands. It needs to be pointed at
+the app's folder — that's what the `cd` ("change directory") command does. The
+easy way to avoid typing the full path is to **drag the folder in**:
+
+**Windows:**
+1. Click **Start**, type **PowerShell**, and press **Enter**. A window opens.
+2. Type `cd` followed by **one space** (don't press Enter yet).
+3. **Drag the app folder** from your Desktop onto the PowerShell window — it
+   pastes the folder's full path for you.
+4. Press **Enter**. The text on the left now ends with the folder's name, which
+   means you're "inside" it.
+
+**Mac:**
+1. Open **Terminal** (press **⌘ + Space**, type **Terminal**, press **Enter**).
+2. Type `cd` followed by **one space**.
+3. **Drag the app folder** onto the Terminal window to paste its path.
+4. Press **Enter**.
+
+### 4. Set up and start (first time)
+
+Type each line below, press **Enter** after it, and wait for it to finish before
+typing the next one:
+
+```bash
+npm install                       # download what the app needs (one time, ~1 min)
+npx playwright install chromium   # download the browser it controls (one time)
+npm run serve                     # start the app
+```
+
+After `npm run serve`, **leave this window open** — closing it shuts the app
+down.
+
+**To stop the app** when you're done, click the terminal window and press
+**Ctrl + C** (hold **Ctrl**, press **C**). That's the proper way to quit — don't
+just close the window. To start it again later, run `npm run serve` once more.
+
+> **Every time after this**, you only need to open the terminal in the folder
+> (step 3) and run `npm run serve`. The two install commands are one-time setup.
+
+### 5. Open it in your browser
+
+Open **any** browser (Chrome, Edge, Safari…) and go to:
+
+**http://127.0.0.1:4575**
+
+That's the app. Now follow the [Run](#run) steps below — log in, add your
+course(s), and press **Start all**.
+
 ## Requirements
 
 - **Node.js 22+** — this also installs `npm`. Don't have Node yet? Download the
