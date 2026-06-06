@@ -1,5 +1,7 @@
 # AutoRegister — McGill Minerva course auto-register
 
+**English** · [中文](README.zh.md) · [Français](README.fr.md)
+
 A local web app that watches McGill Minerva course sections and registers (or
 waitlists) you automatically when a seat opens. It reuses your **already-logged-in
 browser session** (so 2FA isn't re-prompted), polls on a jittered interval to stay
