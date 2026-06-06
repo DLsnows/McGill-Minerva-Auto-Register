@@ -18,13 +18,13 @@
 
 ### 1. 安装 Node.js(一次性)
 
-这个应用依赖 **Node.js** 运行。打开 **https://nodejs.org**,点那个大大的绿色
+这个应用依赖 **Node.js** 运行。打开 **[https://nodejs.org](https://nodejs.org)**,点那个大大的绿色
 **LTS** 下载按钮,打开下载好的文件,然后一路点 **Next / 下一步**(默认选项就行)。
 它会顺带装上 `npm`,后面的命令要用到它。没装 Node 的话,后面那些命令根本不存在。
 
 ### 2. 下载应用
 
-1. 打开项目页面:**https://github.com/DLsnows/McGill-Minerva-Auto-Register**
+1. 打开项目页面:**[https://github.com/DLsnows/McGill-Minerva-Auto-Register](https://github.com/DLsnows/McGill-Minerva-Auto-Register)**
 2. 左上角的分支选择框应该显示 **`prod`** —— 这是默认分支,所以本来就是它。
    (要下载的就是 `prod` 这个版本。)
 3. 点绿色的 **`< > Code`** 按钮,再点 **Download ZIP**。
@@ -74,7 +74,7 @@ npm run serve                     # 启动应用
 
 打开**任意**浏览器(Chrome、Edge、Safari……),访问:
 
-**http://127.0.0.1:4575**
+**[http://127.0.0.1:4575](http://127.0.0.1:4575)**
 
 这就是应用了。接着按下面 [运行](#运行) 一节的步骤来 —— 登录、添加你要盯的课、
 然后点 **Start all**。
@@ -82,7 +82,7 @@ npm run serve                     # 启动应用
 ## 环境要求
 
 - **Node.js 22+** —— 它会顺带装上 `npm`。还没装 Node?去官网下载 LTS 安装包:
-  **https://nodejs.org**。(没装 Node 的话,下面的 `npm` / `npx` 命令都不存在。)
+  **[https://nodejs.org](https://nodejs.org)**。(没装 Node 的话,下面的 `npm` / `npx` 命令都不存在。)
 - Playwright 的 Chromium 浏览器(一次性下载 —— 见安装)。
 
 ## 安装
@@ -101,7 +101,7 @@ npx playwright install chromium   # 一次性:下载 Playwright 要驱动的 Chr
 npm run serve
 ```
 
-然后打开 **http://127.0.0.1:4575**,接着:
+然后打开 **[http://127.0.0.1:4575](http://127.0.0.1:4575)**,接着:
 
 1. **Session** 标签页 → *Open browser & log in*。会弹出一个 Chromium 窗口;用
    McGill SSO 登录一次。(McGill 只允许**一个活跃会话** —— 在别处登录会把这个
