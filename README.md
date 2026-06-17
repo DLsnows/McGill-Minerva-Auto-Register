@@ -9,8 +9,38 @@ within the school's daily operation limits, and decides register / waitlist / no
 from each section's seat counts — acting automatically or just notifying you.
 
 > ⚠️ Personal automation for **your own** registration. Use responsibly and in
-> accordance with McGill's terms of use. There is a **dry-run** mode (below) to
-> rehearse safely before letting it act for real.
+> accordance with [McGill's terms of use](https://www.mcgill.ca/secretariat/files/secretariat/responsible-use-of-mcgill-it-policy-on-the.pdf).
+> There is a **dry-run** mode (below) to rehearse safely before letting it act for
+> real. **Please read the "Responsible & ethical use" section below before you start.**
+
+## ⚠️ Responsible & ethical use — please read this
+
+This tool talks to **McGill's live Minerva servers**. Polling too often wastes
+shared university resources and can degrade the service for everyone. Please use
+it **ethically and sparingly**: keep the default (or a longer) poll interval,
+don't hammer refresh, and never run it more aggressively than you actually need.
+
+**McGill's official guidance on automated registration software**
+([source](https://www.mcgill.ca/students/courses/add/problems)):
+
+> McGill discourages the use of software that automatically and repeatedly
+> attempts to register for course sections. If a set number of cumulative
+> registration attempts are made for a given term (either using a registration
+> software or manually), you will be blocked from all registration features for
+> that term in Minerva. If this happens, you will need to contact Service Point to
+> have your registration rights restored, which may take several business days.
+>
+> Students who choose to use automated registration software are responsible for
+> ensuring compliance with the [Policy on the Responsible Use of McGill
+> Information Technology Resources](https://www.mcgill.ca/secretariat/files/secretariat/responsible-use-of-mcgill-it-policy-on-the.pdf).
+
+You use this tool **at your own risk** and are solely responsible for complying
+with that policy. Please be considerate of others — don't over-consume public
+resources.
+
+**Free for personal use only.** This project is provided free of charge for
+personal, non-commercial use. **Commercial or for-profit use of any kind is not
+permitted.** See [LICENSE](LICENSE) (PolyForm Noncommercial 1.0.0).
 
 ## First time? Step-by-step setup (no command-line experience needed)
 

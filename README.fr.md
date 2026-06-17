@@ -11,9 +11,43 @@ sous les limites d'opérations quotidiennes de l'école, et décide entre inscri
 en agissant automatiquement ou en vous avertissant simplement.
 
 > ⚠️ Automatisation personnelle pour **votre propre** inscription. À utiliser de
-> manière responsable et conformément aux conditions d'utilisation de McGill. Un
+> manière responsable et conformément aux [conditions d'utilisation de McGill](https://www.mcgill.ca/secretariat/files/secretariat/politique_sur_lutilisation_responsable_des_ressources_en_technologie_de_linformation_de_luniversite_mcgill_.pdf). Un
 > mode **dry-run (répétition)** (ci-dessous) permet de répéter en toute sécurité
-> avant de le laisser agir pour de vrai.
+> avant de le laisser agir pour de vrai. **Veuillez lire la section
+> « Utilisation responsable et éthique » ci-dessous avant de commencer.**
+
+## ⚠️ Utilisation responsable et éthique — à lire
+
+Cet outil communique avec les **serveurs Minerva en service de McGill**. Sonder
+trop souvent gaspille des ressources universitaires partagées et peut dégrader le
+service pour tout le monde. Veuillez l'utiliser **de manière éthique et modérée** :
+gardez l'intervalle de sondage par défaut (ou plus long), ne rafraîchissez pas à
+outrance, et ne l'exécutez jamais plus agressivement que nécessaire.
+
+**Avis officiel de McGill sur les logiciels d'inscription automatisée**
+([source](https://www.mcgill.ca/students/courses/add/problems)) :
+
+> McGill déconseille l'utilisation de logiciels qui tentent automatiquement et de
+> façon répétée de s'inscrire à des sections de cours. Si un certain nombre
+> cumulatif de tentatives d'inscription est effectué pour une session donnée (au
+> moyen d'un logiciel d'inscription ou manuellement), vous serez bloqué de toutes
+> les fonctions d'inscription pour cette session dans Minerva. Le cas échéant, vous
+> devrez contacter le Service Point pour faire rétablir vos droits d'inscription,
+> ce qui peut prendre plusieurs jours ouvrables.
+>
+> Les étudiants qui choisissent d'utiliser un logiciel d'inscription automatisée
+> sont responsables d'assurer leur conformité avec la [Politique sur l'utilisation
+> responsable des ressources en technologie de l'information de l'Université
+> McGill](https://www.mcgill.ca/secretariat/files/secretariat/politique_sur_lutilisation_responsable_des_ressources_en_technologie_de_linformation_de_luniversite_mcgill_.pdf).
+
+Vous utilisez cet outil **à vos propres risques** et êtes seul responsable du
+respect de cette politique. Soyez prévenant envers les autres — ne surconsommez
+pas les ressources publiques.
+
+**Gratuit pour un usage personnel uniquement.** Ce projet est fourni gratuitement
+pour un usage personnel et non commercial. **Toute utilisation commerciale ou à
+but lucratif, sous quelque forme que ce soit, est interdite.** Voir
+[LICENSE](LICENSE) (PolyForm Noncommercial 1.0.0).
 
 ## Première fois ? Installation pas à pas (aucune expérience de la ligne de commande requise)
 

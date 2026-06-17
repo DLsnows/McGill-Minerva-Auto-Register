@@ -8,8 +8,29 @@
 上限内,并根据每个 section 的座位数判断 注册 / 候补 / 不操作 —— 可以自动执行,
 也可以只通知你。
 
-> ⚠️ 这是给**你本人**注册用的个人自动化工具。请合理使用,并遵守 McGill 的使用
-> 条款。下面有 **dry-run(演练)** 模式,可以在真正动手前安全地排练一遍。
+> ⚠️ 这是给**你本人**注册用的个人自动化工具。请合理使用,并遵守 [McGill 的使用条款](https://www.mcgill.ca/secretariat/files/secretariat/responsible-use-of-mcgill-it-policy-on-the.pdf)。下面有 **dry-run(演练)** 模式,可以在真正动手前安全地排练一遍。请在开始前先阅读下方"负责任、合乎道德地使用"一节。
+
+## ⚠️ 请负责任、合乎道德地使用
+
+这个工具会直接访问 **McGill Minerva 的真实服务器**。刷新过于频繁会浪费学校的公共
+资源,还可能拖慢服务、影响所有人。请**合乎道德、克制地**使用:保持默认(或更长的)
+轮询间隔,不要疯狂刷新,也不要跑得比你实际需要的更激进。
+
+**McGill 官方对自动注册软件的提醒**
+(来源:[https://www.mcgill.ca/students/courses/add/problems](https://www.mcgill.ca/students/courses/add/problems)):
+
+> McGill 不建议使用那种自动、反复尝试注册课程 section 的软件。如果某个学期累计的
+> 注册尝试次数(无论用注册软件还是手动)达到了某个设定值,你在 Minerva 上该学期的
+> **全部注册功能都会被封禁**。一旦发生,你需要联系 Service Point 来恢复注册权限,
+> 这可能要等好几个工作日。
+>
+> 选择使用自动注册软件的学生,有责任自行确保遵守 [《McGill 信息技术资源负责任使用政策》](https://www.mcgill.ca/secretariat/files/secretariat/responsible-use-of-mcgill-it-policy-on-the.pdf)。
+
+使用本工具的**风险由你自行承担**,你也要自行负责遵守上述政策。请多为他人着想 ——
+不要过度占用公共资源。
+
+**仅供个人免费使用。** 本项目以免费形式提供,仅限个人、非商业用途。**禁止任何形式
+的商业或盈利性使用。** 详见 [LICENSE](LICENSE)(PolyForm Noncommercial 1.0.0)。
 
 ## 第一次用?手把手安装教程(不需要任何命令行基础)
 
