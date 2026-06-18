@@ -20,9 +20,14 @@ function Shell() {
         className="top"
         style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, gap: 12 }}
       >
-        <h1 className="serif" style={{ fontSize: 30, margin: 0 }}>
-          Synapse
-        </h1>
+        <div>
+          <h1 className="serif" style={{ fontSize: 30, margin: 0, lineHeight: 1.05 }}>
+            MMAR
+          </h1>
+          <div style={{ fontSize: 11, color: 'var(--tx-2)', letterSpacing: '0.5px', marginTop: 2 }}>
+            McGill-Minerva-Auto-Register
+          </div>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <NavPills />
           <LanguageSwitcher />
