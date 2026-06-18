@@ -180,6 +180,6 @@ npm run build:web     # 生产环境 web 构建(由服务器托管)
 
 Node + TypeScript 的 monorepo(npm workspaces):`packages/{shared,server,web}` ——
 Playwright(浏览器自动化)、Fastify + WebSocket(API)、React + Vite + Tailwind
-(Synapse 主题,i18n)的界面。
+(暗黑玻璃风主题,i18n)的界面。
 
 设计与计划文档:[`docs/superpowers/`](docs/superpowers/)。

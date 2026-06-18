@@ -232,6 +232,6 @@ npm run build:web     # build web de production (servi par le serveur)
 
 Monorepo Node + TypeScript (npm workspaces) : `packages/{shared,server,web}` —
 Playwright (automatisation du navigateur), Fastify + WebSocket (API), interface
-React + Vite + Tailwind (thème Synapse, i18n).
+React + Vite + Tailwind (thème sombre vitré, i18n).
 
 Conception et plans : [`docs/superpowers/`](docs/superpowers/).
