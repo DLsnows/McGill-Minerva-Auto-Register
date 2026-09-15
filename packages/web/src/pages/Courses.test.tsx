@@ -13,6 +13,8 @@ function mockAll(targets: Awaited<ReturnType<typeof api.getTargets>>) {
   vi.spyOn(api, 'getSettings').mockResolvedValue({
     pollIntervalMinutes: 30,
     jitterMinutes: 3,
+    opPauseMs: 3000,
+    opJitterMs: 1000,
     queryBudget: 100,
     registerBudget: 20,
     notify: { desktop: true, sound: true, email: false },
@@ -313,6 +315,8 @@ describe('Courses', () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
@@ -364,6 +368,8 @@ describe('Courses', () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
@@ -429,6 +435,8 @@ describe('Courses', () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
@@ -493,6 +501,8 @@ describe('Courses', () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
@@ -554,6 +564,8 @@ describe('Courses', () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },

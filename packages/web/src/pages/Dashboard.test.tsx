@@ -24,6 +24,7 @@ function reachableOnClick(el: Element): unknown {
 function mockApi(
   targets: Awaited<ReturnType<typeof api.getTargets>>,
   sessionStatus: 'authenticated' | 'logged-out',
+  engineRunning = false,
 ) {
   vi.spyOn(api, 'getTargets').mockResolvedValue(targets);
   vi.spyOn(api, 'getSession').mockResolvedValue({ status: sessionStatus });
@@ -31,11 +32,13 @@ function mockApi(
   vi.spyOn(api, 'getSettings').mockResolvedValue({
     pollIntervalMinutes: 30,
     jitterMinutes: 3,
+    opPauseMs: 3000,
+    opJitterMs: 1000,
     queryBudget: 100,
     registerBudget: 20,
     notify: { desktop: true, sound: true, email: false },
   });
-  vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+  vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: engineRunning });
 }
 
 /** Deliver a live event frame on the tab's single stream socket. */
@@ -130,10 +133,117 @@ describe('Dashboard', () => {
         },
       ],
       'authenticated',
+      // The master switch follows the ENGINE, not the course list: a watching
+      // course with a stopped engine offers "Start all" (see the REGRESSION test
+      // below). For the switch to read "Stop all" the engine must be running.
+      true,
     );
     renderDashboard();
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /stop all/i })).toBeInTheDocument(),
+    );
+  });
+
+  // REGRESSION for the top user report: "the first Start after adding a course
+  // does not actually start polling — you have to close the app and press
+  // 'Start all' again."
+  //
+  // New courses default to status 'watching' while the engine is NOT running.
+  // The master switch used to key both its label and its action off "is any
+  // course watching?", so it read "Stop all" and the first click ran stop-all —
+  // pausing every course and stopping the engine, the exact opposite of what the
+  // user asked for. The switch must follow the ENGINE state, not the course list.
+  it('REGRESSION: with watching courses but a stopped engine the master switch offers Start all and calls startAll (never stopAll)', async () => {
+    mockApi(
+      [
+        {
+          id: 'w1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'watching',
+          createdAt: 0,
+        },
+      ],
+      'authenticated',
+      false, // engine NOT running
+    );
+    const startAll = vi
+      .spyOn(api, 'startAll')
+      .mockResolvedValue({ running: true, resumed: 0, recovered: 0, skipped: 0, errored: 0 });
+    const stopAll = vi.spyOn(api, 'stopAll').mockResolvedValue({ running: false, paused: 1 });
+
+    renderDashboard();
+
+    const start = await screen.findByRole('button', { name: /start all/i });
+    expect(screen.queryByRole('button', { name: /stop all/i })).toBeNull();
+
+    await userEvent.click(start);
+    expect(startAll).toHaveBeenCalledTimes(1);
+    expect(stopAll).not.toHaveBeenCalled();
+  });
+
+  it('master switch reads "Stop all" and stops when the engine is actually running', async () => {
+    mockApi(
+      [
+        {
+          id: 'w1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'watching',
+          createdAt: 0,
+        },
+      ],
+      'authenticated',
+      true, // engine running
+    );
+    const stopAll = vi.spyOn(api, 'stopAll').mockResolvedValue({ running: false, paused: 1 });
+    const startAll = vi
+      .spyOn(api, 'startAll')
+      .mockResolvedValue({ running: true, resumed: 0, recovered: 0, skipped: 0, errored: 0 });
+    renderDashboard();
+    const stop = await screen.findByRole('button', { name: /stop all/i });
+    expect(screen.queryByRole('button', { name: /start all/i })).toBeNull();
+    await userEvent.click(stop);
+    expect(stopAll).toHaveBeenCalledTimes(1);
+    expect(startAll).not.toHaveBeenCalled();
+  });
+
+  it('warns that watching courses are not actually being polled while the engine is stopped', async () => {
+    mockApi(
+      [
+        {
+          id: 'w1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'watching',
+          createdAt: 0,
+        },
+      ],
+      'authenticated',
+      false,
+    );
+    renderDashboard();
+    // Engine stopped, courses listed as watching: the master switch acts on the
+    // ENGINE, so it offers "Start all" — and the contradiction is stated.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /start all/i })).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText(/engine is stopped — these courses are listed as watching/i),
+      ).toBeInTheDocument(),
     );
   });
 
@@ -179,6 +289,32 @@ describe('Dashboard', () => {
     expect(update).toHaveBeenCalledWith('w1', { status: 'paused' });
   });
 
+  it('resumes a paused course through the resume endpoint (which also starts the engine)', async () => {
+    mockApi(
+      [
+        {
+          id: 'p1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'paused',
+          createdAt: 0,
+        },
+      ],
+      'authenticated',
+    );
+    const resumeTarget = vi
+      .spyOn(api, 'resumeTarget')
+      .mockResolvedValue({ resumed: true, status: 'watching' });
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /^▶ resume$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^▶ resume$/i }));
+    expect(resumeTarget).toHaveBeenCalledWith('p1');
+  });
+
   it('disables "Start all" when not logged in', async () => {
     mockApi(
       [
@@ -204,11 +340,59 @@ describe('Dashboard', () => {
     mockApi([], 'authenticated');
     const startAll = vi
       .spyOn(api, 'startAll')
-      .mockResolvedValue({ running: true, resumed: 0, skipped: 0, errored: 0 });
+      .mockResolvedValue({ running: true, resumed: 0, recovered: 0, skipped: 0, errored: 0 });
     renderDashboard();
     await waitFor(() => screen.getByRole('button', { name: /start all/i }));
     await userEvent.click(screen.getByRole('button', { name: /start all/i }));
     expect(startAll).toHaveBeenCalled();
+  });
+
+  it('reports what "Start all" did (resumed / recovered / finished counts)', async () => {
+    mockApi([], 'authenticated');
+    vi.spyOn(api, 'startAll').mockResolvedValue({
+      running: true,
+      resumed: 2,
+      recovered: 1,
+      skipped: 3,
+      errored: 1,
+    });
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /start all/i }));
+    await userEvent.click(screen.getByRole('button', { name: /start all/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/2 resumed, 1 recovered from error, 3 already finished/i),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  // The three-strikes failure breaker parks a course in 'error'. That used to be
+  // a dead end: no pause, no resume, no immediate run, and start-all skipped it —
+  // so the only way back was deleting the course.
+  it('offers a recovery action on an error card and calls the resume endpoint', async () => {
+    mockApi(
+      [
+        {
+          id: 'e1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'error',
+          createdAt: 0,
+        },
+      ],
+      'authenticated',
+    );
+    const resumeTarget = vi
+      .spyOn(api, 'resumeTarget')
+      .mockResolvedValue({ resumed: true, status: 'watching' });
+    renderDashboard();
+    const retry = await screen.findByRole('button', { name: /resume watching/i });
+    await userEvent.click(retry);
+    expect(resumeTarget).toHaveBeenCalledWith('e1');
   });
 
   it('refetches budget + targets when a log event streams in (live update, no manual refresh)', async () => {
@@ -218,6 +402,8 @@ describe('Dashboard', () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
@@ -294,6 +480,7 @@ describe('Dashboard', () => {
     vi.spyOn(api, 'startAll').mockResolvedValue({
       running: true,
       resumed: 0,
+      recovered: 0,
       skipped: 1,
       errored: 1,
     });
@@ -326,6 +513,7 @@ describe('Dashboard', () => {
     vi.spyOn(api, 'startAll').mockResolvedValue({
       running: true,
       resumed: 2,
+      recovered: 0,
       skipped: 0,
       errored: 0,
     });
@@ -366,6 +554,21 @@ describe('Dashboard', () => {
       .spyOn(api, 'getSession')
       .mockImplementation(async () => ({ status: ++calls === 1 ? 'authenticated' : 'logged-out' }));
     vi.spyOn(api, 'updateTarget').mockResolvedValue({} as never);
+    // The paused target is resumed through the dedicated route (that is what clears
+    // its failure streak), so that call has to resolve for the engine start below to
+    // be reached — and the engine start is what the server refuses here.
+    vi.spyOn(api, 'resumeTarget').mockResolvedValue({ resumed: true, status: 'watching' });
+    // A paused course revives through the dedicated resume route, so that is the
+    // request the server refuses here (its 409 is what the assertion reads).
+    // Without this mock the call would reach an unmocked `post()` and fail on the
+    // relative URL instead, replacing the reason under test with a fetch error.
+    vi.spyOn(api, 'resumeTarget').mockRejectedValue(
+      new ApiError('Not logged in — open the Session tab and log in before starting the engine.', {
+        code: SESSION_NOT_READY,
+        httpStatus: 409,
+        sessionStatus: 'logged-out',
+      }),
+    );
     vi.spyOn(api, 'startScheduler').mockRejectedValue(
       new ApiError('Not logged in — open the Session tab and log in before starting the engine.', {
         code: SESSION_NOT_READY,
@@ -475,7 +678,15 @@ describe('Dashboard', () => {
     vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
     renderDashboard();
     await waitFor(() => expect(screen.getByText(/Engine · stopped/i)).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: /stop all/i })).toBeInTheDocument();
+    // The master switch follows the ENGINE, not the stored course states: with the
+    // engine stopped its action is "Start all". This assertion used to read
+    // `/stop all/i`, which is precisely the confusion this change removes — keying
+    // the action off the course list made the first click a STOP-all.
+    expect(screen.getByRole('button', { name: /start all/i })).toBeInTheDocument();
+    // …and the contradiction is called out rather than left implicit.
+    expect(
+      screen.getByText(/engine is stopped — these courses are listed as watching/i),
+    ).toBeInTheDocument();
   });
 
   // ── manual run feedback (audit Q16/Q60/Q23) ────────────────────────────────
@@ -952,6 +1163,8 @@ describe('Dashboard', () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
@@ -990,6 +1203,8 @@ describe('Dashboard', () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
@@ -1035,6 +1250,8 @@ describe('Dashboard', () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },

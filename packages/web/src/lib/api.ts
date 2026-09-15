@@ -8,13 +8,22 @@ export interface SessionInfo {
 export interface SchedulerState {
   running: boolean;
 }
-/** Result of "Start all". `skipped` counts the targets the bulk action left
- * alone (terminal states + ones the failure breaker stopped), so the UI can say
- * what happened instead of showing an indistinguishable "nothing" (Q20). */
+/** Response of `POST /api/scheduler/start-all`: what the master "Start all" switch
+ * actually did, so the UI can report it instead of staying silent (Q20).
+ *
+ * `resumed` counts targets revived out of 'paused', `recovered` those revived out of
+ * the failure breaker's 'error', and `skipped` the terminal non-error states
+ * (registered / waitlisted / stopped) the bulk action deliberately leaves alone.
+ * `errored` is the same population as `recovered`, kept for the existing wording. */
 export interface StartAllResult {
   running: boolean;
+  /** Targets revived out of the 'error' terminal state. */
+  recovered: number;
+  /** Paused targets put back under watch. */
   resumed: number;
+  /** Terminal non-error targets left alone (registered / waitlisted / stopped). */
   skipped: number;
+  /** Targets that had been parked by the failure breaker. */
   errored: number;
 }
 
@@ -76,6 +85,27 @@ export function cooldownRemainingMs(
   if (localCoolingUntil !== undefined) return Math.max(0, localCoolingUntil - now);
   if (targetLastForcedRunAt === undefined) return 0;
   return Math.max(0, targetLastForcedRunAt + MANUAL_RUN_COOLDOWN_MS - now);
+}
+
+/** Windows-only keep-awake state (see `GET /api/power`). */
+export type PowerSource = 'ac' | 'battery' | 'desktop' | 'unknown';
+export type KeepAwakeReason =
+  | 'active'
+  | 'battery'
+  | 'disabled'
+  | 'unsupported'
+  | 'unavailable'
+  | 'keeperFailed'
+  | 'pending'
+  | 'starting';
+export interface PowerStatus {
+  supported: boolean;
+  /** The persisted setting. */
+  enabled: boolean;
+  /** A keeper is actually holding sleep off right now. */
+  active: boolean;
+  powerSource: PowerSource;
+  reason: KeepAwakeReason;
 }
 
 type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'targetCrn' | 'mode'> &
@@ -189,4 +219,6 @@ export const api = {
   getEvents: (limit = 200) => req<LogEvent[]>(`/api/events?limit=${limit}`),
   clearEvents: () => req<{ ok: true }>('/api/events', { method: 'DELETE' }),
   getBudget: () => req<BudgetSnapshot>('/api/budget'),
+
+  getPower: () => req<PowerStatus>('/api/power'),
 };

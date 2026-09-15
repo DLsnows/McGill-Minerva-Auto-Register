@@ -9,6 +9,8 @@ import { ZERO_BUDGET } from '../lib/budget-fixture';
 const LOADED_SETTINGS = {
   pollIntervalMinutes: 30,
   jitterMinutes: 3,
+  opPauseMs: 3000,
+  opJitterMs: 1000,
   queryBudget: 100,
   registerBudget: 20,
   notify: { desktop: true, sound: true, email: false },
@@ -20,6 +22,26 @@ function mockAll() {
   vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
   vi.spyOn(api, 'getSettings').mockResolvedValue(LOADED_SETTINGS);
   vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+  vi.spyOn(api, 'getPower').mockResolvedValue({
+    supported: false,
+    enabled: false,
+    active: false,
+    powerSource: 'unknown',
+    reason: 'unsupported',
+  });
+}
+
+/** The Windows keep-awake controller is available and reports `reason`. */
+function mockPower(
+  reason: 'active' | 'battery' | 'disabled' | 'unavailable' | 'keeperFailed' = 'disabled',
+) {
+  return vi.spyOn(api, 'getPower').mockResolvedValue({
+    supported: true,
+    enabled: reason === 'active',
+    active: reason === 'active',
+    powerSource: reason === 'battery' ? 'battery' : 'ac',
+    reason,
+  });
 }
 
 const renderSettings = () =>
@@ -37,6 +59,8 @@ describe('Settings', () => {
     const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
       pollIntervalMinutes: 45,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
@@ -51,6 +75,62 @@ describe('Settings', () => {
     await waitFor(() =>
       expect(put).toHaveBeenCalledWith(expect.objectContaining({ pollIntervalMinutes: 45 })),
     );
+  });
+
+  it('still lets a min-0 field be cleared to 0 (the empty->NaN rule is scoped to pacing)', async () => {
+    // Regression from scoping: the empty -> NaN coercion was briefly applied to every
+    // numeric input, which broke two perfectly valid inputs. `jitterMinutes` and
+    // `registerBudget` both have a server bound of `min(0)`, so clearing them is a
+    // legitimate way to store 0 -- with the coercion they became NaN -> null -> a raw
+    // 400 zod dump. Only the two operation-speed fields opt in.
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
+    renderSettings();
+    const jitter = await screen.findByLabelText('Jitter (min)');
+    await userEvent.clear(jitter);
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(expect.objectContaining({ jitterMinutes: 0 })),
+    );
+  });
+
+  it('saves an unrelated change when the server never sent the pacing fields', async () => {
+    // Claude review on #36, non-blocking note: `isPacingValid(form)` gated the
+    // *entire* save, so a `settings.data` without `opPauseMs`/`opJitterMs` (a
+    // server older than this feature, or a cached body from one) made the page
+    // refuse every change -- including an unrelated toggle -- behind a
+    // misleading "operation speed must be a number".
+    //
+    // This is not hypothetical: it is the same shape as the real defect this
+    // branch fixes, where the e2e fake backend omitted the two fields and the
+    // page rendered them as blanks that `NumField` coerced to 0. A field the
+    // server never sent is a field the page must not write.
+    mockAll();
+    const staleSettings: Record<string, unknown> = { ...LOADED_SETTINGS };
+    delete staleSettings.opPauseMs;
+    delete staleSettings.opJitterMs;
+    vi.spyOn(api, 'getSettings').mockResolvedValue(staleSettings as never);
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue(staleSettings as never);
+
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+
+    // The section is hidden rather than rendered as two blank, un-saveable inputs.
+    expect(screen.queryByLabelText('Pause between operations (ms)')).not.toBeInTheDocument();
+
+    await userEvent.clear(screen.getByLabelText('Poll interval (min)'));
+    await userEvent.type(screen.getByLabelText('Poll interval (min)'), '45');
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const body = put.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.pollIntervalMinutes, 'the real edit must reach the server').toBe(45);
+    // Crucially: no `opPauseMs: 0`, which the real schema rejects with a raw 400
+    // (`min(250)`) and which would overwrite the persisted value with a blank.
+    expect(body).not.toHaveProperty('opPauseMs');
+    expect(body).not.toHaveProperty('opJitterMs');
+    // And the misleading pacing error is not what the user is shown.
+    expect(screen.queryByText(/operation speed must be a number/i)).not.toBeInTheDocument();
   });
 
   it('has no email / SMTP UI at all (feature temporarily sunset)', async () => {
@@ -74,6 +154,8 @@ describe('Settings', () => {
     const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: false, sound: true, email: false },
@@ -103,6 +185,8 @@ describe('Settings', () => {
     const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 100,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
@@ -122,6 +206,8 @@ describe('Settings', () => {
     vi.spyOn(api, 'putSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 10000,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
@@ -305,5 +391,190 @@ describe('Settings', () => {
     expect(screen.queryByLabelText('Poll interval (min)')).toBeNull();
     // The hint points at the shell's bar, which is where the retry lives.
     expect(screen.getByText(/Retry in the bar above the ticker/i)).toBeInTheDocument();
+  });
+
+  it('prefills and saves the operation-speed settings', async () => {
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
+    renderSettings();
+    const pause = await screen.findByLabelText('Pause between operations (ms)');
+    const jitter = screen.getByLabelText('Operation jitter (± ms)');
+    expect((pause as HTMLInputElement).value).toBe('3000');
+    expect((jitter as HTMLInputElement).value).toBe('1000');
+    // The section is separate from — and worded differently from — the poll interval.
+    expect(screen.getByRole('heading', { name: /operation speed/i })).toBeInTheDocument();
+
+    await userEvent.clear(pause);
+    await userEvent.type(pause, '1500');
+    await userEvent.clear(jitter);
+    await userEvent.type(jitter, '400');
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(
+        expect.objectContaining({ opPauseMs: 1500, opJitterMs: 400 }),
+      ),
+    );
+  });
+
+  it('refuses to save an out-of-range operation speed', async () => {
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
+    renderSettings();
+    const pause = await screen.findByLabelText('Pause between operations (ms)');
+    await userEvent.clear(pause);
+    await userEvent.type(pause, '100'); // below the 250ms anti-detection floor
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    expect(put).not.toHaveBeenCalled();
+    // The error bar (not just the hint) names the accepted range.
+    expect(screen.getByText(/nothing was saved/i).textContent).toContain('250–60000 ms');
+  });
+
+  it('refuses to save an operation pause above the maximum', async () => {
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
+    renderSettings();
+    const pause = await screen.findByLabelText('Pause between operations (ms)');
+    await userEvent.clear(pause);
+    await userEvent.type(pause, '70000');
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    expect(put).not.toHaveBeenCalled();
+    expect(screen.getByText(/nothing was saved/i)).toBeInTheDocument();
+  });
+
+  it('refuses to save an emptied operation pause instead of silently storing 0', async () => {
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
+    renderSettings();
+    const pause = await screen.findByLabelText('Pause between operations (ms)');
+    await userEvent.clear(pause);
+    // `Number('')` is 0, so the naive handler made this snap back to a visible "0" the
+    // moment the user cleared it — the silently-stored zero this validation exists to
+    // prevent, and a contradiction of the field's own comment. The empty string now maps
+    // to NaN, so the field stays empty.
+    expect(pause).toHaveValue(null);
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    expect(put).not.toHaveBeenCalled();
+    expect(screen.getByText(/nothing was saved/i).textContent).toContain('250–60000 ms');
+  });
+});
+
+describe('Settings — keep-awake (Windows only)', () => {
+  it('renders nothing at all when the platform is not supported', async () => {
+    mockAll(); // getPower → supported: false
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+    // Wait for the power probe to have settled before asserting absence.
+    await waitFor(() => expect(api.getPower).toHaveBeenCalled());
+    expect(screen.queryByLabelText('Keep this PC awake')).not.toBeInTheDocument();
+    expect(screen.queryByText('Power (Windows)')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('keep-awake-status')).not.toBeInTheDocument();
+  });
+
+  it('renders the switch plus the full explanation when supported', async () => {
+    mockAll();
+    mockPower('disabled');
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Keep this PC awake'));
+
+    expect(screen.getByText('Power (Windows)')).toBeInTheDocument();
+    // The four things the user asked to be told clearly:
+    expect(screen.getByText(/will not go to sleep while the switch is on/i)).toBeInTheDocument();
+    expect(screen.getByText(/display still turns off normally/i)).toBeInTheDocument();
+    expect(screen.getByText(/only applies while the charger is connected/i)).toBeInTheDocument();
+    expect(screen.getByText(/on battery the PC still sleeps/i)).toBeInTheDocument();
+    expect(screen.getByText(/normal power behaviour resumes immediately/i)).toBeInTheDocument();
+  });
+
+  it('shows the live status reported by GET /api/power', async () => {
+    mockAll();
+    mockPower('active');
+    renderSettings();
+    await waitFor(() =>
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(
+        /Active — the PC will not sleep/i,
+      ),
+    );
+  });
+
+  it('shows the waiting-for-AC status on battery', async () => {
+    mockAll();
+    mockPower('battery');
+    renderSettings();
+    await waitFor(() =>
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(/Waiting for AC power/i),
+    );
+  });
+
+  it('saves the switch and refreshes the live status', async () => {
+    mockAll();
+    const power = mockPower('disabled');
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
+      queryBudget: 100,
+      registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+      keepAwake: true,
+    });
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Keep this PC awake'));
+    await userEvent.click(screen.getByLabelText('Keep this PC awake'));
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(expect.objectContaining({ keepAwake: true })),
+    );
+    // Initial load + post-save refresh.
+    await waitFor(() => expect(power).toHaveBeenCalledTimes(2));
+  });
+
+  it('distinguishes a dead keeper from an unreadable power source', async () => {
+    // Review regression: a keeper that dies on its own used to be surfaced as
+    // "the power source could not be read", which blames the wrong thing.
+    mockAll();
+    mockPower('keeperFailed');
+    renderSettings();
+    await waitFor(() =>
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(
+        /sleep-prevention helper could not run/i,
+      ),
+    );
+    expect(screen.getByTestId('keep-awake-status')).not.toHaveTextContent(
+      /power source could not be read/i,
+    );
+  });
+
+  it('polls the status so a mid-session power change is reflected', async () => {
+    mockAll();
+    const power = mockPower('disabled');
+    // Fake timers must be installed BEFORE render: the interval is created on
+    // whatever clock exists at mount time (same pattern as Session.poll.test).
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        renderSettings();
+      });
+      expect(power).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(/^Status: Off$/);
+
+      // The server releases the hold when a laptop switches to battery; the open
+      // settings page must not keep claiming it is active.
+      power.mockResolvedValue({
+        supported: true,
+        enabled: true,
+        active: false,
+        powerSource: 'battery',
+        reason: 'battery',
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(30_000);
+      });
+      expect(power.mock.calls.length).toBeGreaterThan(1);
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(/Waiting for AC power/i);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

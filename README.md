@@ -151,8 +151,10 @@ Then open **http://127.0.0.1:4575** and:
 2. **Courses** tab → add the course(s) to watch. Hover the `?` on each field for
    help; the **Term** is the Minerva term code (Winter = …01, Summer = …05,
    Fall = …09, e.g. Winter 2027 = `202701`). Faculty is required (e.g. `Faculty of Science`).
-3. **Settings** tab → poll interval & jitter, daily query/register budgets,
-   notification channels (desktop / sound) and **Dry-run** mode.
+3. **Settings** tab → poll interval & jitter (how *often* a course is checked),
+   **operation speed** (how long each action waits *inside* one check), daily
+   query/register budgets, notification channels (desktop / sound) and **Dry-run**
+   mode.
    > **Email notifications are temporarily unavailable** — the Email toggle and
    > SMTP form are hidden and the server forces the channel off. The setup guide
    > ([`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md)) is kept for when it returns.
@@ -173,6 +175,27 @@ and decides — but where it would register/waitlist it instead logs
 `DRY-RUN: would REGISTER <CRN>` and leaves the course watching. Watch the console
 to confirm it behaves as expected, then turn dry-run off to let it act for real.
 
+## Keep-awake switch (Windows only)
+
+Settings has a **"Keep this PC awake while AutoRegister runs"** switch, off by
+default. Turn it on and the machine will not go to sleep while the app is
+running — registrations can open at 3 a.m., and a sleeping PC cannot act.
+
+Its boundaries (stated in the UI too):
+
+- **No sleep, but the screen still turns off.** The display keeps its normal
+  power-off behaviour; blocking sleep is not blocking the screen.
+- **On a laptop it only applies on AC power.** On battery the PC sleeps as
+  usual to protect your runtime, and the hold resumes automatically once the
+  charger is connected (the power source is re-checked every 60 s).
+- **On a desktop** it stays in effect the whole time the switch is on.
+- **Turning the switch off, or quitting the app, restores normal power
+  behaviour immediately.** The hold lives in a background PowerShell child
+  process calling `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`;
+  when that process exits the request is gone. The app **never modifies your
+  power plan** (no `powercfg /change`).
+- The whole block is hidden on non-Windows systems.
+
 ## How it works
 
 - **Decision**: from `cap/act/rem` and `wlcap/wlact/wlrem` → REGISTER (open seat),
@@ -180,6 +203,13 @@ to confirm it behaves as expected, then turn dry-run off to let it act for real.
 - **Pacing**: a base interval (default 30 min) ± jitter, stretched to keep the
   daily **query budget** (default 100) and **register budget** (default 20) from
   running out — to look human and respect school limits.
+- **Operation speed**: how long each browser action waits *inside* one check
+  (default 3000 ms ± 1000 ms of jitter; a check performs ~9 actions). This is a
+  different dial from *how often* a course is checked — lowering it makes a single
+  check finish sooner. **Don't set it aggressively**: 250 ms is a hard floor (a
+  setting of 0 is still clamped), it is an anti-detection requirement, and
+  clicking flat-out is what gets the automation treated as a bot. The defaults are
+  deliberately conservative; going below ~1500 ms is not recommended.
 - **Per course**: `auto` registers/waitlists automatically; `notify` only alerts you.
 
 ## Troubleshooting
@@ -204,7 +234,11 @@ npm run lint
 npm run typecheck
 npm run test          # Vitest (node + web/jsdom projects)
 npm run build:web     # production web build (served by the server)
+npm run keep-awake:smoke -w @autoregister/server   # Windows only: drive the real keeper and prove it is cleaned up
 ```
+
+> Unit tests never launch PowerShell (they inject a fake spawn / power provider).
+> Run `keep-awake:smoke` when you need to verify the real thing.
 
 Node + TypeScript monorepo (npm workspaces): `packages/{shared,server,web}` —
 Playwright (browser automation), Fastify + WebSocket (API), React + Vite + Tailwind

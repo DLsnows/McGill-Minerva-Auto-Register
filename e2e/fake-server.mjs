@@ -31,6 +31,8 @@ import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import websocketPlugin from '@fastify/websocket';
+import { NUMERIC_BOUNDS, defaultSettings } from './fake-settings.mjs';
+import { powerStatus } from './fake-power.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -42,19 +44,6 @@ function argValue(flag) {
 const PORT = Number(argValue('--port') ?? process.env.E2E_PORT ?? 4575);
 const WEB_DIST =
   argValue('--web-dist') ?? process.env.E2E_WEB_DIST ?? `${REPO_ROOT}packages/web/dist`;
-
-/** Factory defaults, mirrored from packages/shared/src/store-types.ts DEFAULT_SETTINGS
- * (kept inline so this fake stays dependency-free and never imports product code). */
-function defaultSettings() {
-  return {
-    pollIntervalMinutes: 30,
-    jitterMinutes: 3,
-    queryBudget: 100,
-    registerBudget: 20,
-    notify: { desktop: true, sound: true, email: false },
-    dryRun: false,
-  };
-}
 
 const state = {
   settings: defaultSettings(),
@@ -102,14 +91,12 @@ const REQUIRED_TARGET_FIELDS = ['term', 'subject', 'courseNumber', 'targetCrn', 
  * an error-only assertion can never see.
  *
  * `/api/__requests` and `/api/health` are not routes the frontend calls, so they are kept
- * out of the per-route map; the coverage probe still has to prove it was served, so its
- * count is reported separately as `probeCalls`.
+ * out of the per-route map entirely.
  */
 
 /** The paths that exist for the test harness, not for the app. */
 const HARNESS_PATHS = new Set(['/api/__requests', '/api/health', '/api/__test/session-event']);
 const requestLedger = new Map();
-let harnessCalls = 0;
 
 /** Paths that carry an id — counted under their route template so counts stay meaningful. */
 const DYNAMIC_ROUTE_TEMPLATES = [
@@ -139,10 +126,6 @@ function isLedgerRoute(pathname) {
 function recordRequest(req) {
   // GitHub-hosted Actions masks the query string in `req.url`, so never parse it.
   const pathname = req.url.split('?')[0];
-  if (HARNESS_PATHS.has(pathname)) {
-    harnessCalls += 1;
-    return;
-  }
   if (!isLedgerRoute(pathname)) return;
   const key = ledgerKeyFor(pathname);
   const entry = requestLedger.get(key) ?? { count: 0, statuses: {}, failures: [] };
@@ -168,6 +151,10 @@ function recordResponse(req, reply) {
  * broken endpoint does not cascade into every later case, and so an `>= N` minimum can
  * only be satisfied by the case's *own* traffic (a cumulative ledger would let an earlier
  * case silently satisfy a later case's assertion).
+ *
+ * Liveness of this endpoint is not reported here: the runner proves it implicitly, because
+ * `fetchLedger()` throws when the probe request fails or answers non-2xx. A wedged backend
+ * therefore fails the case rather than looking like "the case never called its endpoints".
  */
 function ledgerSnapshot() {
   const routes = {};
@@ -176,10 +163,6 @@ function ledgerSnapshot() {
   }
   return {
     routes,
-    // Monotonic counter for the harness paths, so the runner can prove the probe itself was
-    // served (a down or wedged fake backend would otherwise make every route's delta 0 and
-    // read as "the case never called it").
-    probeCalls: harnessCalls,
     serverErrors: [...requestLedger].flatMap(([, e]) => e.failures.filter((s) => s >= 500)),
   };
 }
@@ -303,6 +286,33 @@ app.delete('/api/targets/:id', (req) => {
  */
 const MANUAL_RUN_COOLDOWN_MS = 60_000;
 
+// Explicit recovery from 'paused' / 'error' (Q3). Mirrors the real route exactly:
+// the same 409 for the genuinely terminal states, and the same `{resumed, status}`
+// body — both per-card actions (`▶ Resume` and `⟳ Resume watching`) go through it via
+// `resumeTarget`, so a missing or differently-shaped response here 404s/throws in the
+// UI, which is the "second consumer of the contract" drift the budget snapshot and
+// the `start-all` shape each hit once.
+app.post('/api/targets/:id/resume', (req, reply) => {
+  const index = state.targets.findIndex((t) => t.id === req.params.id);
+  if (index < 0) return reply.code(404).send({ error: 'not found' });
+  const target = state.targets[index];
+  if (target.status === 'watching') {
+    // Idempotent, like the real route: a double-click must not 409.
+    state.schedulerRunning = true;
+    return reply.send({ resumed: false, status: 'watching' });
+  }
+  if (target.status !== 'error' && target.status !== 'paused') {
+    return reply.code(409).send({
+      error: `target is ${target.status} — only 'error' or 'paused' targets can be resumed`,
+    });
+  }
+  const was = target.status;
+  state.targets = state.targets.map((t, i) => (i === index ? { ...t, status: 'watching' } : t));
+  state.schedulerRunning = true;
+  logEvent('ok', `Resumed watching (was '${was}') — polling again.`);
+  return { resumed: true, status: 'watching' };
+});
+
 app.post('/api/targets/:id/run', (req, reply) => {
   const target = state.targets.find((t) => t.id === req.params.id);
   if (!target) return reply.code(404).send({ error: 'not found' });
@@ -331,30 +341,20 @@ app.post('/api/targets/:id/run', (req, reply) => {
   return { started: true, retryAfterMs: MANUAL_RUN_COOLDOWN_MS, lastForcedRunAt: at };
 });
 
-// Explicit recovery from 'paused' / 'error' (Q3). Mirrors the real route, including
-// the 409 for the genuinely terminal states.
-app.post('/api/targets/:id/resume', (req, reply) => {
-  const index = state.targets.findIndex((t) => t.id === req.params.id);
-  if (index < 0) return reply.code(404).send({ error: 'not found' });
-  const target = state.targets[index];
-  if (target.status !== 'error' && target.status !== 'paused') {
-    return reply.code(409).send({
-      error: `target is ${target.status} — only 'error' or 'paused' targets can be resumed`,
-    });
-  }
-  const was = target.status;
-  state.targets = state.targets.map((t, i) => (i === index ? { ...t, status: 'watching' } : t));
-  logEvent('ok', `Resumed watching (was '${was}') — polling again.`);
-  return { resumed: true, status: 'watching' };
-});
-
 // --- settings ---
 app.get('/api/settings', () => state.settings);
 
 app.put('/api/settings', (req, reply) => {
   const patch = req.body ?? {};
-  const numeric = ['pollIntervalMinutes', 'jitterMinutes', 'queryBudget', 'registerBudget'];
-  for (const key of numeric) {
+  // Every key is derived from `NUMERIC_BOUNDS`, not from a hand-written list.
+  //
+  // The list used to be four names long while the real schema bounded eight
+  // fields, so a body the real server rejects could be stored here — and the
+  // fake, unlike the real server, *keeps* the bad value, so a later GET would
+  // return it and every assertion about the saved settings would be measuring a
+  // state the product cannot actually reach. Deriving the keys means a new
+  // bounded setting is validated the moment it is added to the contract module.
+  for (const key of Object.keys(NUMERIC_BOUNDS)) {
     if (key in patch && (typeof patch[key] !== 'number' || Number.isNaN(patch[key]))) {
       return reply.code(400).send({ error: `${key} must be a number` });
     }
@@ -364,15 +364,11 @@ app.put('/api/settings', (req, reply) => {
   // otherwise flow straight into `budgetCount()` and render `0 / -5` -- a ticker the
   // real server cannot produce, which would quietly invalidate the e2e assertions
   // that exist to pin that very contract.
-  const bounds = {
-    pollIntervalMinutes: 1,
-    jitterMinutes: 0,
-    queryBudget: 1,
-    registerBudget: 0,
-  };
-  for (const [key, min] of Object.entries(bounds)) {
-    if (key in patch && patch[key] < min) {
-      return reply.code(400).send({ error: `${key} must be >= ${min}` });
+  for (const [key, { min, max }] of Object.entries(NUMERIC_BOUNDS)) {
+    if (!(key in patch) || typeof patch[key] !== 'number' || Number.isNaN(patch[key])) continue;
+    if (patch[key] < min) return reply.code(400).send({ error: `${key} must be >= ${min}` });
+    if (max !== undefined && patch[key] > max) {
+      return reply.code(400).send({ error: `${key} must be <= ${max}` });
     }
   }
   state.settings = { ...state.settings, ...patch };
@@ -424,6 +420,13 @@ app.post('/api/__test/session-event', (req, reply) => {
   return { sessionStatus: state.sessionStatus, event };
 });
 
+// --- power / keep-awake (Windows only; `supported:false` elsewhere) ---
+// `enabled` mirrors the persisted setting while `supported`/`active`/`reason`
+// describe the machine, exactly as the real `toPowerDto()` splits them. The
+// Settings page reads both and must not be told it is active on a machine that
+// cannot host the keeper.
+app.get('/api/power', () => ({ ...powerStatus(), enabled: state.settings.keepAwake ?? false }));
+
 // --- scheduler ---
 app.get('/api/scheduler', () => ({ running: state.schedulerRunning }));
 
@@ -439,18 +442,29 @@ app.post('/api/scheduler/stop', () => {
 });
 
 app.post('/api/scheduler/start-all', () => {
-  const paused = state.targets.filter((t) => t.status === 'paused');
-  const errored = state.targets.filter((t) => t.status === 'error').length;
-  state.targets = state.targets.map((t) =>
-    t.status === 'paused' ? { ...t, status: 'watching' } : t,
+  // Mirrors the real route's response shape exactly. The web client reads all of
+  // these counts for its "Start all" notice (`Dashboard.tsx`), so returning only
+  // `resumed` made that notice render `undefined` against the fake backend -- the
+  // same class of drift the budget snapshot contract already had to be fixed for.
+  const all = state.targets;
+  const resumable = all.filter((t) => t.status === 'paused' || t.status === 'error');
+  const recovered = resumable.filter((t) => t.status === 'error').length;
+  const isDone = (s) => s === 'registered' || s === 'waitlisted' || s === 'stopped';
+  const skipped = all.filter((t) => isDone(t.status)).length;
+  state.targets = all.map((t) =>
+    t.status === 'paused' || t.status === 'error' ? { ...t, status: 'watching' } : t,
   );
   state.schedulerRunning = true;
-  const skipped = state.targets.length - paused.length;
-  logEvent('ok', `Start all: resumed ${paused.length} course(s), skipped ${skipped}.`);
-  // Mirrors the real server's response shape (packages/server/src/api/server.ts):
-  // the web UI reads `skipped` / `errored` to explain what the bulk action left
-  // alone, so the fake must not hand it an undefined field.
-  return { running: true, resumed: paused.length, skipped, errored };
+  logEvent('ok', `Start all: resumed ${resumable.length - recovered} course(s).`);
+  return {
+    running: true,
+    recovered,
+    resumed: resumable.length - recovered,
+    skipped,
+    // The real route echoes the breaker population here too; the fake must not hand
+    // the UI an undefined field it reads.
+    errored: recovered,
+  };
 });
 
 app.post('/api/scheduler/stop-all', () => {

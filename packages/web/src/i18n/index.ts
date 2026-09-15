@@ -30,6 +30,7 @@ const en = {
   scheduler: {
     running: 'Watching · running',
     stopped: 'Watching · stopped',
+    loading: 'Checking…',
     start: '▶ Start all',
     stop: '■ Stop all',
     loginFirst: 'Log in first',
@@ -59,6 +60,8 @@ const en = {
       'Manual checks are throttled to one per minute to stay human-like. Try again in {{s}}s.',
     failed: 'Could not start a check: {{reason}}',
     dropped: 'This check was not started ({{reason}}).',
+    retryWatching: '⟳ Resume watching',
+    retryHint: 'Start watching this course again after repeated failures',
   },
   console: {
     liveStream: 'live stream',
@@ -118,6 +121,10 @@ const en = {
     engineStopped: 'Engine · stopped',
     loading: 'Loading courses…',
     loadFailedLabel: 'Course list',
+    engineOffHint:
+      'The polling engine is stopped — these courses are listed as watching, but nothing is being polled.',
+    startedAll:
+      'Started · {{resumed}} resumed, {{recovered}} recovered from error, {{skipped}} already finished.',
   },
   courses: {
     addACourse: 'Add a course',
@@ -166,6 +173,34 @@ const en = {
     dryRunAria: 'Dry-run mode',
     pacingNote:
       'Jitter and a low poll frequency make the automation behave like a human — they help avoid McGill’s servers flagging unusual / bot-like activity and rate-limiting or locking the account. Keep the interval reasonably high and leave jitter on.',
+    pacingSection: 'Operation speed (inside one poll)',
+    opPause: 'Pause between operations (ms)',
+    opJitter: 'Operation jitter (± ms)',
+    pacingHint:
+      'How long to wait between each browser action inside a single course check, in milliseconds. This is not the poll interval above — that one decides how often a course is checked. One check performs about 9 actions, so a smaller pause finishes the whole cycle sooner. Keep it at {{min}} ms or more: a human-like pace is what keeps McGill’s servers from treating the automation as a bot. Allowed range: {{min}}–{{max}} ms.',
+    pacingRange:
+      'Operation speed must be a number — pause {{min}}–{{max}} ms, jitter 0–{{max}} ms. Nothing was saved.',
+    keepAwakeSection: 'Power (Windows)',
+    keepAwake: 'Keep this PC awake while AutoRegister runs',
+    keepAwakeAria: 'Keep this PC awake',
+    keepAwakeNoSleep: 'No auto-sleep: the PC will not go to sleep while the switch is on.',
+    keepAwakeDisplayNote:
+      'The display still turns off normally — blocking sleep is not the same as blocking the screen from switching off.',
+    keepAwakeLaptopNote:
+      'Laptop: this only applies while the charger is connected. On battery the PC still sleeps as usual, to protect your battery.',
+    keepAwakeDesktopNote: 'Desktop: it stays awake the whole time the switch is on.',
+    keepAwakeExitNote:
+      'Turn the switch off or quit AutoRegister and normal power behaviour resumes immediately.',
+    keepAwakeStatus: 'Status',
+    keepAwakeStatusActive: 'Active — the PC will not sleep',
+    keepAwakeStatusBattery: 'Waiting for AC power — running on battery, sleep is not blocked',
+    keepAwakeStatusDisabled: 'Off',
+    keepAwakeStatusUnavailable: 'Unavailable — the power source could not be read',
+    keepAwakeStatusKeeperFailed:
+      'Failed — the sleep-prevention helper could not run (is PowerShell allowed on this PC?)',
+    keepAwakeStatusUnsupported: 'Not supported on this system',
+    keepAwakeStatusPending: 'Not ready yet — reading the power source…',
+    keepAwakeStatusStarting: 'Starting the sleep-prevention helper…',
   },
   session: {
     title: 'Session',
@@ -212,6 +247,7 @@ const zh: typeof en = {
   scheduler: {
     running: '监控 · 运行中',
     stopped: '监控 · 已停止',
+    loading: '检查中…',
     start: '▶ 全部启动',
     stop: '■ 全部停止',
     loginFirst: '请先登录',
@@ -239,6 +275,8 @@ const zh: typeof en = {
     cooldown: '手动检查已限流为每分钟一次，以保持接近真人的节奏。请在 {{s}} 秒后重试。',
     failed: '无法发起检查：{{reason}}',
     dropped: '本次检查未启动（{{reason}}）。',
+    retryWatching: '⟳ 重新监控',
+    retryHint: '连续失败后重新开始监控这门课',
   },
   console: {
     liveStream: '实时',
@@ -295,6 +333,9 @@ const zh: typeof en = {
     engineStopped: '引擎 · 已停止',
     loading: '加载课程中…',
     loadFailedLabel: '课程列表',
+    engineOffHint: '轮询引擎已停止 —— 这些课程虽然显示为「监控中」,但当前并没有在轮询。',
+    startedAll:
+      '已启动 · 恢复 {{resumed}} 门、从错误状态找回 {{recovered}} 门,{{skipped}} 门已完成。',
   },
   courses: {
     addACourse: '添加课程',
@@ -341,6 +382,30 @@ const zh: typeof en = {
     dryRunAria: '演练模式',
     pacingNote:
       '抖动和较低的轮询频率让自动化更像真人操作 —— 有助于避免被 McGill 服务器判定为异常 / 机器人行为，进而被限流或锁定账号。建议保持较长的间隔并开启抖动。',
+    pacingSection: '操作速度（单次查询内部）',
+    opPause: '操作间隔（毫秒）',
+    opJitter: '操作抖动（± 毫秒）',
+    pacingHint:
+      '在一次课程查询的内部，每两个浏览器操作之间等多久，单位毫秒。这和上面的「轮询间隔」不是一回事 —— 轮询间隔决定多久查一次课程。一次查询大约有 9 个操作，间隔越小整个周期结束得越快。建议不要低于 {{min}} 毫秒：贴近真人的节奏才能避免被 McGill 服务器当成机器人。允许范围：{{min}}–{{max}} 毫秒。',
+    pacingRange: '操作速度必须填数字：操作间隔 {{min}}–{{max}} 毫秒，抖动 0–{{max}} 毫秒。未保存。',
+    keepAwakeSection: '电源（Windows）',
+    keepAwake: '运行期间不让这台电脑自动休眠',
+    keepAwakeAria: '保持电脑不休眠',
+    keepAwakeNoSleep: '不自动休眠：开关打开期间电脑不会进入睡眠。',
+    keepAwakeDisplayNote: '显示器仍会照常关闭 —— 「不休眠」不等于「不关屏」。',
+    keepAwakeLaptopNote: '笔记本：仅在接着电源时生效。用电池时仍会正常休眠，以保护电池续航。',
+    keepAwakeDesktopNote: '台式机：开关打开期间全程生效。',
+    keepAwakeExitNote: '关掉开关或退出本程序后，电源行为立即恢复正常。',
+    keepAwakeStatus: '当前状态',
+    keepAwakeStatusActive: '生效中 —— 电脑不会休眠',
+    keepAwakeStatusBattery: '等待接入电源 —— 当前用电池，不会阻止休眠',
+    keepAwakeStatusDisabled: '已关闭',
+    keepAwakeStatusUnavailable: '不可用 —— 无法读取电源状态',
+    keepAwakeStatusKeeperFailed:
+      '失败 —— 防休眠辅助进程无法运行（请检查本机是否允许运行 PowerShell）',
+    keepAwakeStatusUnsupported: '本系统不支持',
+    keepAwakeStatusPending: '尚未就绪 —— 正在读取电源状态…',
+    keepAwakeStatusStarting: '正在启动防休眠辅助进程…',
   },
   session: {
     title: '会话',
@@ -391,6 +456,7 @@ const fr: typeof en = {
   scheduler: {
     running: 'Surveillance · active',
     stopped: 'Surveillance · arrêtée',
+    loading: 'Vérification…',
     start: '▶ Tout démarrer',
     stop: '■ Tout arrêter',
     loginFirst: "Connectez-vous d'abord",
@@ -420,6 +486,8 @@ const fr: typeof en = {
       'Les vérifications manuelles sont limitées à une par minute pour rester naturelles. Réessayez dans {{s}} s.',
     failed: 'Impossible de lancer une vérification : {{reason}}',
     dropped: 'Cette vérification n’a pas été lancée ({{reason}}).',
+    retryWatching: '⟳ Relancer la surveillance',
+    retryHint: 'Relancer la surveillance de ce cours après des échecs répétés',
   },
   console: {
     liveStream: 'flux en direct',
@@ -483,6 +551,10 @@ const fr: typeof en = {
     engineStopped: 'Moteur · arrêté',
     loading: 'Chargement des cours…',
     loadFailedLabel: 'Liste des cours',
+    engineOffHint:
+      "Le moteur de sondage est arrêté — ces cours sont listés comme surveillés, mais rien n'est sondé.",
+    startedAll:
+      'Démarré · {{resumed}} repris, {{recovered}} récupérés après erreur, {{skipped}} déjà terminés.',
   },
   courses: {
     addACourse: 'Ajouter un cours',
@@ -534,6 +606,35 @@ const fr: typeof en = {
     dryRunAria: 'Mode simulation',
     pacingNote:
       "La gigue et une faible fréquence de sondage rendent l'automatisation semblable à un humain — elles aident à éviter que les serveurs de McGill ne signalent une activité anormale / robotisée et limitent le débit ou verrouillent le compte. Gardez un intervalle assez élevé et laissez la gigue activée.",
+    pacingSection: 'Vitesse des opérations (dans un seul sondage)',
+    opPause: 'Pause entre les opérations (ms)',
+    opJitter: 'Gigue des opérations (± ms)',
+    pacingHint:
+      "Temps d'attente entre deux actions du navigateur à l'intérieur d'une vérification de cours, en millisecondes. Ce n'est pas l'intervalle de sondage ci-dessus — celui-ci détermine la fréquence des vérifications. Une vérification effectue environ 9 actions : une pause plus courte termine donc le cycle plus vite. Restez à {{min}} ms ou plus : un rythme humain évite que les serveurs de McGill ne traitent l'automatisation comme un robot. Plage autorisée : {{min}}–{{max}} ms.",
+    pacingRange:
+      "La vitesse des opérations doit être un nombre — pause {{min}}–{{max}} ms, gigue 0–{{max}} ms. Rien n'a été enregistré.",
+    keepAwakeSection: 'Alimentation (Windows)',
+    keepAwake: 'Garder ce PC éveillé pendant l’exécution d’AutoRegister',
+    keepAwakeAria: 'Garder ce PC éveillé',
+    keepAwakeNoSleep:
+      'Pas de veille automatique : le PC ne se met pas en veille tant que l’option est activée.',
+    keepAwakeDisplayNote:
+      'L’écran s’éteint toujours normalement — empêcher la veille n’empêche pas l’extinction de l’écran.',
+    keepAwakeLaptopNote:
+      'Portable : ne s’applique que sur secteur. Sur batterie, le PC se met en veille comme d’habitude, pour préserver la batterie.',
+    keepAwakeDesktopNote: 'Ordinateur de bureau : reste éveillé tant que l’option est activée.',
+    keepAwakeExitNote:
+      'Désactivez l’option ou quittez AutoRegister : le comportement d’alimentation normal reprend immédiatement.',
+    keepAwakeStatus: 'État',
+    keepAwakeStatusActive: 'Actif — le PC ne se mettra pas en veille',
+    keepAwakeStatusBattery: 'En attente du secteur — sur batterie, la veille n’est pas bloquée',
+    keepAwakeStatusDisabled: 'Désactivé',
+    keepAwakeStatusUnavailable: 'Indisponible — impossible de lire la source d’alimentation',
+    keepAwakeStatusKeeperFailed:
+      'Échec — l’assistant anti-veille n’a pas pu démarrer (PowerShell est-il autorisé sur ce PC ?)',
+    keepAwakeStatusUnsupported: 'Non pris en charge sur ce système',
+    keepAwakeStatusPending: 'Pas encore prêt — lecture de la source d’alimentation…',
+    keepAwakeStatusStarting: 'Démarrage de l’assistant anti-veille…',
   },
   session: {
     title: 'Session',

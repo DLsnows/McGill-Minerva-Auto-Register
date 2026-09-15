@@ -143,16 +143,35 @@ export default function Dashboard() {
   // An `error` target goes through the dedicated resume route, which also clears
   // its failure streak and makes it due immediately — resurrecting it via a plain
   // status PATCH would leave it erroring out again on the next blip (Q3).
+  //
+  // A per-target guard, because the resume route is deliberately NOT idempotent: it
+  // returns 409 for a target that is not `paused`/`error`, so a double-click would
+  // surface "cannot resume a target in status watching" as a user-facing error for what
+  // is really just the first click succeeding. (The old PATCH-based path was idempotent,
+  // so this is a regression the 409 guard introduced.)
+  const busyTargetsRef = useRef(new Set<string>());
   const onTogglePolling = useCallback(
     async (id: string, next: WatchStatus) => {
       // No resuming/starting a task while logged out (the button is disabled too).
       if (next === 'watching' && sessionRef.current.data?.status !== 'authenticated') return;
-      setSchedErr(undefined);
+      if (busyTargetsRef.current.has(id)) return; // a click for this target is already in flight
+      busyTargetsRef.current.add(id);
+      setSchedNote(undefined);
       let sessionRefused = false;
       try {
+        // The dedicated resume route handles the two recoverable states: it clears
+        // the failure streak and makes the target due immediately. Every other
+        // transition is an ordinary status PATCH. Either way the engine is started
+        // explicitly — flipping to 'watching' without a running engine leaves the
+        // course watched but un-polled, which is the "I clicked Resume and nothing
+        // happened" gap this closes. (The route starts it too; calling it here as
+        // well is idempotent and keeps the contract true for every transition.)
         const current = (targetsRef.current.data ?? []).find((t) => t.id === id);
-        if (next === 'watching' && current?.status === 'error') await api.resumeTarget(id);
-        else await api.updateTarget(id, { status: next });
+        if (next === 'watching' && (current?.status === 'error' || current?.status === 'paused')) {
+          await api.resumeTarget(id);
+        } else {
+          await api.updateTarget(id, { status: next });
+        }
         if (next === 'watching') await api.startScheduler();
       } catch (e) {
         // The server refuses to start the engine without a usable session; show
@@ -160,6 +179,7 @@ export default function Dashboard() {
         sessionRefused = isSessionNotReady(e);
         setSchedErr(sessionRefused ? tr('dashboard.loginToStart') : errorMessage(e));
       } finally {
+        busyTargetsRef.current.delete(id);
         // Always reconcile the UI with the server's real state. A refusal means
         // the session resource is the thing that is wrong, so re-read it too —
         // otherwise this path keeps a green "Active" up after the server has
@@ -259,15 +279,19 @@ export default function Dashboard() {
   const schedBusyRef = useRef(false);
   const onToggleScheduler = useCallback(async () => {
     if (schedBusyRef.current) return; // ignore a click while a toggle is already in flight
-    // Drive the action off whether anything is actually being watched (so it
-    // matches the button label), not the raw engine flag: when every course is
-    // paused/error/done, the master button is "Start all".
-    const anyWatching = (targetsRef.current.data ?? []).some((t) => t.status === 'watching');
+    // The master switch follows the ENGINE's real state (`GET /api/scheduler`),
+    // never "is any course in the list watching". Those are different things:
+    // freshly added courses (and courses restored from disk) default to
+    // 'watching' while the engine is stopped, so keying the action off the
+    // course list made the very first click a STOP-all — the opposite of what
+    // the button promised, and the reason a first "Start" appeared to do nothing
+    // until the whole app was restarted.
+    const isRunning = schedulerRef.current.data?.running === true;
     const loggedIn = sessionRef.current.data?.status === 'authenticated';
     // There is nothing to stop and no session to poll with. Say so instead of
     // returning silently: a click that does nothing and explains nothing is the
     // same dead end the server-side refusal exists to remove.
-    if (!anyWatching && !loggedIn) {
+    if (!isRunning && !loggedIn) {
       setSchedErr(tr('dashboard.loginToStart'));
       return;
     }
@@ -277,25 +301,43 @@ export default function Dashboard() {
     setSchedNote(undefined);
     const sch = schedulerRef.current;
     try {
-      if (anyWatching) {
+      if (isRunning) {
         await api.stopAll();
       } else {
-        // Report what the bulk action actually did. "Start all" skips courses the
-        // breaker stopped and any already-completed ones, and that count used to
-        // be thrown away — so a user with only errored courses clicked it, saw
-        // absolutely nothing change, and had no way to learn why (Q20). The
+        // Report what the bulk action actually did. "Start all" leaves the completed
+        // courses alone and now also revives the ones the failure breaker parked, and
+        // that used to be thrown away — so a user with only errored courses clicked
+        // it, saw absolutely nothing change, and had no way to learn why (Q20). The
         // log line alone isn't enough: it's off to the side in the console.
+        //
+        // Two notices, because the two workstreams worded this differently and each
+        // carries something the other does not: `startAllResumed` /
+        // `startAllSkipped` lead with the resumed count phrased as courses (the Q20
+        // complaint was that it went unreported), and `startedAll` names the
+        // recovered population plus the finished ones. A bulk action that did
+        // something therefore reports both lines.
         const res = await api.startAll();
+        const notices: string[] = [];
         if (res.skipped > 0) {
-          setSchedNote(
+          notices.push(
             tr('dashboard.startAllSkipped', { resumed: res.resumed, skipped: res.skipped }) +
               (res.errored > 0
                 ? ` ${tr('dashboard.startAllErrored', { count: res.errored })}`
                 : ''),
           );
-        } else if (res.resumed > 0) {
-          setSchedNote(tr('dashboard.startAllResumed', { resumed: res.resumed }));
+        } else if (res.resumed > 0 && !res.recovered) {
+          notices.push(tr('dashboard.startAllResumed', { resumed: res.resumed }));
         }
+        if (res.recovered > 0 || res.skipped > 0) {
+          notices.push(
+            tr('dashboard.startedAll', {
+              resumed: res.resumed,
+              recovered: res.recovered,
+              skipped: res.skipped,
+            }),
+          );
+        }
+        if (notices.length) setSchedNote(notices.join(' '));
       }
       await Promise.all([sch.refetch(), targetsRef.current.refetch()]);
     } catch (e) {
@@ -316,11 +358,24 @@ export default function Dashboard() {
   }, [tr]);
 
   const list = targets.data ?? [];
-  const anyWatching = list.some((t) => t.status === 'watching');
+  const watchingCount = list.filter((t) => t.status === 'watching').length;
   const sessionStatus = session.data?.status ?? 'unknown';
   const loggedIn = sessionStatus === 'authenticated';
   const sessionDown = sessionStatus === 'logged-out' || sessionStatus === 'unknown';
-  const engineRunning = scheduler.data?.running ?? false;
+  // Engine actually ticking? Distinct from "courses are listed as watching".
+  const engineRunning = scheduler.data?.running === true;
+  // `running: false` while the first `GET /api/scheduler` is still in flight means
+  // "unknown", not "stopped" — acting on it would offer "Start all" against an engine
+  // that may already be up, which also revives any `error` targets the user deliberately
+  // left parked. The toggle refuses to act until the real state is known.
+  const engineStateUnknown = scheduler.loading && scheduler.data === undefined;
+  // Courses claim to be watched but nothing is polling them — exactly the state
+  // the master switch used to mislabel as "running". Gated on the real state being
+  // *known*: while `GET /api/scheduler` is in flight (or if it failed, so `data` stays
+  // undefined) `engineRunning` is false for want of information, not because the engine
+  // is stopped. Warning then would contradict the toggle's "Checking…" state and, on a
+  // failed fetch, would warn forever while the engine may well be running.
+  const idleButWatching = scheduler.data !== undefined && watchingCount > 0 && !engineRunning;
 
   return (
     <>
@@ -342,18 +397,20 @@ export default function Dashboard() {
                 {engineRunning ? tr('dashboard.engineRunning') : tr('dashboard.engineStopped')}
               </span>
               <SchedulerToggle
-                running={anyWatching}
+                running={engineRunning}
                 onStart={onToggleScheduler}
                 onStop={onToggleScheduler}
                 busy={schedBusy}
                 canStart={loggedIn}
+                loading={engineStateUnknown}
               />
             </div>
           </div>
           {schedErr && <div className="errbar">{schedErr}</div>}
           {/* Yields to `schedErr`: a real failure is the more important message, and
               the two would otherwise stack. */}
-          {schedNote && !schedErr && <div className="banner">{schedNote}</div>}
+          {schedNote && !schedErr && <div className="notice">{schedNote}</div>}
+          {idleButWatching && <div className="banner">{tr('dashboard.engineOffHint')}</div>}
           {/* Branch order matters, and this is the defect: `list.length === 0`
               cannot tell "you watch nothing" from "we could not read your list".
               - no data AND an error: the bar alone. Showing the empty state here

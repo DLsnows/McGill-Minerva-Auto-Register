@@ -35,6 +35,11 @@ interface Props {
 // CRN the error message asks for could never actually be retried (Q3/Q20).
 // The completed states (registered / waitlisted) stay terminal: you already have
 // the seat, and silently re-watching it would only burn budget.
+//
+// `error` deliberately shares the one resume button rather than getting a second
+// "retry" action of its own: both would call the same `/resume` route, and two
+// buttons for one behaviour is how a card ends up with contradictory affordances.
+// The label is what differs (`card.resumeWatching` for the error case).
 const PAUSABLE: WatchStatus[] = ['watching'];
 const RESUMABLE: WatchStatus[] = ['paused', 'error'];
 

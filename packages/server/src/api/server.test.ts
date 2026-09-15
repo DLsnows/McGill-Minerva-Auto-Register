@@ -2,29 +2,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { FastifyInstance } from 'fastify';
 import { Store } from '../store/store';
 import { Budget } from '../budget/budget';
 import { Scheduler } from '../scheduler/scheduler';
+import { getPacing, humanPause, resetPacing } from '../util/pacing';
+import type { SectionStats } from '@autoregister/shared';
 import { buildServer, SESSION_NOT_READY, type ApiDeps } from './server';
 
 type App = ReturnType<typeof buildServer>;
 
-/** ApiDeps for a test that drives the routes with a *real* Scheduler. */
-function makeSessionDeps(store: Store, scheduler: Scheduler): ApiDeps {
-  return {
-    store,
-    budget: new Budget(store),
-    session: {
-      launch: async () => undefined,
-      ensureLoggedIn: async () => undefined,
-      isLoggedIn: async () => true,
-    },
-    scheduler,
-  };
-}
+const testStats = (): SectionStats => ({
+  crn: '1814',
+  cap: 40,
+  act: 40,
+  rem: 0,
+  wlcap: 20,
+  wlact: 5,
+  wlrem: 15,
+});
 
 let dir: string;
 let app: App;
+/** The store that backs `app`, so a test can seed targets directly (deps are private). */
+let seededStore: Store;
 
 function makeSession() {
   return {
@@ -36,6 +37,7 @@ function makeSession() {
 
 function makeDeps(): ApiDeps {
   const store = new Store(dir);
+  seededStore = store;
   return {
     store,
     budget: new Budget(store),
@@ -46,6 +48,16 @@ function makeDeps(): ApiDeps {
       runTarget: () => ({ started: true }),
       isRunning: () => false,
     },
+  };
+}
+
+/** ApiDeps for a test that drives the routes with a *real* Scheduler. */
+function makeSessionDeps(store: Store, scheduler: Scheduler): ApiDeps {
+  return {
+    store,
+    budget: new Budget(store),
+    session: makeSession(),
+    scheduler,
   };
 }
 
@@ -70,6 +82,9 @@ beforeEach(() => {
 afterEach(async () => {
   await app.close();
   rmSync(dir, { recursive: true, force: true });
+  // The pacing config is module-level: a settings PUT would otherwise leak into
+  // the next test.
+  resetPacing();
 });
 
 const validTarget = {
@@ -157,6 +172,81 @@ describe('API', () => {
     expect(put.statusCode).toBe(200);
     const get = await app.inject({ method: 'GET', url: '/api/settings' });
     expect(get.json().dryRun).toBe(true);
+  });
+
+  it('accepts and persists the operation-speed settings', async () => {
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { opPauseMs: 1500, opJitterMs: 200 },
+    });
+    expect(put.statusCode).toBe(200);
+    const get = await app.inject({ method: 'GET', url: '/api/settings' });
+    expect(get.json().opPauseMs).toBe(1500);
+    expect(get.json().opJitterMs).toBe(200);
+  });
+
+  it('rejects out-of-range operation-speed values with 400 (server-side bound)', async () => {
+    const cases = [
+      { opPauseMs: 0 }, // below the 250ms anti-detection floor
+      { opPauseMs: 249 },
+      { opPauseMs: 60_001 },
+      { opJitterMs: -1 },
+      { opJitterMs: 60_001 },
+      { opPauseMs: Number.NaN }, // serialized as null
+    ];
+    for (const payload of cases) {
+      const r = await app.inject({ method: 'PUT', url: '/api/settings', payload });
+      expect(r.statusCode, JSON.stringify(payload)).toBe(400);
+    }
+    // Nothing was written by the rejected requests.
+    const get = await app.inject({ method: 'GET', url: '/api/settings' });
+    expect(get.json().opPauseMs).toBe(3000);
+    expect(get.json().opJitterMs).toBe(1000);
+  });
+
+  it('accepts the boundary operation-speed values', async () => {
+    const low = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { opPauseMs: 250, opJitterMs: 0 },
+    });
+    expect(low.statusCode).toBe(200);
+    const high = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { opPauseMs: 60_000, opJitterMs: 60_000 },
+    });
+    expect(high.statusCode).toBe(200);
+  });
+
+  it('re-applies a saved operation speed to subsequent humanPause calls', async () => {
+    const r = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { opPauseMs: 1500, opJitterMs: 100 },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(getPacing()).toEqual({ baseMs: 1500, jitterMs: 100 });
+    // The next browser operation waits within the new range.
+    vi.useFakeTimers();
+    try {
+      const spy = vi.spyOn(globalThis, 'setTimeout');
+      void humanPause();
+      const delay = Number(spy.mock.calls.at(-1)?.[1]);
+      expect(delay).toBeGreaterThanOrEqual(1400);
+      expect(delay).toBeLessThanOrEqual(1600);
+      spy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('merges a partial operation-speed save with the stored values', async () => {
+    await app.inject({ method: 'PUT', url: '/api/settings', payload: { opJitterMs: 250 } });
+    expect(getPacing()).toEqual({ baseMs: 3000, jitterMs: 250 });
+    await app.inject({ method: 'PUT', url: '/api/settings', payload: { opPauseMs: 2000 } });
+    expect(getPacing()).toEqual({ baseMs: 2000, jitterMs: 250 });
   });
 
   it('returns a self-consistent budget snapshot', async () => {
@@ -731,13 +821,17 @@ describe('API', () => {
     await app2.close();
   });
 
-  it('POST /api/scheduler/start-all resumes paused targets (not error) and starts the engine', async () => {
+  it('POST /api/scheduler/start-all resumes paused AND revives error targets, reports the counts', async () => {
     const store = new Store(dir);
     const start = vi.fn();
     const a = store.addTarget({ ...validTarget, targetCrn: '1111' });
     const b = store.addTarget({ ...validTarget, targetCrn: '2222' });
+    const c = store.addTarget({ ...validTarget, targetCrn: '3333' });
     store.updateTarget(a.id, { status: 'paused' });
     store.updateTarget(b.id, { status: 'error' });
+    store.updateTarget(c.id, { status: 'registered' });
+    // `loggedInApp` (not a bare `buildServer`) because `/start-all` is gated on
+    // session readiness — a raw app answers 409 and the counts below never appear.
     const app2 = await loggedInApp({
       store,
       budget: new Budget(store),
@@ -750,10 +844,369 @@ describe('API', () => {
       },
     });
     const r = await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' });
-    expect(r.json()).toMatchObject({ running: true, resumed: 1 });
+    // 'error' used to be skipped, leaving the course permanently stopped with no
+    // way out except deleting it.
+    expect(r.json()).toMatchObject({ running: true, resumed: 1, recovered: 1, skipped: 1 });
     expect(store.getTarget(a.id)!.status).toBe('watching'); // paused → watching
-    expect(store.getTarget(b.id)!.status).toBe('error'); // error left untouched
+    expect(store.getTarget(b.id)!.status).toBe('watching'); // error → watching (revived)
+    expect(store.getTarget(c.id)!.status).toBe('registered'); // completed → untouched
+    // Revived targets are armed as DUE NOW (not "a few seconds from now"), so the
+    // immediate tick that start() fires actually polls them.
+    const revived = store.getTarget(b.id)!.nextPollAt;
+    expect(revived).toBeDefined();
+    expect(revived!).toBeLessThanOrEqual(Date.now());
     expect(start).toHaveBeenCalled();
+    await app2.close();
+  });
+
+  it('POST /api/targets gives a brand-new (watching) target an immediate first poll', async () => {
+    const store = new Store(dir);
+    const tickSoon = vi.fn();
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+        tickSoon,
+      },
+    });
+    const before = Date.now();
+    const res = await app2.inject({ method: 'POST', url: '/api/targets', payload: validTarget });
+    expect(res.statusCode).toBe(200);
+    const created = store.listTargets()[0];
+    expect(created.status).toBe('watching');
+    // Due now (not undefined, and not the 30-minute cadence), so the very next
+    // tick — including the immediate one start() fires — polls it.
+    expect(created.nextPollAt).toBeGreaterThanOrEqual(before);
+    expect(created.nextPollAt!).toBeLessThanOrEqual(Date.now());
+    expect(res.json().nextPollAt).toBe(created.nextPollAt);
+    // Regression: this route armed `nextPollAt` but never kicked a tick, so adding a
+    // course while the engine was already running left it waiting a full 30s interval
+    // for its first poll — unlike PATCH / `/resume` / `start-all`, which all tick.
+    expect(tickSoon).toHaveBeenCalledTimes(1);
+    await app2.close();
+  });
+
+  it('PATCH paused → watching arms a due-now poll, clears the failure streak and ticks', async () => {
+    const store = new Store(dir);
+    const clearFailures = vi.fn();
+    const tickSoon = vi.fn();
+    const t = store.addTarget({ ...validTarget, targetCrn: '4444' });
+    store.updateTarget(t.id, { status: 'paused', nextPollAt: undefined });
+    // Going through the real login route: PATCHing a target to 'watching' is gated on
+    // session readiness, and this test is about the arming/tick behaviour rather than
+    // about the gate (which has its own cases).
+    const app2 = await loggedInApp({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+        clearFailures,
+        tickSoon,
+      },
+    });
+    const before = Date.now();
+    const r = await app2.inject({
+      method: 'PATCH',
+      url: `/api/targets/${t.id}`,
+      payload: { status: 'watching' },
+    });
+    expect(r.statusCode).toBe(200);
+    const next = store.getTarget(t.id)!.nextPollAt;
+    expect(next).toBeDefined();
+    expect(next!).toBeGreaterThanOrEqual(before);
+    // Due now — a future timestamp would make the immediate tick miss this target.
+    expect(next!).toBeLessThanOrEqual(Date.now());
+    expect(r.json().nextPollAt).toBe(next);
+    expect(clearFailures).toHaveBeenCalledWith(t.id);
+    expect(tickSoon).toHaveBeenCalled();
+    await app2.close();
+  });
+
+  it('PATCH to a non-watching status leaves nextPollAt alone', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ ...validTarget, targetCrn: '5555' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+      },
+    });
+    await app2.inject({
+      method: 'PATCH',
+      url: `/api/targets/${t.id}`,
+      payload: { status: 'paused' },
+    });
+    expect(store.getTarget(t.id)!.nextPollAt).toBeUndefined();
+    await app2.close();
+  });
+
+  it('POST /api/targets/:id/resume revives an error target, clears its streak and kicks the engine', async () => {
+    const store = new Store(dir);
+    const start = vi.fn();
+    const tickSoon = vi.fn();
+    const clearFailures = vi.fn();
+    const t = store.addTarget({ ...validTarget, targetCrn: '6666' });
+    store.updateTarget(t.id, { status: 'error' });
+    const app2 = await loggedInApp({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+        clearFailures,
+        tickSoon,
+        // The route arms the target through this hook (the real Scheduler writes
+        // `nextPollAt = now`); without it in the double the timestamp stays unset.
+        scheduleNow: (id: string) => store.updateTarget(id, { nextPollAt: Date.now() }),
+      },
+    });
+    const before = Date.now();
+    const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/resume` });
+    expect(r.statusCode).toBe(200);
+    // `resumed` (not `running`) is this route's contract — the client's
+    // `resumeTarget` types it as `{ resumed, status }`, and the engine start is a
+    // side effect it does not need echoed back.
+    expect(r.json()).toMatchObject({ resumed: true, status: 'watching' });
+    const revived = store.getTarget(t.id)!;
+    expect(revived.status).toBe('watching');
+    expect(revived.nextPollAt!).toBeGreaterThanOrEqual(before);
+    // Due now, so a tick that fires right after this request polls it.
+    expect(revived.nextPollAt!).toBeLessThanOrEqual(Date.now());
+    expect(clearFailures).toHaveBeenCalledWith(t.id);
+    expect(start).toHaveBeenCalled();
+    // start() is a no-op when the engine already runs (other courses watched) —
+    // tickSoon() is what guarantees an immediate poll in that case.
+    expect(tickSoon).toHaveBeenCalled();
+    await app2.close();
+  });
+
+  it('POST /api/targets/:id/resume returns 404 for a missing target', async () => {
+    const r = await app.inject({ method: 'POST', url: '/api/targets/nope/resume' });
+    expect(r.statusCode).toBe(404);
+  });
+
+  it('POST /api/targets/:id/resume refuses terminal targets (no duplicate registration)', async () => {
+    // 'registered' / 'waitlisted' are terminal by design: `start-all` filters them out
+    // and the card UI never offers Resume for them. The route itself used to accept
+    // *any* id, which would put a course that already has a seat back into the polling
+    // loop — burning the query budget every cycle and, if `decide()` saw an opening,
+    // reaching `actor.act()` for a duplicate submit. 'stopped' is included so this route
+    // and PATCH agree on the terminal set.
+    for (const status of ['registered', 'waitlisted', 'stopped'] as const) {
+      const t = seededStore.addTarget({ ...validTarget, targetCrn: '4242' });
+      seededStore.updateTarget(t.id, { status });
+
+      const r = await app.inject({ method: 'POST', url: `/api/targets/${t.id}/resume` });
+
+      expect(r.statusCode).toBe(409);
+      expect(seededStore.getTarget(t.id)!.status).toBe(status);
+      seededStore.removeTarget(t.id);
+    }
+  });
+
+  it('PATCH cannot flip a terminal target back to watching', async () => {
+    // Same hazard on the PATCH path, which additionally arms an immediate poll and
+    // clears the failure streak — so a stray `{ status: 'watching' }` used to both
+    // restart polling and hand the course a fresh set of retries. The set must match
+    // `/resume`: 'stopped' used to slip through here while `/resume` rejected it.
+    for (const status of ['registered', 'waitlisted', 'stopped'] as const) {
+      const t = seededStore.addTarget({ ...validTarget, targetCrn: '5150' });
+      seededStore.updateTarget(t.id, { status });
+
+      const r = await app.inject({
+        method: 'PATCH',
+        url: `/api/targets/${t.id}`,
+        payload: { status: 'watching' },
+      });
+
+      expect(r.statusCode).toBe(409);
+      expect(seededStore.getTarget(t.id)!.status).toBe(status);
+      seededStore.removeTarget(t.id);
+    }
+  });
+
+  it('REGRESSION: start-all arms revived targets as due-now and polls them in the same request', async () => {
+    // End-to-end over the REAL scheduler and the REAL routes. The previous cut of
+    // this fix armed revived targets with `nextPollAt = now + 0..3s`, which made
+    // them miss the immediate tick `start()` fires (it runs at the same `now`) —
+    // so a revived course still waited a whole 30s interval. A test that presets
+    // `nextPollAt` by hand cannot catch that; this one goes through the route.
+    const store = new Store(dir);
+    const before = Date.now();
+    // One frozen clock shared by the scheduler and the routes: the route arms the
+    // target "due now" from this clock, and the immediate tick compares against the
+    // same value — which is exactly the invariant under test.
+    const clock = () => before;
+    const watcher = {
+      calls: 0,
+      checkCourse: async () => {
+        watcher.calls++;
+        return { stats: testStats(), decision: { action: 'NOOP' as const, reason: 'full' } };
+      },
+    };
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher,
+      actor: { act: async () => ({ kind: 'registered' as const, crn: '1814' }) },
+      session: { isLoggedIn: async () => true },
+      now: clock,
+      random: () => 0.5,
+    });
+    const t = store.addTarget({ ...validTarget, targetCrn: '7777' });
+    store.updateTarget(t.id, { status: 'error', nextPollAt: undefined });
+    // `/start-all` is gated on session readiness, so go through the real login route.
+    const app2 = await loggedInApp({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler,
+      now: clock,
+    });
+    try {
+      const r = await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' });
+      expect(r.json()).toMatchObject({ running: true, recovered: 1 });
+      const armed = store.getTarget(t.id)!;
+      expect(armed.status).toBe('watching');
+      // `nextPollAt` is NOT the observable to assert on here: the immediate tick really
+      // runs (that is the point), and when its cycle finishes `scheduleNext()` rewrites
+      // `nextPollAt` to the *next* interval. Asserting on it would be asserting on the
+      // post-cycle schedule, not on what the route armed. What proves the fix is that
+      // the poll happened at all, right now — `lastPolledAt` is set from the same clock.
+      await vi.waitFor(() => expect(watcher.calls).toBe(1));
+      expect(store.getTarget(t.id)!.lastPolledAt).toBe(before);
+      expect(store.recentEvents().some((e) => /No opening/.test(e.message))).toBe(true);
+    } finally {
+      scheduler.stop();
+      await app2.close();
+    }
+  });
+
+  it('REGRESSION: POST /api/targets/:id/resume polls immediately even when the engine is already running', async () => {
+    const store = new Store(dir);
+    const before = Date.now();
+    // One frozen clock shared by the scheduler and the routes — see the note in the
+    // start-all regression test above.
+    const clock = () => before;
+    const watcher = {
+      calls: 0,
+      checkCourse: async () => {
+        watcher.calls++;
+        return { stats: testStats(), decision: { action: 'NOOP' as const, reason: 'full' } };
+      },
+    };
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher,
+      actor: { act: async () => ({ kind: 'registered' as const, crn: '1814' }) },
+      session: { isLoggedIn: async () => true },
+      now: clock,
+      random: () => 0.5,
+    });
+    // Another course is already being watched, so the engine is already running:
+    // `start()` inside the resume route is a no-op, and only `tickSoon()` can make
+    // the resumed course poll before the next 30s interval.
+    const other = store.addTarget({ ...validTarget, targetCrn: '8888' });
+    store.updateTarget(other.id, { nextPollAt: before + 3_600_000 }); // not due
+    scheduler.start();
+    const t = store.addTarget({ ...validTarget, targetCrn: '9999' });
+    store.updateTarget(t.id, { status: 'error', nextPollAt: undefined });
+
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler,
+      now: clock,
+    });
+    try {
+      const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/resume` });
+      expect(r.statusCode).toBe(200);
+      // Same reasoning as the start-all test: asserting on `nextPollAt` would race the
+      // cycle's own `scheduleNext()`. The resumed target was polled immediately (from
+      // the shared clock), which is the behaviour under test.
+      await vi.waitFor(() => expect(watcher.calls).toBe(1));
+      expect(store.getTarget(t.id)!.lastPolledAt).toBe(before);
+      // The untouched watching course was not due, so it was NOT polled too.
+      expect(watcher.calls).toBe(1);
+    } finally {
+      scheduler.stop();
+      await app2.close();
+    }
+  });
+
+  it('start-all only clears the failure streak of the targets it revives', async () => {
+    const store = new Store(dir);
+    const clearFailures = vi.fn();
+    const a = store.addTarget({ ...validTarget, targetCrn: 'a111' }); // paused → revived
+    const b = store.addTarget({ ...validTarget, targetCrn: 'b222' }); // error  → revived
+    const c = store.addTarget({ ...validTarget, targetCrn: 'c333' }); // already watching
+    store.updateTarget(a.id, { status: 'paused' });
+    store.updateTarget(b.id, { status: 'error' });
+    expect(store.getTarget(c.id)!.status).toBe('watching');
+    // This route is gated on session readiness.
+    const app2 = await loggedInApp({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+        clearFailures,
+      },
+    });
+    await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' });
+    // Scoped: a watching course that is merely continuing keeps its streak.
+    expect(clearFailures.mock.calls.map((calls) => calls[0]).sort()).toEqual([a.id, b.id].sort());
+    expect(clearFailures).not.toHaveBeenCalledWith(c.id);
     await app2.close();
   });
 
@@ -1322,13 +1775,33 @@ describe('API', () => {
     });
     const r = await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' });
 
-    // The old response was just `{running:true, resumed:1}` — with one errored
-    // course the user saw "resumed 0" and no explanation at all (Q20).
-    expect(r.json()).toMatchObject({ running: true, resumed: 1, skipped: 2, errored: 1 });
-    expect(store.getTarget(errored.id)!.status).toBe('error'); // still needs the explicit Resume
+    // Three targets: one paused, one parked by the breaker, one already registered.
+    //
+    // The merged contract revives the *error* target too — that is the "the first
+    // Start must actually start polling" fix, and it is why `error` is reported as
+    // `recovered` rather than counted as skipped. Only the completed state is left
+    // alone. (The earlier reading of this test asserted that `error` stayed terminal
+    // and was included in `skipped`; that was the audit side's semantics before the
+    // product side changed it deliberately.)
+    expect(r.json()).toMatchObject({
+      running: true,
+      resumed: 1,
+      recovered: 1,
+      skipped: 1,
+      errored: 1,
+    });
+    expect(store.getTarget(errored.id)!.status).toBe('watching'); // revived, not parked
     expect(store.getTarget(paused.id)!.status).toBe('watching');
-    expect(scheduleNow).toHaveBeenCalledWith(paused.id); // and is due now, not hours from now
-    expect(store.recentEvents().some((e) => /skipped 2/.test(e.message))).toBe(true);
+    expect(store.getTarget(done.id)!.status).toBe('registered'); // completed → untouched
+    // Revived targets are armed "due now", which is an *effect* — the route reaches it
+    // by writing `nextPollAt` itself rather than by calling the scheduler's
+    // `scheduleNow` hook, so assert the state a tick reads, not the call that produced
+    // it. A future timestamp here is exactly the bug that made a first "Start" look
+    // like a no-op.
+    const armedAt = store.getTarget(paused.id)!.nextPollAt;
+    expect(armedAt).toBeDefined();
+    expect(armedAt!).toBeLessThanOrEqual(Date.now());
+    expect(store.recentEvents().some((e) => /skipped 1/.test(e.message))).toBe(true);
     expect(start).toHaveBeenCalled();
     await app2.close();
   });
@@ -1381,8 +1854,13 @@ describe('API', () => {
     });
     const body = (await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' })).json();
 
-    // 1 paused (resumed) + 1 already active + 1 errored → only the errored one skipped.
-    expect(body).toMatchObject({ resumed: 1, skipped: 1, errored: 1 });
+    // 1 paused + 1 already active + 1 parked by the breaker.
+    //
+    // Only the *completed* states count as skipped now: the error target is revived
+    // (that is the "first Start must actually poll" fix, and it is reported through
+    // `recovered`), and the already-watching one is neither resumed nor skipped —
+    // it was already running, which is the pr-agent finding this test exists for.
+    expect(body).toMatchObject({ resumed: 1, recovered: 1, skipped: 0, errored: 1 });
     await app2.close();
   });
 
@@ -1509,5 +1987,157 @@ describe('API', () => {
     } finally {
       await app2.close();
     }
+  });
+});
+
+describe('API — power / keep-awake', () => {
+  /** Records what the API asked the controller to do; never spawns anything. */
+  function fakeKeepAwake(supported = true) {
+    let enabled = false;
+    let active = false;
+    const status = () => ({
+      supported,
+      settingEnabled: enabled,
+      active,
+      powerSource: 'ac' as const,
+      reason: active
+        ? ('active' as const)
+        : enabled
+          ? ('unavailable' as const)
+          : ('disabled' as const),
+    });
+    return {
+      applied: [] as boolean[],
+      status: vi.fn(status),
+      apply: vi.fn(async (s: { keepAwake?: boolean }) => {
+        enabled = s.keepAwake === true;
+        active = supported && enabled;
+        return status();
+      }),
+      stop: vi.fn(() => {
+        enabled = false;
+        active = false;
+        return status();
+      }),
+    };
+  }
+
+  function buildWithPower(keepAwake: ReturnType<typeof fakeKeepAwake>) {
+    const store = new Store(dir);
+    return buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+      },
+      keepAwake,
+    });
+  }
+
+  let powered: FastifyInstance;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'autoreg-power-'));
+  });
+  afterEach(async () => {
+    await powered?.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('GET /api/power reports the controller status', async () => {
+    const keepAwake = fakeKeepAwake();
+    powered = buildWithPower(keepAwake);
+    const r = await powered.inject({ method: 'GET', url: '/api/power' });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({
+      supported: true,
+      enabled: false,
+      active: false,
+      powerSource: 'ac',
+      reason: 'disabled',
+    });
+  });
+
+  it('GET /api/power reports supported:false when the controller is absent', async () => {
+    const store = new Store(dir);
+    powered = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+      },
+    });
+    const r = await powered.inject({ method: 'GET', url: '/api/power' });
+    expect(r.json()).toEqual({
+      supported: false,
+      enabled: false,
+      active: false,
+      powerSource: 'unknown',
+      reason: 'unsupported',
+    });
+  });
+
+  it('PUT /api/settings persists keepAwake and applies it immediately', async () => {
+    const keepAwake = fakeKeepAwake();
+    powered = buildWithPower(keepAwake);
+
+    const on = await powered.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { keepAwake: true },
+    });
+    expect(on.statusCode).toBe(200);
+    expect(on.json().keepAwake).toBe(true);
+    expect(keepAwake.apply).toHaveBeenLastCalledWith(expect.objectContaining({ keepAwake: true }));
+
+    // The applied state is observable through /api/power without another save.
+    expect((await powered.inject({ method: 'GET', url: '/api/power' })).json()).toMatchObject({
+      enabled: true,
+      active: true,
+      reason: 'active',
+    });
+
+    const off = await powered.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { keepAwake: false },
+    });
+    expect(off.json().keepAwake).toBe(false);
+    expect((await powered.inject({ method: 'GET', url: '/api/power' })).json()).toMatchObject({
+      enabled: false,
+      active: false,
+      reason: 'disabled',
+    });
+  });
+
+  it('rejects a non-boolean keepAwake with 400', async () => {
+    powered = buildWithPower(fakeKeepAwake());
+    const r = await powered.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { keepAwake: 'yes' },
+    });
+    expect(r.statusCode).toBe(400);
+  });
+
+  it('defaults keepAwake to false so it is opt-in', async () => {
+    powered = buildWithPower(fakeKeepAwake());
+    const r = await powered.inject({ method: 'GET', url: '/api/settings' });
+    expect(r.json().keepAwake).toBe(false);
   });
 });

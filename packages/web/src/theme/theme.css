@@ -145,3 +145,5 @@ body {
    CSS grid so the message column can shrink (min-width: 0) while the button
    keeps its natural size instead of being squeezed by a long error string. */
 .res-errbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+/* Non-error status feedback (e.g. "Start all" reporting what it did). */
+.notice { color: var(--tx-2); font-size: 12px; margin-top: 8px; }

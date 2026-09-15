@@ -10,6 +10,8 @@ import App from './App';
 const LOADED_SETTINGS: Awaited<ReturnType<typeof api.getSettings>> = {
   pollIntervalMinutes: 30,
   jitterMinutes: 3,
+  opPauseMs: 3000,
+  opJitterMs: 1000,
   queryBudget: 100,
   registerBudget: 20,
   notify: { desktop: true, sound: true, email: false },
@@ -83,6 +85,8 @@ describe('App shell', () => {
       settings: {
         pollIntervalMinutes: 30,
         jitterMinutes: 3,
+        opPauseMs: 3000,
+        opJitterMs: 1000,
         queryBudget: 1000,
         registerBudget: 20,
         notify: { desktop: true, sound: true, email: false },
@@ -95,6 +99,8 @@ describe('App shell', () => {
     vi.spyOn(api, 'putSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 10000,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
@@ -107,6 +113,8 @@ describe('App shell', () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30,
       jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
       queryBudget: 10000,
       registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },

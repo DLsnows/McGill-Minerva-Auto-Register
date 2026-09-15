@@ -110,7 +110,7 @@ describe('CourseCard', () => {
         onTogglePolling={noop}
       />,
     );
-    expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^▶ resume$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
     rerender(
       <CourseCard
@@ -121,6 +121,37 @@ describe('CourseCard', () => {
       />,
     );
     expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
+  });
+
+  // Product side (feat/ci-and-ux-overhaul) rewrote the same base test as
+  // "offers no Pause/Resume for completed states (registered), but a recovery
+  // action for error". Its assertions are kept verbatim here, as a separate
+  // block, so that no assertion from either side of the merge is lost.
+  it('offers no Pause/Resume for completed states (registered), but a recovery action for error', () => {
+    const { rerender } = render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /^▶ resume$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
+    // 'error' is recoverable — the breaker parked it, the user can revive it.
+    expect(screen.getByRole('button', { name: /resume watching/i })).toBeInTheDocument();
+
+    rerender(
+      <CourseCard
+        target={{ ...target, status: 'registered' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /^▶ resume$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /resume watching/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
   });
 
@@ -144,6 +175,41 @@ describe('CourseCard', () => {
   });
 
   it('disables "Resume watching" while logged out (like the paused Resume)', () => {
+    render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        loggedIn={false}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /resume watching/i })).toBeDisabled();
+  });
+
+  // Regression: the failure breaker sets status 'error' and the card used to
+  // render no way out of it at all (no pause, no resume, no immediate run) —
+  // only deleting and re-creating the course worked.
+  it('revives an error course through the shared resume action', async () => {
+    // One button, one action: an `error` target is recoverable through the same
+    // `onTogglePolling(id, 'watching')` path as a paused one. The Dashboard routes
+    // that call to the dedicated `/resume` endpoint for both states — that is what
+    // clears the failure streak — so the card needs no second callback, and two
+    // buttons for one behaviour is how a card ends up with contradictory affordances.
+    const onTogglePolling = vi.fn();
+    render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={onTogglePolling}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /resume watching/i }));
+    expect(onTogglePolling).toHaveBeenCalledWith('t1', 'watching');
+  });
+
+  it('blocks the error recovery action when logged out', () => {
     render(
       <CourseCard
         target={{ ...target, status: 'error' }}

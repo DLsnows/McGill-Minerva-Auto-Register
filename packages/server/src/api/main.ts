@@ -127,7 +127,25 @@ export function installProcessGuards(rt: Runtime): ProcessGuardTeardown {
   };
 }
 
-async function main() {
+/**
+ * The synchronous last-resort keeper sweep for `process.on('exit')`.
+ *
+ * It MUST be given the instance that actually spawned the keeper. `process.on('exit')`
+ * handlers may only run synchronous code, so the async `stop()` used by the normal close
+ * and signal paths cannot be awaited there. An earlier revision had this call a
+ * module-level singleton that `createRuntime()` never used, so the sweep could never
+ * reach the running keeper and the child only died later via its own stdin-EOF watchdog.
+ *
+ * Exported (and parameterised) so the wiring itself can be asserted in a test: both the
+ * "targets the real instance" and "force-kills rather than cooperatively stopping"
+ * properties were exactly what regressed, and neither is observable from a test that
+ * only exercises `killChildSync()` directly.
+ */
+export function releaseKeepAwakeOnExit(keepAwake: { killChildSync(): void }): void {
+  keepAwake.killChildSync();
+}
+
+export async function main(): Promise<void> {
   const clients = new Set<WebSocket>();
   const runtime = createRuntime((event) => broadcast(clients, event));
   // On startup nothing should be polling — reset any persisted 'watching'
@@ -147,16 +165,54 @@ async function main() {
   runtime.scheduler.setSessionLostHandler((reason) => {
     if (app.sessions.markLoggedOut()) console.log(`Session lost: ${reason}`);
   });
+
+  // Keep-awake lifecycle: the keeper child must never outlive this process, so
+  // tear it down on a normal close and on both termination signals. The `exit`
+  // handler is the last-resort synchronous sweep (signal handlers are not
+  // guaranteed to have finished by then).
+  let shuttingDown = false;
+  const releaseKeepAwake = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    runtime.keepAwake.stop();
+  };
+  app.addHook('onClose', async () => releaseKeepAwake());
+  const onSignal = (signal: NodeJS.Signals) => {
+    releaseKeepAwake();
+    void app.close().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143));
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
+  process.on('exit', () => releaseKeepAwakeOnExit(runtime.keepAwake));
+
   await app.listen({ host: '127.0.0.1', port: PORT });
   console.log(`AutoRegister API listening on http://127.0.0.1:${PORT}`);
 }
 
-// Guarded so the unit tests can import the helpers above without booting a server
-// (importing this module must not have the side effect of binding a port).
-// `pathToFileURL` rather than string-building the URL: on Windows `import.meta.url`
-// is `file:///C:/...` while a hand-built `file://C:\...` never compares equal.
-const entry = process.argv[1];
-if (entry && existsSync(entry) && import.meta.url === pathToFileURL(entry).href) {
+/**
+ * Whether this module is the process entry point rather than an import.
+ *
+ * `process.argv[1]` is the script Node was asked to run; ESM has no `require.main`
+ * equivalent. Without this guard, importing the module for a test would immediately
+ * start a real server on port 4575. `pathToFileURL` rather than string-building the
+ * URL: on Windows `import.meta.url` is `file:///C:/...` while a hand-built
+ * `file://C:\...` never compares equal.
+ *
+ * The `existsSync` check keeps a *nonexistent* `argv[1]` from throwing inside
+ * `pathToFileURL`, and the try/catch covers the rest (`pathToFileURL` still rejects
+ * some inputs it cannot interpret as a path).
+ */
+const isEntryPoint = (() => {
+  const entry = process.argv[1];
+  if (!entry || !existsSync(entry)) return false;
+  try {
+    return import.meta.url === pathToFileURL(entry).href;
+  } catch {
+    return false;
+  }
+})();
+
+if (isEntryPoint) {
   main().catch((err) => {
     console.error('Server failed to start:', err);
     process.exit(1);
