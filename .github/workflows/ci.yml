@@ -10,6 +10,13 @@ name: CI
 # Replaces the former ci-lint-typecheck.yml + ci-unit-tests.yml (which only listened on
 # [dev, staging], so PRs against the default branch `prod` — e.g. Dependabot's — ran no
 # CI at all).
+#
+# FORK SAFETY: the `guard` job runs first and every code-executing job depends on it.
+# Without it, `branch-gate.yml` rejecting a fork PR would be an *after-the-fact* refusal —
+# both workflows start in parallel, so a fork's `package.json` (preinstall hooks, test/build
+# scripts) would already have executed on the runner by the time the gate reported failure.
+# `pull_request_target` is deliberately NOT used: it would hand secrets and write permissions
+# to untrusted code, which is strictly worse.
 
 on:
   pull_request:
@@ -25,7 +32,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Fail-closed: nothing that runs repository code may start before this says the head is an
+  # in-repo branch. Jobs skipped via `needs` show up as *skipped*, not green — the honest
+  # signal for "we refused to run this".
+  guard:
+    runs-on: ubuntu-slim
+    outputs:
+      same_repo: ${{ steps.check.outputs.same_repo }}
+    steps:
+      - name: Require an in-repo head branch
+        id: check
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" = "$THIS_REPO" ]; then
+            echo "same_repo=true" >> "$GITHUB_OUTPUT"
+            echo "Head branch is in $THIS_REPO — proceeding."
+          else
+            echo "same_repo=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PR head is the fork '$HEAD_REPO', not $THIS_REPO — refusing to run repository code (no npm ci, no scripts). CI is skipped for fork PRs by design."
+          fi
+
   lint-and-typecheck:
+    needs: guard
+    if: ${{ needs.guard.outputs.same_repo == 'true' }}
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v4
@@ -58,10 +89,11 @@ jobs:
           set -o pipefail
           npm run typecheck 2>&1 | tee typecheck-output.txt
 
-      # Prettier is checked on the files THIS PR touched only. The repo-wide
-      # `npm run format:check` is still red (historical debt — ~37 files); running it here
-      # would fail every PR until someone reformats the tree and destroys git blame.
-      - name: Prettier check (changed files only)
+      # Prettier is scoped to the files THIS PR touched, and only to violations the change
+      # *introduces* (the repo-wide `npm run format:check` is red on ~37 historical files,
+      # several of which product branches legitimately edit). Files that were already
+      # unformatted on the base are reported as pre-existing debt and do not fail the job.
+      - name: Prettier check (no newly-introduced violations)
         id: format
         continue-on-error: true
         env:
@@ -92,12 +124,21 @@ jobs:
               echo "| TypeScript | :x: failed |"
             fi
             if [ "${{ steps.format.outcome }}" = "success" ]; then
-              echo "| Prettier (changed files) | :white_check_mark: passed |"
+              echo "| Prettier (new violations only) | :white_check_mark: passed |"
             else
-              echo "| Prettier (changed files) | :x: failed |"
+              echo "| Prettier (new violations only) | :x: failed |"
             fi
             echo ""
-            echo "Prettier result on this PR's changed files:"
+            # Pre-existing debt is reported, never fatal — surface it so reviewers can see
+            # which historical files this PR happened to touch.
+            PREEXISTING=$(jq -r '.preExisting | length' format-changed.json 2>/dev/null || echo '')
+            if [ -n "$PREEXISTING" ] && [ "$PREEXISTING" != "0" ]; then
+              echo "> ℹ️ ${PREEXISTING} changed file(s) were **already** unformatted on \`${{ github.base_ref }}\` (pre-existing debt, not blocking):"
+              echo ">"
+              jq -r '.preExisting[] | "> - `" + . + "`"' format-changed.json 2>/dev/null || true
+              echo ""
+            fi
+            echo "Prettier result:"
             echo '```'
             cat format-output.txt 2>/dev/null || echo "(no output captured)"
             echo '```'
@@ -118,7 +159,7 @@ jobs:
               echo "</details>"
             fi
             echo ""
-            echo "> Repo-wide \`npm run format:check\` is not run here — it is red on purpose-tracked historical debt. See \`docs/CI.md\`."
+            echo "> Repo-wide \`npm run format:check\` is not run here — it is red on tracked historical debt. Only *newly introduced* violations fail this check. See \`docs/CI.md\`."
           } > ci-artifacts/lint-and-typecheck.md
 
       - name: Upload job summary
@@ -142,6 +183,8 @@ jobs:
     # ubuntu-latest (NOT ubuntu-slim): slim runners are 1 vCPU with a hard,
     # non-overridable 15-minute execution limit. The full vitest suite (shared + server
     # + web/jsdom projects) can exceed that and would be cancelled mid-run.
+    needs: guard
+    if: ${{ needs.guard.outputs.same_repo == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -211,6 +254,8 @@ jobs:
         run: exit 1
 
   web-build:
+    needs: guard
+    if: ${{ needs.guard.outputs.same_repo == 'true' }}
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v4
@@ -270,8 +315,8 @@ jobs:
   # section as a tiny artifact; this job just concatenates them in a fixed order so the
   # comment always has the same shape regardless of which jobs finished first.
   report:
-    needs: [lint-and-typecheck, unit-tests, web-build]
-    if: always()
+    needs: [guard, lint-and-typecheck, unit-tests, web-build]
+    if: ${{ always() && needs.guard.outputs.same_repo == 'true' }}
     runs-on: ubuntu-slim
     steps:
       - name: Download job summaries

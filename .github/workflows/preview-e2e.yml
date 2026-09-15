@@ -9,6 +9,10 @@ name: Preview E2E
 # a full Chromium download + build + suite is the most expensive job in this repo, and one
 # authoritative run per PR is enough. To re-run, push a commit and re-open… or simply run
 # `npm run e2e` locally (the fake backend makes that identical to CI).
+#
+# FORK SAFETY: the `guard` job runs first and the suite depends on it. A fork PR must never
+# reach `npm ci` / the build — refusing it in branch-gate.yml alone would be too late, since
+# both workflows start in parallel and the fork's own `package.json` would already have run.
 
 on:
   pull_request:
@@ -24,9 +28,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  guard:
+    runs-on: ubuntu-slim
+    outputs:
+      same_repo: ${{ steps.check.outputs.same_repo }}
+    steps:
+      - name: Require an in-repo head branch
+        id: check
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" = "$THIS_REPO" ]; then
+            echo "same_repo=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "same_repo=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PR head is the fork '$HEAD_REPO' — refusing to run repository code. Preview E2E is skipped for fork PRs by design."
+          fi
+
   preview-e2e:
     name: Preview E2E (Playwright)
-    if: ${{ ! github.event.pull_request.draft }}
+    needs: guard
+    if: ${{ ! github.event.pull_request.draft && needs.guard.outputs.same_repo == 'true' }}
     runs-on: ubuntu-slim
     timeout-minutes: 15
     steps:

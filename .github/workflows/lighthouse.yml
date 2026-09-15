@@ -12,6 +12,9 @@ name: Lighthouse
 # INFORMATIONAL (it reports scores and does not block). Set the repository variable
 # `LIGHTHOUSE_ENFORCE=1` (or add `--enforce` below) to make the thresholds blocking; the
 # bars live in the `env` block.
+#
+# FORK SAFETY: the `guard` job runs first and the audit depends on it — see ci.yml for why
+# rejecting forks in branch-gate.yml alone is too late to prevent code execution.
 
 on:
   pull_request:
@@ -27,9 +30,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  guard:
+    runs-on: ubuntu-slim
+    outputs:
+      same_repo: ${{ steps.check.outputs.same_repo }}
+    steps:
+      - name: Require an in-repo head branch
+        id: check
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" = "$THIS_REPO" ]; then
+            echo "same_repo=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "same_repo=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PR head is the fork '$HEAD_REPO' — refusing to run repository code. Lighthouse is skipped for fork PRs by design."
+          fi
+
   lighthouse:
     name: Lighthouse Audit
-    if: ${{ ! github.event.pull_request.draft }}
+    needs: guard
+    if: ${{ ! github.event.pull_request.draft && needs.guard.outputs.same_repo == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
