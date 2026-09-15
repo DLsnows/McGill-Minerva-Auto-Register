@@ -135,5 +135,9 @@ describe('Settings', () => {
     await waitFor(() => expect(budgetCalls.n).toBeGreaterThan(1));
     await waitFor(() => expect(screen.getByText(/refresh boom/i)).toBeInTheDocument());
     expect(screen.queryByText('Saved ✓')).toBeNull();
+    // The PUT resolved before the refetches ran, so the settings *were* persisted.
+    // Reporting this as a save failure would tell the user the opposite of the truth.
+    expect(screen.getByText(/were saved, but re-reading them failed/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Failed to save settings/i)).toBeNull();
   });
 });

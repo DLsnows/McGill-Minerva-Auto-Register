@@ -189,10 +189,17 @@ const CASES = [
         [/^Today · Query$/i, `${FAKE_QUERY_USED} / ${FAKE_QUERY_BUDGET}`],
         [/^Today · Register$/i, `${FAKE_REGISTER_USED} / ${FAKE_REGISTER_BUDGET}`],
       ]) {
-        const value = (await budgetCell(label).innerText()).trim();
-        assert(
-          /^\d+ \/ \d+$/.test(value),
-          `budget cell "${label}" should render "used / limit" as two numbers, got "${value}"`,
+        // Polled, not read once. `Ticker` renders a `— / —` placeholder until the
+        // `/api/budget` fetch resolves, and the element is already visible then, so a
+        // single `innerText()` races that fetch and fails on a slower CI even though
+        // nothing is wrong. (`waitFor` also lets the failure message carry the last
+        // observed text rather than just "timed out".)
+        const value = await waitFor(
+          async () => {
+            const text = (await budgetCell(label).innerText()).trim();
+            return /^\d+ \/ \d+$/.test(text) && text === expected ? text : false;
+          },
+          `budget cell "${label}" to render "${expected}" (it renders a placeholder until /api/budget resolves)`,
         );
         assertEqual(value, expected, `budget cell "${label}" value`);
       }

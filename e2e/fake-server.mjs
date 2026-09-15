@@ -179,8 +179,21 @@ app.put('/api/settings', (req, reply) => {
       return reply.code(400).send({ error: `${key} must be a number` });
     }
   }
-  if ('pollIntervalMinutes' in patch && patch.pollIntervalMinutes < 1) {
-    return reply.code(400).send({ error: 'pollIntervalMinutes must be >= 1' });
+  // Mirror the real server's zod bounds exactly (`server.ts` settingsSchema), so the
+  // fake can never emit a shape the real one would reject. A negative budget would
+  // otherwise flow straight into `budgetCount()` and render `0 / -5` -- a ticker the
+  // real server cannot produce, which would quietly invalidate the e2e assertions
+  // that exist to pin that very contract.
+  const bounds = {
+    pollIntervalMinutes: 1,
+    jitterMinutes: 0,
+    queryBudget: 1,
+    registerBudget: 0,
+  };
+  for (const [key, min] of Object.entries(bounds)) {
+    if (key in patch && patch[key] < min) {
+      return reply.code(400).send({ error: `${key} must be >= ${min}` });
+    }
   }
   state.settings = { ...state.settings, ...patch };
   return state.settings;

@@ -63,8 +63,10 @@ export default function SettingsPage() {
       const [settingsErr, budgetErr] = await Promise.all([settings.refetch(), budget.refetch()]);
       const failed = [settingsErr, budgetErr].find(Boolean);
       if (failed) {
+        // The PUT already resolved, so the settings *were* persisted — saying
+        // "failed to save" here would be a lie. Report the two halves separately.
         setSaved(false);
-        setErr(`${t('settings.saveFailed')} ${failed.message}`);
+        setErr(`${t('settings.savedButRefreshFailed')} ${failed.message}`);
         return;
       }
       setSaved(true);
