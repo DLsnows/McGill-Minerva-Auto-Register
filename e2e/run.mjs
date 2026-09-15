@@ -127,10 +127,12 @@ async function waitFor(fn, label, timeoutMs = 10_000) {
  * What is tolerated, and how it is scoped:
  *   - the Google Fonts stylesheet (index.html loads it; the runner has no external network)
  *     and the favicon (the fixture build ships none) — matched by *host/filename*;
- *   - connection-level `net::ERR_*` failures — but only for an external host. A
- *     `net::ERR_CONNECTION_REFUSED` on `/api/*` is a real failure and must not be swallowed;
- *     the coverage assertions would catch it as a count of 0, but the sentinel should not be
- *     lying about it either.
+ *   - connection-level `net::ERR_*` failures for those same external hosts, because Chrome
+ *     prints only the error code in such cases ("Failed to load resource:
+ *     net::ERR_NAME_NOT_RESOLVED") and the identification has to come from the location URL.
+ *     There is no separate branch for this: the host patterns above are the same ones, so a
+ *     single `matches()` test covers both. An API connection failure carries no external host
+ *     (in text or location) and is therefore reported — as it must be.
  *
  * Classification must look at BOTH `msg.text()` and `msg.location().url`, because Chromium
  * does not put the failing URL in the text. Measured:
@@ -140,7 +142,10 @@ async function waitFor(fn, label, timeoutMs = 10_000) {
  * red on a runner without external network — the exact environment this list exists for.
  */
 const IGNORED_CONSOLE = [/fonts\.googleapis\.com/i, /fonts\.gstatic\.com/i, /favicon/i];
-const EXTERNAL_HOST = /^https?:\/\/(?:fonts\.googleapis\.com|fonts\.gstatic\.com)\//i;
+// A URL-shaped version of the external-host rule, for the `requestfailed` listener below,
+// which classifies by full request URL rather than by console message. (`EXTERNAL_URL` is
+// already taken: it is the optional `--url` / E2E_BASE_URL the whole run targets.)
+const EXTERNAL_ORIGIN = /^https?:\/\/(?:fonts\.googleapis\.com|fonts\.gstatic\.com)\//i;
 
 function watchConsole(page) {
   const errors = [];
@@ -151,7 +156,6 @@ function watchConsole(page) {
     const matches = (re) => re.test(text) || (locationUrl !== '' && re.test(locationUrl));
 
     if (IGNORED_CONSOLE.some(matches)) return;
-    if (/net::ERR_/i.test(text) && matches(EXTERNAL_HOST)) return;
     errors.push(`console.error: ${text}${locationUrl ? ` [${locationUrl}]` : ''}`);
   });
   page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`));
@@ -161,7 +165,7 @@ function watchConsole(page) {
   page.on('requestfailed', (request) => {
     const url = request.url();
     const errorText = request.failure()?.errorText ?? '';
-    if (EXTERNAL_HOST.test(url)) return;
+    if (EXTERNAL_ORIGIN.test(url)) return;
     if (!errorText.startsWith('net::ERR_') || errorText === 'net::ERR_ABORTED') return;
     errors.push(`requestfailed: ${url} (${errorText})`);
   });
@@ -322,13 +326,10 @@ const CASES = [
         // single `innerText()` races that fetch and fails on a slower CI even though
         // nothing is wrong. (`waitFor` also lets the failure message carry the last
         // observed text rather than just "timed out".)
-        const value = await waitFor(
-          async () => {
-            const text = (await budgetCell(label).innerText()).trim();
-            return /^\d+ \/ \d+$/.test(text) && text === expected ? text : false;
-          },
-          `budget cell "${label}" to render "${expected}" (it renders a placeholder until /api/budget resolves)`,
-        );
+        const value = await waitFor(async () => {
+          const text = (await budgetCell(label).innerText()).trim();
+          return /^\d+ \/ \d+$/.test(text) && text === expected ? text : false;
+        }, `budget cell "${label}" to render "${expected}" (it renders a placeholder until /api/budget resolves)`);
         assertEqual(value, expected, `budget cell "${label}" value`);
       }
 

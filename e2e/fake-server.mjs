@@ -98,14 +98,12 @@ const REQUIRED_TARGET_FIELDS = ['term', 'subject', 'courseNumber', 'targetCrn', 
  * an error-only assertion can never see.
  *
  * `/api/__requests` and `/api/health` are not routes the frontend calls, so they are kept
- * out of the per-route map; the coverage probe still has to prove it was served, so its
- * count is reported separately as `probeCalls`.
+ * out of the per-route map entirely.
  */
 
 /** The two paths that exist for the test harness, not for the app. */
 const HARNESS_PATHS = new Set(['/api/__requests', '/api/health']);
 const requestLedger = new Map();
-let harnessCalls = 0;
 
 /** Paths that carry an id — counted under their route template so counts stay meaningful. */
 const DYNAMIC_ROUTE_TEMPLATES = [
@@ -134,10 +132,6 @@ function isLedgerRoute(pathname) {
 function recordRequest(req) {
   // GitHub-hosted Actions masks the query string in `req.url`, so never parse it.
   const pathname = req.url.split('?')[0];
-  if (HARNESS_PATHS.has(pathname)) {
-    harnessCalls += 1;
-    return;
-  }
   if (!isLedgerRoute(pathname)) return;
   const key = ledgerKeyFor(pathname);
   const entry = requestLedger.get(key) ?? { count: 0, statuses: {}, failures: [] };
@@ -163,6 +157,10 @@ function recordResponse(req, reply) {
  * broken endpoint does not cascade into every later case, and so an `>= N` minimum can
  * only be satisfied by the case's *own* traffic (a cumulative ledger would let an earlier
  * case silently satisfy a later case's assertion).
+ *
+ * Liveness of this endpoint is not reported here: the runner proves it implicitly, because
+ * `fetchLedger()` throws when the probe request fails or answers non-2xx. A wedged backend
+ * therefore fails the case rather than looking like "the case never called its endpoints".
  */
 function ledgerSnapshot() {
   const routes = {};
@@ -171,10 +169,6 @@ function ledgerSnapshot() {
   }
   return {
     routes,
-    // Monotonic counter for the harness paths, so the runner can prove the probe itself was
-    // served (a down or wedged fake backend would otherwise make every route's delta 0 and
-    // read as "the case never called it").
-    probeCalls: harnessCalls,
     serverErrors: [...requestLedger].flatMap(([, e]) => e.failures.filter((s) => s >= 500)),
   };
 }
