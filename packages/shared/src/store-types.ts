@@ -45,7 +45,12 @@ export interface Settings {
   registerBudget: number;
   /** Which notification channels are enabled (in-app log is always on). */
   notify: NotifyChannels;
-  /** SMTP config for email notifications (absent/empty = email disabled). */
+  /**
+   * SMTP config for email notifications (absent/empty = email disabled).
+   * Kept for the email feature even though it is temporarily sunset — the UI no
+   * longer renders it and the server forces `notify.email` to false (see
+   * `packages/server/src/scheduler/runtime.ts`).
+   */
   email?: EmailConfig;
   /** Rehearsal mode: poll + decide normally but never actually submit a
    * registration (logs "would register" instead). Default false. */

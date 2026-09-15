@@ -72,7 +72,7 @@ describe('API', () => {
     expect(r.statusCode).toBe(400);
   });
 
-  it('gets and updates settings (incl. email)', async () => {
+  it('gets and updates settings (the email channel is forced off)', async () => {
     const put = await app.inject({
       method: 'PUT',
       url: '/api/settings',
@@ -81,7 +81,26 @@ describe('API', () => {
     expect(put.statusCode).toBe(200);
     const get = await app.inject({ method: 'GET', url: '/api/settings' });
     expect(get.json().pollIntervalMinutes).toBe(45);
-    expect(get.json().notify.email).toBe(true);
+    // Email notifications are sunset: the request asks for `true`, the server
+    // overrides it (the UI can't be trusted as the source of truth).
+    expect(get.json().notify.email).toBe(false);
+    // The channels that stay are persisted as sent.
+    expect(get.json().notify.desktop).toBe(true);
+    expect(get.json().notify.sound).toBe(false);
+  });
+
+  it('PUT /api/settings forces notify.email=false even with no UI in the loop', async () => {
+    // A stale client (or a hand-written curl) can still send the old toggle on.
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { notify: { desktop: true, sound: true, email: true } },
+    });
+    expect(put.statusCode).toBe(200);
+    expect(put.json().notify.email).toBe(false);
+    expect((await app.inject({ method: 'GET', url: '/api/settings' })).json().notify.email).toBe(false);
+    // Re-reading from disk proves the override was persisted, not just masked.
+    expect(new Store(dir).getSettings().notify.email).toBe(false);
   });
 
   it('accepts and persists the dryRun setting', async () => {

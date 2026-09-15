@@ -172,8 +172,12 @@ Ouvrez ensuite **http://127.0.0.1:4575** et :
    (Hiver = …01, Été = …05, Automne = …09, p. ex. Hiver 2027 = `202701`). La
    faculté (Faculty) est obligatoire (p. ex. `Faculty of Science`).
 3. Onglet **Settings** → intervalle de sondage et gigue, budgets quotidiens de
-   requêtes/inscriptions, canaux de notification (bureau / son / courriel — voir
-   [`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md)), et le mode **Dry-run**.
+   requêtes/inscriptions, canaux de notification (bureau / son) et le mode
+   **Dry-run**.
+   > **Les notifications par courriel sont temporairement indisponibles** — la
+   > case courriel et le formulaire SMTP sont masqués et le serveur force ce canal
+   > à l'arrêt. Le guide de configuration
+   > ([`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md)) est conservé pour son retour.
 4. **Dashboard** → appuyez sur **Start all** pour commencer la surveillance. (Au
    démarrage, chaque cours est **en pause**, et *Start all* est désactivé tant que
    vous n'êtes pas connecté — donc rien n'est sondé tant que vous ne le lancez pas

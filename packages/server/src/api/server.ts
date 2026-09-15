@@ -138,7 +138,16 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
       (parsed.data.pollIntervalMinutes !== undefined &&
         parsed.data.pollIntervalMinutes !== before.pollIntervalMinutes) ||
       (parsed.data.jitterMinutes !== undefined && parsed.data.jitterMinutes !== before.jitterMinutes);
-    const updated = deps.store.setSettings(parsed.data as Partial<Settings>);
+    // Email notifications are temporarily sunset: the server — not the UI — is
+    // the source of truth, so a request body carrying `notify.email: true` (a
+    // stale client, a hand-rolled curl, a restored backup) is overridden here.
+    // Restoring the feature means deleting this override; the notifier, the
+    // `EmailConfig` type and docs/EMAIL_SETUP.md all stay in place for that.
+    const patch: Partial<Settings> = {
+      ...parsed.data,
+      notify: { ...before.notify, ...parsed.data.notify, email: false },
+    };
+    const updated = deps.store.setSettings(patch);
     // Re-apply a changed cadence to already-scheduled targets now, so it takes
     // effect immediately rather than only from each target's next cycle.
     if (cadenceChanged) deps.scheduler.rescheduleWatching?.();
