@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { CourseForm } from './CourseForm';
+import { CourseForm, courseFormReducer, type CourseFormValues } from './CourseForm';
 
 const REQUIRED_FIELDS = ['Term', 'Subject', 'Faculty', 'Course #', 'Target CRN'];
 const OPTIONAL_FIELDS = ['Label'];
 
-/** The visible marker text of a field (the accessible expression is `required`/`aria-required`). */
+/** The visible marker text of a field (the semantic expression is the input's `aria-required`). */
 const markerText = (label: string, pattern: RegExp) => {
   const input = screen.getByLabelText(label);
   const wrapper = input.closest('label');
@@ -20,11 +20,11 @@ describe('CourseForm', () => {
     for (const label of REQUIRED_FIELDS) {
       const input = screen.getByLabelText(label);
       expect(input).toHaveAccessibleName(label);
+      // `aria-required` is the single semantic signal — nothing else spells "required" out,
+      // so a screen reader announces it exactly once.
       expect(input).toHaveAttribute('aria-required', 'true');
-      expect(input).toBeRequired();
+      expect(input).not.toHaveAttribute('required');
       expect(markerText(label, /^\*$/)).toBe('*');
-      // the mark also carries a localised equivalent for screen readers
-      expect(markerText(label, /^required$/)).toBe('required');
     }
   });
 
@@ -49,8 +49,73 @@ describe('CourseForm', () => {
     render(<CourseForm onSubmit={() => {}} submitLabel="Add" />);
     const mode = screen.getByLabelText('Mode');
     expect(mode).toHaveValue('auto');
-    expect(mode).not.toBeRequired();
+    expect(mode).not.toHaveAttribute('aria-required');
     expect(screen.getByText(/defaults to “auto”/i)).toBeInTheDocument();
+  });
+
+  // Negative control for the two batching tests below: with the old closure-based `update`,
+  // both of them still PASS. React flushes each discrete `change` event (measured: two changes
+  // ⇒ two rerenders, even inside `unstable_batchedUpdates`), so every handler already sees a
+  // fresh closure and the stale-closure race is not reachable through real DOM events. The
+  // decisive guard for that defect is the pure-reducer contract test further down — it fails on
+  // the old implementation (`courseFormReducer is not a function`) and pins the "both patches
+  // survive, highlights stay in sync" contract deterministically. These two keep the
+  // DOM-level behaviour of that contract covered.
+  it('applies two updates issued before a rerender (component-level contract)', () => {
+    const onSubmit = vi.fn();
+    render(<CourseForm onSubmit={onSubmit} submitLabel="Add" />);
+    const subject = screen.getByLabelText('Subject') as HTMLInputElement;
+    const courseNumber = screen.getByLabelText('Course #') as HTMLInputElement;
+
+    act(() => {
+      fireEvent.change(subject, { target: { value: 'COMP' } });
+      fireEvent.change(courseNumber, { target: { value: '551' } });
+    });
+
+    expect(subject).toHaveValue('COMP');
+    expect(courseNumber).toHaveValue('551');
+  });
+
+  it('derives values and highlights from the same state when updates are batched', async () => {
+    render(<CourseForm onSubmit={() => {}} submitLabel="Add" />);
+    await userEvent.click(screen.getByRole('button', { name: 'Add' })); // flag all five
+    const subject = screen.getByLabelText('Subject');
+    const courseNumber = screen.getByLabelText('Course #');
+
+    act(() => {
+      fireEvent.change(subject, { target: { value: 'COMP' } });
+      fireEvent.change(courseNumber, { target: { value: '551' } });
+    });
+
+    // both patches landed, and both fields lost their highlight
+    expect(subject).not.toHaveAttribute('aria-invalid');
+    expect(courseNumber).not.toHaveAttribute('aria-invalid');
+    expect(screen.getAllByText('This field is required.')).toHaveLength(3);
+
+    // a later edit still only clears the field it belongs to
+    await userEvent.type(screen.getByLabelText('Faculty'), 'Faculty of Science');
+    expect(screen.getByLabelText('Faculty')).not.toHaveAttribute('aria-invalid');
+    expect(screen.getAllByText('This field is required.')).toHaveLength(2);
+  });
+
+  it('reduces values and missing together, so a batched update keeps both patches', () => {
+    // The decisive guard for the reviewer-flagged regression. React applies queued actions one
+    // by one and commits the resulting state as a whole, so the "both patches survive and the
+    // highlights are derived from the same state" contract is exactly what the reducer must
+    // satisfy. With the previous closure-based `update` this import does not even exist.
+    const values: CourseFormValues = { term: '202701', subject: '', courseNumber: '', targetCrn: '', faculty: '', label: '', mode: 'auto' };
+    const submitted = courseFormReducer({ values, missing: [] }, { type: 'submit' });
+    expect(submitted.missing).toEqual(['subject', 'faculty', 'courseNumber', 'targetCrn']);
+
+    // two actions applied back to back, as React would for a batched fill
+    const a = courseFormReducer(submitted, { type: 'update', patch: { subject: 'COMP' } });
+    const b = courseFormReducer(a, { type: 'update', patch: { courseNumber: '551' } });
+    expect(b.values.subject).toBe('COMP');
+    expect(b.values.courseNumber).toBe('551');
+    expect(b.missing).toEqual(['faculty', 'targetCrn']);
+
+    // and a no-op patch keeps the identity so React can skip the rerender
+    expect(courseFormReducer(b, { type: 'update', patch: {} })).toBe(b);
   });
 
   it('blocks submit until required fields are filled', async () => {
