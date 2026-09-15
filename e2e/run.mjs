@@ -118,10 +118,17 @@ async function waitFor(fn, label, timeoutMs = 10_000) {
  * What is tolerated, and how it is scoped:
  *   - the Google Fonts stylesheet (index.html loads it; the runner has no external network)
  *     and the favicon (the fixture build ships none) — matched by *host/filename*;
- *   - connection-level `net::ERR_*` failures — but only for an external host (see
- *     `isExternalFailure`). A `net::ERR_CONNECTION_REFUSED` on `/api/*` is a real failure
- *     and must not be swallowed; the coverage assertions would catch it as a count of 0,
- *     but the sentinel should not be lying about it either.
+ *   - connection-level `net::ERR_*` failures — but only for an external host. A
+ *     `net::ERR_CONNECTION_REFUSED` on `/api/*` is a real failure and must not be swallowed;
+ *     the coverage assertions would catch it as a count of 0, but the sentinel should not be
+ *     lying about it either.
+ *
+ * Classification must look at BOTH `msg.text()` and `msg.location().url`, because Chromium
+ * does not put the failing URL in the text. Measured:
+ *   text:           "Failed to load resource: net::ERR_NAME_NOT_RESOLVED"
+ *   location().url: "https://fonts.googleapis.com/css2?family=Inter&display=swap"
+ * Matching only the text would leave the offline font failure unfiltered and turn every case
+ * red on a runner without external network — the exact environment this list exists for.
  */
 const IGNORED_CONSOLE = [/fonts\.googleapis\.com/i, /fonts\.gstatic\.com/i, /favicon/i];
 const EXTERNAL_HOST = /^https?:\/\/(?:fonts\.googleapis\.com|fonts\.gstatic\.com)\//i;
@@ -131,12 +138,12 @@ function watchConsole(page) {
   page.on('console', (msg) => {
     if (msg.type() !== 'error') return;
     const text = msg.text();
-    if (IGNORED_CONSOLE.some((re) => re.test(text))) return;
-    // Chrome prints only the file name for some resource failures, so fall back to
-    // "connection-level failure attributed to an external origin" rather than dropping the
-    // message outright. An API connection failure carries no external host, so it stays.
-    if (/net::ERR_/i.test(text) && EXTERNAL_HOST.test(text)) return;
-    errors.push(`console.error: ${text}`);
+    const locationUrl = msg.location()?.url ?? '';
+    const matches = (re) => re.test(text) || (locationUrl !== '' && re.test(locationUrl));
+
+    if (IGNORED_CONSOLE.some(matches)) return;
+    if (/net::ERR_/i.test(text) && matches(EXTERNAL_HOST)) return;
+    errors.push(`console.error: ${text}${locationUrl ? ` [${locationUrl}]` : ''}`);
   });
   page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`));
   // A connection-level failure that never reaches the console would otherwise be silent.
@@ -196,16 +203,17 @@ function renderDelta(before, after) {
  *     not express — an earlier case's traffic would satisfy a later case's minimum;
  *   - a 5xx is only charged to the case that caused it, so one broken endpoint no longer
  *     re-fails every subsequent case with the same message.
- * Plus the probe itself: `/api/__requests` is the one call the runner makes, so it proves
- * the fake backend is still answering rather than silently down.
+ *
+ * Liveness of the fake backend is enforced by `fetchLedger()` itself: it throws when the
+ * probe request fails or answers non-2xx, so a dead backend fails the case here rather than
+ * being misread as "the case never called its endpoints". There is deliberately no separate
+ * probe-counter assertion — both snapshots come from `fetchLedger()`, so that delta is
+ * always exactly 1 and could never fail.
  */
 async function assertEndpoints(expected, before) {
   const after = await fetchLedger();
   const problems = [];
 
-  if ((after.probeCalls ?? 0) - (before.probeCalls ?? 0) < 1) {
-    problems.push('the fake backend did not answer the coverage probe (/api/__requests)');
-  }
   for (const [route, min] of Object.entries(expected)) {
     const count = deltaCount(before, after, route);
     if (count < min) problems.push(`expected >=${min} call(s) to ${route}, saw ${count}`);
@@ -300,9 +308,15 @@ const CASES = [
   {
     name: 'add-course',
     title: 'Courses page — adding a course shows it in the list',
-    // targets ≥2: the initial list GET (1) plus Courses.tsx's refetch after a successful
-    // add (1). settings ≥1: DataProvider's shared GET. If the post-add refetch ever stops
-    // happening, the list would silently not show the new course.
+    // targets >=2, and the key counts BOTH the GETs and the POST (they share one ledger key,
+    // since the route template is derived from the path without the method). So the real
+    // traffic is 3: initial list GET (1), POST the new course (1), refetch after the add (1).
+    // The minimum stays at 2 rather than 3 on purpose: what must never disappear is the
+    // post-add refetch, and pinning the exact number would make the case fail on any future
+    // extra fetch. If the refetch stops happening the count drops to 2 and this still passes
+    // -- which is why the visible assertion below ("the new course appears in the list") is
+    // the real guard for that regression; this endpoint check exists to catch the endpoint
+    // erroring or never being called at all.
     endpoints: { '/api/targets': 2, '/api/settings': 1 },
     async run({ page, errors }) {
       await page.goto(`${BASE_URL}/courses`, { waitUntil: 'domcontentloaded' });

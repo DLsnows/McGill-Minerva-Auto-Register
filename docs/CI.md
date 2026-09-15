@@ -197,8 +197,9 @@ npm run gates -- --base origin/dev --only lint,test
        所以 runner 在每条用例前、后用 `GET /api/__requests` 各取一次快照并做差
        （失败信息里打印的就是「本次用例」的增量，便于对照）。
      - **动态路径按模板归并**（`/api/targets/:id`、`/api/targets/:id/run`），否则计数被 id 打散。
-     - 探针自身也计入（`probeCalls`）：假后端如果挂了，所有差值都会是 0，那会伪装成「用例没调端点」，
-       所以「探针有没有被应答」要单独断言。
+     - **假后端的存活性由探针自身保证**：`fetchLedger()` 在请求失败或非 2xx 时抛错，因此后端挂掉
+       会让用例直接失败，而不会被误读成「用例没调端点」。（不再单独断言探针计数——两个快照都来自
+       `fetchLedger()`，那对差值恒为 1，永远不会触发。）
   2. **控制台哨兵**（辅助判据）。忽略列表**只**覆盖本环境里真正无法加载的外部资源：
      Google Fonts 样式表（`index.html` 引用它，runner 没有外网）与 favicon——按**主机名/文件名**匹配；
      以及**指向这些外部主机**的 `net::ERR_*` 连接层失败。**不再忽略**通用的 `Failed to load resource`
@@ -206,6 +207,18 @@ npm run gates -- --base origin/dev --only lint,test
      （`net::ERR_CONNECTION_REFUSED` 不含外部主机名，因此会正常报出）。
      另外监听 `requestfailed`：只把真正的网络错误（`net::ERR_*` 且非 `ERR_ABORTED`）算作失败——
      `ERR_ABORTED` 是正常的请求被取代/取消，不是应用缺陷。
+
+     **判定必须同时看 `msg.text()` 与 `msg.location().url`**：Chromium 不把失败的 URL 放进消息文本。
+     实测（本地 abort 字体请求复现 runner 无外网的情形）：
+
+     ```
+     text:           "Failed to load resource: net::ERR_NAME_NOT_RESOLVED"
+     location().url: "https://fonts.googleapis.com/css2?family=Inter&display=swap"
+     ```
+
+     只匹配文本的话，离线的字体失败不会被过滤掉，**每条用例都会红**——而这正是这份忽略列表存在的
+     那个环境。所以两边都要匹配；同时把 `location().url` 附在报错信息后面，便于一眼看出是 API 还是
+     外部资源（例如 `console.error: Failed to load resource: ... status of 500 ... [http://127.0.0.1:4575/api/budget]`）。
 - **这套安全网本身是可测的**：`E2E_FAULT_ROUTES=/api/budget npm run e2e` 会让指定路由返回 500，
   用来验证「端点坏掉时用例真的会失败」。实测两个负向场景都会红：
   - `/api/budget` 返 500 → `console.error: Failed to load resource: the server responded with a status of 500`；
