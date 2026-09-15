@@ -19,7 +19,12 @@ const en = {
   form: {
     term: 'Term', subject: 'Subject', courseNumber: 'Course #', targetCrn: 'Target CRN',
     faculty: 'Faculty', label: 'Label', mode: 'Mode', modeAuto: 'auto', modeNotify: 'notify',
-    required: 'Term, Subject, Faculty, Course # and Target CRN are required.', cancel: 'Cancel',
+    required: 'Please fill in the highlighted required fields below.', cancel: 'Cancel',
+    requiredLegend: 'Fields marked with * are required; all others are optional.',
+    requiredMark: '*',
+    optionalMark: '(optional)',
+    fieldRequired: 'This field is required.',
+    modeDefaultHint: 'Defaults to “auto” — no need to pick one.',
     ph: { term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', faculty: 'Faculty of Science', label: 'COMP 551' },
     help: {
       term: 'Term — Minerva term code; the last two digits are the season: Winter (Jan–Apr) = 01, Summer (May–Aug) = 05, Fall (Sep–Dec) = 09. e.g. Winter 2027 = 202701, Fall 2026 = 202609.',
@@ -83,7 +88,12 @@ const zh: typeof en = {
   form: {
     term: '学期', subject: '科目', courseNumber: '课程号', targetCrn: '目标 CRN',
     faculty: '学院', label: '标签', mode: '模式', modeAuto: '自动', modeNotify: '提醒',
-    required: '学期、科目、学院、课程号和目标 CRN 为必填。', cancel: '取消',
+    required: '请填写下方高亮标出的必填项。', cancel: '取消',
+    requiredLegend: '带 * 的为必填项，其余为选填。',
+    requiredMark: '*',
+    optionalMark: '（选填）',
+    fieldRequired: '此项为必填。',
+    modeDefaultHint: '默认「自动」——无需选择。',
     ph: { term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', faculty: 'Faculty of Science', label: 'COMP 551' },
     help: {
       term: 'Term（学期）—— Minerva 学期代码,后两位代表季节:Winter 冬季（1–4 月）= 01、Summer 夏季（5–8 月）= 05、Fall 秋季（9–12 月）= 09。例:Winter 2027 = 202701、Fall 2026 = 202609。',
@@ -147,7 +157,12 @@ const fr: typeof en = {
   form: {
     term: 'Trimestre', subject: 'Matière', courseNumber: 'N° de cours', targetCrn: 'CRN cible',
     faculty: 'Faculté', label: 'Étiquette', mode: 'Mode', modeAuto: 'auto', modeNotify: 'notifier',
-    required: 'Trimestre, Matière, Faculté, N° de cours et CRN cible sont requis.', cancel: 'Annuler',
+    required: 'Veuillez remplir les champs obligatoires mis en évidence ci-dessous.', cancel: 'Annuler',
+    requiredLegend: 'Les champs marqués d’un * sont obligatoires ; tous les autres sont facultatifs.',
+    requiredMark: '*',
+    optionalMark: '(facultatif)',
+    fieldRequired: 'Ce champ est obligatoire.',
+    modeDefaultHint: 'Par défaut « auto » — aucun choix nécessaire.',
     ph: { term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', faculty: 'Faculty of Science', label: 'COMP 551' },
     help: {
       term: 'Term (Trimestre) — code de trimestre Minerva; les deux derniers chiffres = la saison : Hiver (jan.–avr.) = 01, Été (mai–août) = 05, Automne (sept.–déc.) = 09. p. ex. Hiver 2027 = 202701, Automne 2026 = 202609.',
