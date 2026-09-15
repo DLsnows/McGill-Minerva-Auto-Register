@@ -93,6 +93,9 @@ function assertEqual(actual, expected, label) {
   );
 }
 
+/** Matches the manual "Register now" POST (used to await its response/request). */
+const isRunPost = (r) => r.url().includes('/api/targets/') && r.url().endsWith('/run');
+
 async function waitFor(fn, label, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -239,6 +242,26 @@ async function assertEndpoints(expected, before) {
     problems.length === 0,
     `endpoint coverage failed: ${problems.join('; ')} (this case: ${JSON.stringify(renderDelta(before, after))})`,
   );
+}
+
+/**
+ * Drive the fake backend's test-support session transition: set the status the
+ * real server would report, then broadcast the log line the real scheduler writes
+ * when a cycle finds the session unusable. Both halves matter — the UI is expected
+ * to re-read the status because of the line, not because anything polled.
+ */
+async function sendSessionEvent({ status, level = 'warn' }) {
+  const res = await fetch(`${BASE_URL}/api/__test/session-event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionStatus: status,
+      level,
+      message: `Session not active (logged out / evicted) — paused; please re-login (test: ${status})`,
+    }),
+  });
+  if (!res.ok) throw new Error(`session-event hook failed: ${res.status} ${await res.text()}`);
+  return res.json();
 }
 
 // ── test cases ────────────────────────────────────────────────────────────────────────
@@ -389,6 +412,111 @@ const CASES = [
     },
   },
   {
+    name: 'run-cooldown-feedback',
+    title: 'Dashboard — a dropped "Register now" is visible, and the manual cooldown is throttled',
+    // The whole point of the Q16/Q23 fix: the second request inside the manual
+    // cooldown must be answered `{started:false, reason:'cooldown'}` and the UI
+    // must render that verdict on the card, instead of the button flashing and
+    // the click vanishing. This case needs the fake backend to implement the same
+    // cooldown contract the real server does — otherwise it would assert UI
+    // feedback no backend ever produces.
+    //
+    // targets >=3: this case's own POST + the list refetch + the dashboard GET.
+    endpoints: { '/api/targets': 3, '/api/targets/:id/run': 1 },
+    async run({ page, errors }) {
+      // The fake backend reports `logged-out` (nothing is logged in), which
+      // disables every action button — including the one under test. Opt this
+      // case into a truthful-looking session so the click exercises the real
+      // path (disabled logic → POST → rendered verdict) instead of a raw fetch.
+      // Reuses the session-transition hook, which also broadcasts the log line.
+      await sendSessionEvent({ status: 'authenticated', level: 'ok' });
+
+      // Add a course of this case's own so its cooldown state is untouched by
+      // whatever earlier cases did to their targets.
+      await page.goto(`${BASE_URL}/courses`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('input[aria-label="Term"]', { timeout: 15_000 });
+      await page.fill('input[aria-label="Term"]', '202701');
+      await page.fill('input[aria-label="Subject"]', 'COMP');
+      await page.fill('input[aria-label="Faculty"]', 'Faculty of Science');
+      await page.fill('input[aria-label="Course #"]', '551');
+      await page.fill('input[aria-label="Target CRN"]', '2347');
+      await page.fill('input[aria-label="Label"]', 'W6 COOLDOWN');
+      await page.getByRole('button', { name: 'Add course', exact: true }).click();
+      await page.waitForSelector('text=W6 COOLDOWN', { timeout: 15_000 });
+
+      await page.getByRole('link', { name: 'Dashboard' }).click();
+      const card = page.locator('.cards .card').filter({ hasText: 'W6 COOLDOWN' });
+      await card.getByRole('button', { name: '⚡ Register now' }).waitFor({ timeout: 15_000 });
+
+      // First accepted run: the button shows the in-flight label, then returns.
+      // Acceptance itself already starts the window, so the button must go
+      // straight to disabled — not stay clickable until a rejection teaches it.
+      const firstResponse = page.waitForResponse(isRunPost);
+      await card.getByRole('button', { name: '⚡ Register now' }).click();
+      const firstBody = await (await firstResponse).json();
+      assertEqual(firstBody.started, true, 'first manual run should be accepted');
+      // The countdown is driven by this duration, anchored on the client's own
+      // clock — not by subtracting a server epoch from `Date.now()`.
+      assertEqual(firstBody.retryAfterMs, 60_000, 'an accepted run reports the full window');
+      const notice = card.getByTestId('run-notice');
+      await notice.waitFor({ timeout: 15_000 });
+      assert(
+        /Try again in \d+s/i.test(await notice.innerText()),
+        `an accepted run should show the cooldown immediately, got "${await notice.innerText()}"`,
+      );
+
+      // Second click inside the cooldown window: the button must already be
+      // disabled, so drive the request directly to pin the contract too.
+      await waitFor(
+        async () => await card.locator('button.btn-accent').isDisabled(),
+        'the run button to be disabled for the rest of the cooldown',
+      );
+      const noticeBefore = await notice.innerText();
+      await waitFor(
+        async () => (await notice.innerText()) !== noticeBefore,
+        'the cooldown notice to count down instead of staying frozen',
+      );
+      const noticeText = await notice.innerText();
+      assert(
+        /throttled to one per minute/i.test(noticeText),
+        `the cooldown verdict should be visible on the card, got "${noticeText}"`,
+      );
+      const shownSecs = Number(/Try again in (\d+)s/i.exec(noticeText)?.[1]);
+      assert(
+        Number.isFinite(shownSecs) && shownSecs > 0 && shownSecs <= 60,
+        `the cooldown notice should count down the remaining seconds, got "${noticeText}"`,
+      );
+
+      // The contract itself, straight from the endpoint the app just called.
+      const targets = await (await page.request.get(`${BASE_URL}/api/targets`)).json();
+      const created = targets.find((t) => t.label === 'W6 COOLDOWN');
+      assert(created, 'the case should have created its own target');
+      const repeat = await page.request.post(`${BASE_URL}/api/targets/${created.id}/run`);
+      const body = await repeat.json();
+      assertEqual(body.started, false, 'a repeat manual run inside the cooldown must not start');
+      assertEqual(body.reason, 'cooldown', 'repeat manual run reason');
+      assert(
+        typeof body.retryAfterMs === 'number' &&
+          body.retryAfterMs > 0 &&
+          body.retryAfterMs <= 60_000,
+        `retryAfterMs should be the remaining cooldown, got ${JSON.stringify(body.retryAfterMs)}`,
+      );
+      // The window's start is echoed too, so the UI counts down from the server's
+      // clock. A fresh GET must report the same value (the store is the authority).
+      assert(
+        typeof created.lastForcedRunAt === 'number' &&
+          body.lastForcedRunAt === created.lastForcedRunAt,
+        `lastForcedRunAt should be the stored start of the window, got ${JSON.stringify(body.lastForcedRunAt)} vs ${JSON.stringify(created.lastForcedRunAt)}`,
+      );
+
+      // The fake backend is shared by every case, so hand the session back the way
+      // this case found it: later cases assert on the honest `logged-out` default.
+      await sendSessionEvent({ status: 'logged-out' });
+
+      assertEqual(errors.length, 0, `unexpected browser errors: ${errors.join(' | ')}`);
+    },
+  },
+  {
     name: 'settings-persist',
     title: 'Settings page — poll interval saves and survives a reload',
     // settings ≥4: initial GET (1) + the PUT that saves the new interval (1) + the
@@ -473,6 +601,82 @@ const CASES = [
       await waitFor(
         async () => (await page.locator('h2').first().innerText()) === 'Ajouter un cours',
         'fr courses heading',
+      );
+
+      assertEqual(errors.length, 0, `unexpected browser errors: ${errors.join(' | ')}`);
+    },
+  },
+  {
+    name: 'session-truth',
+    title: 'Session cell follows the server after a warn event (no polling, no reload)',
+    /**
+     * Q7 acceptance, in the real bundle.
+     *
+     * The regression: the session was fetched once at mount and never again, so the
+     * console kept advertising "Active" while the server had already discarded the
+     * session. The fix is event-driven, so the proof has two halves:
+     *   - the session cell changes because of a warn line, with no reload;
+     *   - it does NOT change (and is not re-fetched) while nothing happens, which a
+     *     timer-driven implementation would fail.
+     * `POST /api/__test/session-event` is a test-support route (never part of the
+     * app's contract) that performs both sides of the real transition: the status
+     * the API reports, and the warn line the scheduler writes.
+     */
+    // One GET at mount + one triggered by the warn event below. A regression that
+    // drops the event-driven refresh leaves this at 1.
+    endpoints: { '/api/session': 2 },
+    async run({ page, errors }) {
+      const sessionCell = () =>
+        page
+          .locator('.ticker .cell')
+          .filter({ has: page.locator('.k', { hasText: /^Session$/i }) })
+          .locator('.v');
+      const sessionText = async () => (await sessionCell().innerText()).trim();
+
+      await page.goto(`${BASE_URL}/`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.ticker .cell', { timeout: 15_000 });
+
+      // The fake backend starts logged out (no Minerva behind it, ever).
+      await waitFor(
+        async () => (await sessionText()).includes('Logged out'),
+        'the session cell to show the fake backend state',
+      );
+
+      // Q41: the engine state is rendered from GET /api/scheduler, which used to be
+      // fetched and thrown away. The fake backend never starts the engine.
+      const engine = page.locator('[data-engine]');
+      await engine.waitFor({ timeout: 15_000 });
+      assertEqual(await engine.getAttribute('data-engine'), 'stopped', 'engine indicator state');
+      assert(
+        (await engine.innerText()).includes('Engine · stopped'),
+        `the engine indicator should read "Engine · stopped", got "${await engine.innerText()}"`,
+      );
+
+      // Idle window: nothing may re-read the session on its own. A 60–120s polling
+      // "fix" would keep the next assertion green but is not what this proves; what
+      // this proves is that the *only* trigger is an event.
+      const idleBefore = await fetchLedger();
+      const idleCount = idleBefore.routes?.['/api/session']?.count ?? 0;
+      await sleep(1500);
+      const idleAfter = await fetchLedger();
+      assertEqual(
+        idleAfter.routes?.['/api/session']?.count ?? 0,
+        idleCount,
+        'GET /api/session calls while idle for 1.5s (a timer would have fired)',
+      );
+
+      // The session comes back (a login elsewhere / in the automation window) and
+      // the server says so on the event stream — that line is the ONLY trigger.
+      await sendSessionEvent({ status: 'authenticated' });
+
+      await waitFor(
+        async () => (await sessionText()).includes('Active'),
+        'the session cell to follow the server after the event',
+      );
+      const after = await fetchLedger();
+      assert(
+        (after.routes?.['/api/session']?.count ?? 0) > idleCount,
+        `the event must make the client re-read the session (calls stayed at ${idleCount})`,
       );
 
       assertEqual(errors.length, 0, `unexpected browser errors: ${errors.join(' | ')}`);

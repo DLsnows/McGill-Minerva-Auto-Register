@@ -152,12 +152,27 @@ async function boot(): Promise<void> {
       },
       runTarget: () => {
         calls.run += 1;
+        // The base's contract change: `/run` now relays a `ForcedRunResult`, so a
+        // double that reports "accepted" is what the route's 200 path expects.
+        return { started: true };
       },
       isRunning: () => false,
     },
   };
   app = buildServer(deps);
   port = await listenOnEphemeralPort(app);
+  // Put the session into `authenticated` through the real login route.
+  //
+  // `/api/scheduler/start` (and `start-all`, and a PATCH that sets `watching`) are
+  // gated on session readiness — `requireSession()` reads the status the server
+  // itself holds, not what the injected double reports — so without this those
+  // routes answer 409 and the "the application must keep working" cases below would
+  // be asserting against a state the real UI is never in. The guard tests that
+  // expect 403/415 never reach that gate: the Host/Origin/CSRF check runs first, in
+  // a preHandler hook.
+  await app.inject({ method: 'POST', url: '/api/session/login' });
+  // Let the async login IIFE settle (the doubles resolve immediately).
+  await new Promise((r) => setTimeout(r, 10));
 }
 
 beforeEach(boot);
@@ -583,7 +598,7 @@ describe('Q5 — guard is not satisfied by rejecting everything', () => {
       scheduler: {
         start: () => undefined,
         stop: () => undefined,
-        runTarget: () => undefined,
+        runTarget: () => ({ started: true }),
         isRunning: () => false,
       },
     });
