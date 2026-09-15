@@ -67,10 +67,19 @@ export default function Dashboard() {
 
   // Per-course pause/resume. Resuming a single course also makes sure the engine
   // is running, otherwise flipping it to 'watching' alone wouldn't poll anything.
+  //
+  // A per-target guard, because the resume route is deliberately NOT idempotent: it
+  // returns 409 for a target that is not `paused`/`error`, so a double-click would
+  // surface "cannot resume a target in status watching" as a user-facing error for what
+  // is really just the first click succeeding. (The old PATCH-based path was idempotent,
+  // so this is a regression the 409 guard introduced.)
+  const busyTargetsRef = useRef(new Set<string>());
   const onTogglePolling = useCallback(
     async (id: string, next: WatchStatus) => {
       // No resuming/starting a task while logged out (the button is disabled too).
       if (next === 'watching' && sessionRef.current.data?.status !== 'authenticated') return;
+      if (busyTargetsRef.current.has(id)) return; // a click for this target is already in flight
+      busyTargetsRef.current.add(id);
       setSchedErr(undefined);
       setSchedNote(undefined);
       try {
@@ -81,6 +90,7 @@ export default function Dashboard() {
       } catch (e) {
         setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
       } finally {
+        busyTargetsRef.current.delete(id);
         // Always reconcile the UI with the server's real state.
         await Promise.all([targetsRef.current.refetch(), schedulerRef.current.refetch()]);
       }
@@ -94,6 +104,10 @@ export default function Dashboard() {
   const onResume = useCallback(
     async (id: string) => {
       if (sessionRef.current.data?.status !== 'authenticated') return;
+      // Same per-target guard as `onTogglePolling`: the route 409s on a target that is
+      // already watching, so a double-click must not surface that as an error.
+      if (busyTargetsRef.current.has(id)) return;
+      busyTargetsRef.current.add(id);
       setSchedErr(undefined);
       setSchedNote(undefined);
       try {
@@ -101,6 +115,7 @@ export default function Dashboard() {
       } catch (e) {
         setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
       } finally {
+        busyTargetsRef.current.delete(id);
         await Promise.all([targetsRef.current.refetch(), schedulerRef.current.refetch()]);
       }
     },
@@ -164,6 +179,11 @@ export default function Dashboard() {
   const sessionDown = sessionStatus === 'logged-out' || sessionStatus === 'unknown';
   // Engine actually ticking? Distinct from "courses are listed as watching".
   const engineRunning = scheduler.data?.running === true;
+  // `running: false` while the first `GET /api/scheduler` is still in flight means
+  // "unknown", not "stopped" — acting on it would offer "Start all" against an engine
+  // that may already be up, which also revives any `error` targets the user deliberately
+  // left parked. The toggle refuses to act until the real state is known.
+  const engineStateUnknown = scheduler.loading && scheduler.data === undefined;
   // Courses claim to be watched but nothing is polling them — exactly the state
   // the master switch used to mislabel as "running".
   const idleButWatching = watchingCount > 0 && !engineRunning;
@@ -182,6 +202,7 @@ export default function Dashboard() {
               onStop={onToggleScheduler}
               busy={schedBusy}
               canStart={loggedIn}
+              loading={engineStateUnknown}
             />
           </div>
           {schedErr && <div className="errbar">{schedErr}</div>}

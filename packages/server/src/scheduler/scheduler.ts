@@ -351,7 +351,12 @@ export class Scheduler {
       this.ticking = false;
       if (this.tickQueued) {
         this.tickQueued = false;
-        this.runTick();
+        // Re-check the engine before honouring the queued request. Without this a tick
+        // queued a moment before `stop()` still ran afterwards and polled every target
+        // left in `watching` — "Stop" that does not stop. (`stop-all` hides it because it
+        // pauses every target first, but a bare `POST /api/scheduler/stop` leaves them
+        // watching, so the effect was reachable.)
+        if (this.timer) this.runTick();
       }
     });
   }
@@ -367,6 +372,10 @@ export class Scheduler {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    // Drop any request that was queued while a tick was in flight; the guard in
+    // `runTick`'s finally block checks `this.timer`, and this makes the intent explicit
+    // so a future change to that guard cannot resurrect the work.
+    this.tickQueued = false;
   }
 
   isRunning(): boolean {

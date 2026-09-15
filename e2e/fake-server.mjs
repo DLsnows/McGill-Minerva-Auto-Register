@@ -352,13 +352,25 @@ app.post('/api/scheduler/stop', () => {
 });
 
 app.post('/api/scheduler/start-all', () => {
-  const paused = state.targets.filter((t) => t.status === 'paused');
-  state.targets = state.targets.map((t) =>
-    t.status === 'paused' ? { ...t, status: 'watching' } : t,
+  // Mirrors the real route's response shape exactly. The web client reads all three
+  // counts for its "Start all" notice (`Dashboard.tsx`), so returning only `resumed` made
+  // that notice render `undefined` against the fake backend -- the same class of
+  // drift the budget snapshot contract already had to be fixed for.
+  const all = state.targets;
+  const resumable = all.filter((t) => t.status === 'paused' || t.status === 'error');
+  const recovered = resumable.filter((t) => t.status === 'error').length;
+  const isDone = (s) => s === 'registered' || s === 'waitlisted' || s === 'stopped';
+  state.targets = all.map((t) =>
+    t.status === 'paused' || t.status === 'error' ? { ...t, status: 'watching' } : t,
   );
   state.schedulerRunning = true;
-  logEvent('ok', `Start all: resumed ${paused.length} course(s).`);
-  return { running: true, resumed: paused.length };
+  logEvent('ok', `Start all: resumed ${resumable.length - recovered} course(s).`);
+  return {
+    running: true,
+    recovered,
+    resumed: resumable.length - recovered,
+    skipped: all.filter((t) => isDone(t.status)).length,
+  };
 });
 
 app.post('/api/scheduler/stop-all', () => {

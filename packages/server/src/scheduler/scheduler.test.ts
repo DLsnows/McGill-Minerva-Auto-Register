@@ -493,6 +493,53 @@ describe('Scheduler.start', () => {
     expect(store.getTarget(late.id)!.lastPolledAt).toBe(NOW);
     scheduler.stop();
   });
+
+  it('stop() cancels a tick that was queued while one was in flight', async () => {
+    // Regression: the queued re-run used to fire unconditionally in the in-flight tick's
+    // `finally`, so a tick requested a moment before `stop()` still ran afterwards and
+    // polled every target left in `watching` — a "Stop" that does not stop. `stop-all`
+    // hides it (it pauses every target first), but a bare `POST /api/scheduler/stop`
+    // leaves them watching, so the effect was reachable.
+    const { scheduler, watcher, store, target } = setup({ decision: { action: 'NOOP', reason: 'full' } });
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const original = watcher.checkCourse.bind(watcher);
+    let held = false;
+    watcher.checkCourse = async () => {
+      if (!held) {
+        held = true;
+        await gate;
+      }
+      return original();
+    };
+
+    store.updateTarget(target.id, { nextPollAt: NOW });
+    scheduler.start(); // tick 1 blocks inside checkCourse
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(watcher.calls).toBe(0);
+
+    // A second target asks for an immediate poll, then the engine is stopped.
+    const late = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '7777',
+      mode: 'auto',
+    });
+    store.updateTarget(late.id, { nextPollAt: NOW });
+    scheduler.tickSoon();
+    scheduler.stop();
+
+    releaseFirst();
+    for (let i = 0; i < 24; i++) await Promise.resolve();
+
+    // Only the in-flight tick's own target was polled; the queued pass was dropped.
+    expect(watcher.calls).toBe(1);
+    expect(store.getTarget(late.id)!.lastPolledAt).toBeUndefined();
+  });
 });
 
 describe('Scheduler.clearFailures', () => {
