@@ -174,9 +174,18 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     // A target (re-)entering 'watching' (resume from pause, revive from error,
     // un-terminal from stopped) must poll immediately rather than wait a full
     // tick, and must not carry an old failure streak into the new run.
+    //
+    // `start()` is called before `tickSoon()` on purpose: `tickSoon()` is a no-op while
+    // the engine is stopped (`scheduler.ts` guards on `this.timer`), so arming the poll
+    // and asking for a tick without starting the engine would leave the target
+    // `watching` but un-polled until something else started it — the route's own promise
+    // ("must poll immediately") would be false for direct API callers. The web UI no
+    // longer reaches this path (it uses `/resume`), so this is about the contract, not
+    // about the UI.
     if (parsed.data.status === 'watching') {
       const fresh = deps.store.updateTarget(id, { nextPollAt: armForImmediatePoll(now()) });
       deps.scheduler.clearFailures?.(id);
+      deps.scheduler.start();
       deps.scheduler.tickSoon?.();
       return fresh;
     }

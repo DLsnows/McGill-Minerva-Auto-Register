@@ -185,8 +185,13 @@ export default function Dashboard() {
   // left parked. The toggle refuses to act until the real state is known.
   const engineStateUnknown = scheduler.loading && scheduler.data === undefined;
   // Courses claim to be watched but nothing is polling them — exactly the state
-  // the master switch used to mislabel as "running".
-  const idleButWatching = watchingCount > 0 && !engineRunning;
+  // the master switch used to mislabel as "running". Gated on the real state being
+  // *known*: while `GET /api/scheduler` is in flight (or if it failed, so `data` stays
+  // undefined) `engineRunning` is false for want of information, not because the engine
+  // is stopped. Warning then would contradict the toggle's "Checking…" state and, on a
+  // failed fetch, would warn forever while the engine may well be running.
+  const idleButWatching =
+    scheduler.data !== undefined && watchingCount > 0 && !engineRunning;
 
   return (
     <>
