@@ -5,6 +5,7 @@ import { api, errorMessage, isSessionNotReady, MANUAL_RUN_COOLDOWN_MS } from '..
 import { useData } from '../lib/DataContext';
 import { CourseCard } from '../components/CourseCard';
 import { Console } from '../components/Console';
+import { ResourceError } from '../components/ResourceError';
 import { SchedulerToggle } from '../components/SchedulerToggle';
 
 /** How long a dropped-run verdict stays on the card. Long enough to read, short
@@ -302,7 +303,11 @@ export default function Dashboard() {
       if (isSessionNotReady(e)) {
         // The server just told us the session is unusable — stop showing it as
         // active. Re-read the session as well as the engine state.
-        await Promise.all([sch.refetch(), targetsRef.current.refetch(), sessionRef.current.refetch()]);
+        await Promise.all([
+          sch.refetch(),
+          targetsRef.current.refetch(),
+          sessionRef.current.refetch(),
+        ]);
       }
     } finally {
       schedBusyRef.current = false;
@@ -346,8 +351,25 @@ export default function Dashboard() {
             </div>
           </div>
           {schedErr && <div className="errbar">{schedErr}</div>}
+          {/* Yields to `schedErr`: a real failure is the more important message, and
+              the two would otherwise stack. */}
           {schedNote && !schedErr && <div className="banner">{schedNote}</div>}
-          {list.length === 0 ? (
+          {/* Branch order matters, and this is the defect: `list.length === 0`
+              cannot tell "you watch nothing" from "we could not read your list".
+              - no data AND an error: the bar alone. Showing the empty state here
+                is the screen that invites a duplicate re-add. Checked on `error`
+                explicitly rather than inferred from `!settled`, because a failed
+                read *is* settled.
+              - no data, no error, still loading: the loading state.
+              - read, and the list really is empty: the empty state.
+              - read, and there is a list: the list. A failed *refetch* lands
+                here with its (stale) data intact, under the bar — `refetch`
+                does not roll `data` back, and hiding the list would throw away
+                what the client still holds. */}
+          <ResourceError resource={targets} label={tr('dashboard.loadFailedLabel')} />
+          {targets.data === undefined && targets.error ? null : !targets.settled ? (
+            <div className="empty glass">{tr('dashboard.loading')}</div>
+          ) : targets.data !== undefined && list.length === 0 ? (
             <div className="empty glass">{tr('dashboard.empty')}</div>
           ) : (
             <div className="cards">

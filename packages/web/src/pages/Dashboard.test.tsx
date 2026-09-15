@@ -343,7 +343,19 @@ describe('Dashboard', () => {
    */
   it('shows why the engine refused to start (session-not-ready)', async () => {
     mockApi(
-      [{ id: 'p1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'paused', createdAt: 0 }],
+      [
+        {
+          id: 'p1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'paused',
+          createdAt: 0,
+        },
+      ],
       'authenticated',
     );
     // The UI still believes it is authenticated (stale snapshot); the server is
@@ -371,7 +383,9 @@ describe('Dashboard', () => {
     // below is the i18n string's, not the server's.
     await waitFor(() =>
       expect(
-        screen.getByText(/Not logged in — open the Session tab and log in before starting the engine\./),
+        screen.getByText(
+          /Not logged in — open the Session tab and log in before starting the engine\./,
+        ),
       ).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Scheduler toggle failed/)).toBeNull();
@@ -397,9 +411,7 @@ describe('Dashboard', () => {
     await waitFor(() => expect(getSession.mock.calls.length).toBeGreaterThan(1));
     // The banner keys off the session resource, so it only appears if the refusal
     // actually triggered a re-read of the session.
-    await waitFor(() =>
-      expect(screen.getByText(/Session is not active/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Session is not active/i)).toBeInTheDocument());
   });
 
   it('explains a click that cannot do anything (no session, nothing watching)', async () => {
@@ -445,7 +457,19 @@ describe('Dashboard', () => {
     // Stored state says "watching", the engine says otherwise. Both facts must be
     // visible instead of the stored state standing in for the engine's.
     mockApi(
-      [{ id: 'w1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 }],
+      [
+        {
+          id: 'w1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'watching',
+          createdAt: 0,
+        },
+      ],
       'authenticated',
     );
     vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
@@ -460,7 +484,17 @@ describe('Dashboard', () => {
   // tests fail against the old behaviour (no status element ever renders).
 
   const watching = [
-    { id: 'w1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto' as const, status: 'watching' as const, createdAt: 0 },
+    {
+      id: 'w1',
+      label: 'COMP 551',
+      term: '202701',
+      subject: 'COMP',
+      courseNumber: '551',
+      targetCrn: '2347',
+      mode: 'auto' as const,
+      status: 'watching' as const,
+      createdAt: 0,
+    },
   ];
 
   it('tells the user when a manual run was dropped because one is already running', async () => {
@@ -469,7 +503,11 @@ describe('Dashboard', () => {
       mockApi(watching, 'authenticated');
       const t0 = Date.now();
       // Real shape: the server echoes the window start on every 200 body.
-      vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'in progress', lastForcedRunAt: t0 });
+      vi.spyOn(api, 'runTarget').mockResolvedValue({
+        started: false,
+        reason: 'in progress',
+        lastForcedRunAt: t0,
+      });
       renderDashboard();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
@@ -499,7 +537,11 @@ describe('Dashboard', () => {
   // So the notice is retracted on a *status* change (unambiguous: the cycle ended
   // in a terminal state) and otherwise expires on its own (NOTICE_TTL_MS).
   it('retires the "already running" notice when the running cycle ends in a terminal state', async () => {
-    const scheduled = { ...watching[0], lastPolledAt: Date.now() - 5_000, nextPollAt: Date.now() + 60_000 };
+    const scheduled = {
+      ...watching[0],
+      lastPolledAt: Date.now() - 5_000,
+      nextPollAt: Date.now() + 60_000,
+    };
     mockApi([scheduled], 'authenticated');
     vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'in progress' });
     // `mockResolvedValueOnce` for the mount fetch, so the refreshed targets below
@@ -512,7 +554,9 @@ describe('Dashboard', () => {
     renderDashboard();
     await waitFor(() => screen.getByRole('button', { name: /register now/i }));
     await userEvent.click(screen.getByRole('button', { name: /register now/i }));
-    await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i));
+    await waitFor(() =>
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i),
+    );
 
     // The running cycle registers the course. That path sets the status and returns
     // WITHOUT rescheduling — it never touches `nextPollAt`, which is why the
@@ -557,7 +601,11 @@ describe('Dashboard', () => {
     vi.useFakeTimers();
     try {
       mockApi(watching, 'authenticated');
-      vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'cooldown', retryAfterMs: 5_000 });
+      vi.spyOn(api, 'runTarget').mockResolvedValue({
+        started: false,
+        reason: 'cooldown',
+        retryAfterMs: 5_000,
+      });
       const getTargets = vi.spyOn(api, 'getTargets').mockResolvedValue(watching);
       renderDashboard();
       await act(async () => {
@@ -667,7 +715,9 @@ describe('Dashboard', () => {
     await waitFor(() => screen.getByRole('button', { name: /register now/i }));
     await userEvent.click(screen.getByRole('button', { name: /register now/i }));
     await waitFor(() =>
-      expect(screen.getByTestId('run-notice')).toHaveTextContent(/This check was not started.*target is paused/i),
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(
+        /This check was not started.*target is paused/i,
+      ),
     );
   });
 
@@ -706,7 +756,9 @@ describe('Dashboard', () => {
 
       // Meanwhile another tab starts a manual run, which the server records on the
       // target. With the seed cleared, that window renders here immediately.
-      vi.spyOn(api, 'getTargets').mockResolvedValue([{ ...watching[0], lastForcedRunAt: Date.now() }]);
+      vi.spyOn(api, 'getTargets').mockResolvedValue([
+        { ...watching[0], lastForcedRunAt: Date.now() },
+      ]);
       await act(async () => {
         streamEvent('Immediate cycle started elsewhere');
         await vi.advanceTimersByTimeAsync(10);
@@ -731,12 +783,16 @@ describe('Dashboard', () => {
     await userEvent.click(screen.getByRole('button', { name: /register now/i }));
     // The button goes back to its idle label only once the POST settles, and the
     // card keeps a visible notice the whole time — no more one-frame flash.
-    await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/starting a manual check/i));
+    await waitFor(() =>
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/starting a manual check/i),
+    );
     expect(screen.getByRole('button', { name: /… running/i })).toBeDisabled();
     resolveRun({ started: true, retryAfterMs: 60_000 });
     // An accepted run leaves no "starting…" claim behind; the card switches to
     // the cooldown notice — the cycle announces itself in the console.
-    await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/throttled to one per minute/i));
+    await waitFor(() =>
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/throttled to one per minute/i),
+    );
   });
 
   // Review finding: after an *accepted* run the button stayed enabled for the
@@ -861,4 +917,142 @@ describe('Dashboard', () => {
   // this test drove the same scenario through the Dashboard, but the refetch it
   // relied on never actually fired, so the skewed value never reached the card and
   // the test passed for the wrong reason — it was deleted in favour of the unit test.
+  /**
+   * Q13 variant C. `/api/targets` failing left `targets.data` undefined, and the
+   * page rendered its empty state for that — the same screen as "you watch
+   * nothing". Nothing in the app read `resource.error`, so the user was told
+   * their configuration was empty and, having no retry entry point, the natural
+   * move was to re-add the courses (which `addTarget` happily duplicates).
+   */
+  it('shows an error bar with a working retry instead of the empty state when /api/targets fails', async () => {
+    const watchTarget = {
+      id: 't1',
+      label: 'COMP 551',
+      term: '202701',
+      subject: 'COMP',
+      courseNumber: '551',
+      targetCrn: '2347',
+      mode: 'auto' as const,
+      status: 'watching' as const,
+      createdAt: 0,
+    };
+    // The list stays unreadable until the user retries: the mocked event stream
+    // makes the Dashboard refetch targets on mount, and a counter-based mock
+    // would let that second call succeed and quietly erase the failure.
+    let failing = true;
+    let calls = 0;
+    vi.spyOn(api, 'getTargets').mockImplementation(() => {
+      calls += 1;
+      return failing
+        ? Promise.reject(new Error('GET /api/targets failed: 503'))
+        : Promise.resolve([watchTarget]);
+    });
+    vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
+    vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
+    vi.spyOn(api, 'getSettings').mockResolvedValue({
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      queryBudget: 100,
+      registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+    });
+    vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+    renderDashboard();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Could not load Course list/i)).toBeInTheDocument(),
+    );
+    // The defect was the *empty state* showing for a failed load.
+    expect(screen.queryByText(/No courses watched/i)).toBeNull();
+    expect(screen.queryByText(/Loading courses/i)).toBeNull();
+    expect(screen.getByText(/GET \/api\/targets failed: 503/)).toBeInTheDocument();
+    const callsBeforeRetry = calls;
+
+    failing = false;
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+    // Retry re-runs the fetch: the real course shows up and the bar goes away.
+    await waitFor(() => expect(screen.getByText(/COMP 551/)).toBeInTheDocument());
+    expect(screen.queryByText(/Could not load Course list/i)).toBeNull();
+    expect(calls).toBeGreaterThan(callsBeforeRetry);
+  });
+
+  it('does not claim a target list is empty before it has been read', async () => {
+    // A list that has not arrived yet is not an empty list. Showing "No courses
+    // watched yet" during the initial fetch is the same lie as showing it after a
+    // failure, and it also invites a duplicate re-add.
+    let release!: (v: Awaited<ReturnType<typeof api.getTargets>>) => void;
+    vi.spyOn(api, 'getTargets').mockImplementation(
+      () => new Promise((resolve) => (release = resolve)),
+    );
+    vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
+    vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
+    vi.spyOn(api, 'getSettings').mockResolvedValue({
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      queryBudget: 100,
+      registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+    });
+    vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+    renderDashboard();
+
+    expect(screen.getByText(/Loading courses/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No courses watched/i)).toBeNull();
+
+    await act(async () => {
+      release([]);
+    });
+    // A list that really is empty renders the empty state, not a stuck spinner.
+    await waitFor(() => expect(screen.getByText(/No courses watched/i)).toBeInTheDocument());
+  });
+
+  /**
+   * `refetch` keeps the last successful `data` on failure, so a later blip means
+   * "stale data + an error", not "no data". Replacing the whole list with the bar
+   * would throw away information the client still holds — and it is inconsistent
+   * with the ticker, which keeps rendering the stale budget snapshot under its
+   * own bar.
+   */
+  it('keeps the (stale) course list on screen when a later refetch fails', async () => {
+    const watchTarget = {
+      id: 't1',
+      label: 'COMP 551',
+      term: '202701',
+      subject: 'COMP',
+      courseNumber: '551',
+      targetCrn: '2347',
+      mode: 'auto' as const,
+      status: 'watching' as const,
+      createdAt: 0,
+    };
+    let failing = false;
+    vi.spyOn(api, 'getTargets').mockImplementation(() =>
+      failing ? Promise.reject(new Error('refresh boom')) : Promise.resolve([watchTarget]),
+    );
+    vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
+    vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
+    vi.spyOn(api, 'getSettings').mockResolvedValue({
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      queryBudget: 100,
+      registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+    });
+    vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+    renderDashboard();
+    await waitFor(() => expect(screen.getByText(/COMP 551/)).toBeInTheDocument());
+
+    // First read succeeded; the next one (a manual pause refetch) fails.
+    failing = true;
+    await userEvent.click(screen.getByRole('button', { name: /pause/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Could not load Course list/i)).toBeInTheDocument(),
+    );
+    // The bar is additive: the last good list survives underneath it.
+    expect(screen.getByText(/COMP 551/)).toBeInTheDocument();
+    expect(screen.queryByText(/No courses watched/i)).toBeNull();
+    expect(screen.queryByText(/Loading courses/i)).toBeNull();
+  });
 });

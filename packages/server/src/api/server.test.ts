@@ -1405,7 +1405,12 @@ describe('API', () => {
         ensureLoggedIn: async () => undefined,
         isLoggedIn: async () => true,
       },
-      scheduler: { start, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
+      scheduler: {
+        start,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+      },
     });
 
     await app2.inject({ method: 'POST', url: `/api/targets/${a.id}/resume` });
