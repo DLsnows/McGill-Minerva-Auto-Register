@@ -102,8 +102,8 @@ const REQUIRED_TARGET_FIELDS = ['term', 'subject', 'courseNumber', 'targetCrn', 
  * count is reported separately as `probeCalls`.
  */
 
-/** The two paths that exist for the test harness, not for the app. */
-const HARNESS_PATHS = new Set(['/api/__requests', '/api/health']);
+/** The paths that exist for the test harness, not for the app. */
+const HARNESS_PATHS = new Set(['/api/__requests', '/api/__session', '/api/health']);
 const requestLedger = new Map();
 let harnessCalls = 0;
 
@@ -286,12 +286,33 @@ app.delete('/api/targets/:id', (req) => {
   return { ok: true };
 });
 
+/**
+ * Manual-run cooldown, mirrored from MANUAL_RUN_COOLDOWN_MS in
+ * packages/server/src/scheduler/scheduler.ts. Kept in sync deliberately: the real
+ * `/run` answers `{started:false, reason:'cooldown', retryAfterMs}` for a second
+ * request inside the window, and the UI's cooldown notice is only exercised if
+ * this fake produces the same shape (the same class of drift that once left
+ * `/api/budget` rendering "NaN / undefined" while the assertions still passed).
+ */
+const MANUAL_RUN_COOLDOWN_MS = 60_000;
+const lastForcedRunAt = new Map();
+
 app.post('/api/targets/:id/run', (req, reply) => {
   const target = state.targets.find((t) => t.id === req.params.id);
   if (!target) return reply.code(404).send({ error: 'not found' });
   if (target.status !== 'watching') {
     return reply.send({ started: false, reason: `target is ${target.status}` });
   }
+  const at = now();
+  const last = lastForcedRunAt.get(target.id);
+  if (last !== undefined && at - last < MANUAL_RUN_COOLDOWN_MS) {
+    return reply.send({
+      started: false,
+      reason: 'cooldown',
+      retryAfterMs: MANUAL_RUN_COOLDOWN_MS - (at - last),
+    });
+  }
+  lastForcedRunAt.set(target.id, at);
   logEvent(
     'action',
     `[dry-run] Immediate cycle for ${target.label ?? target.targetCrn} (fake backend).`,
@@ -330,11 +351,32 @@ app.put('/api/settings', (req, reply) => {
   return state.settings;
 });
 
-// --- session (never authenticates: the fake backend has no Minerva behind it) ---
+// --- session (never authenticates on its own: the fake backend has no Minerva
+// behind it) ---
 app.get('/api/session', () => ({ status: state.sessionStatus }));
 app.post('/api/session/login', () => {
   state.sessionStatus = 'logged-out';
   return { started: true };
+});
+
+/**
+ * Test-support endpoint: force the reported session status.
+ *
+ * `logged-out` is the honest default here (nothing is logged in), but it also
+ * disables every action button in the UI, so cases that exercise a *real* click
+ * path ("Register now" → POST /run → rendered verdict) need the UI to believe a
+ * session exists. Before this hook the only way to cover such a path was to call
+ * the endpoint with `page.request`, which skips the component under test.
+ */
+app.post('/api/__session', (req, reply) => {
+  const status = req.body?.status;
+  if (!['authenticated', 'logged-out', 'logging-in', 'unknown'].includes(status)) {
+    return reply
+      .code(400)
+      .send({ error: 'status must be authenticated|logged-out|logging-in|unknown' });
+  }
+  state.sessionStatus = status;
+  return { status: state.sessionStatus };
 });
 
 // --- scheduler ---

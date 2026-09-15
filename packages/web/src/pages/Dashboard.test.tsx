@@ -145,4 +145,73 @@ describe('Dashboard', () => {
     await userEvent.click(screen.getByRole('button', { name: /start all/i }));
     await waitFor(() => expect(screen.getByText(/sched boom/i)).toBeInTheDocument());
   });
+
+  // ── manual run feedback (audit Q16/Q60/Q23) ────────────────────────────────
+  // Before the fix `onRun` awaited api.runTarget and cleared the running state in
+  // `finally`: a dropped request produced no visible change at all, so these
+  // tests fail against the old behaviour (no status element ever renders).
+
+  const watching = [
+    { id: 'w1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto' as const, status: 'watching' as const, createdAt: 0 },
+  ];
+
+  it('tells the user when a manual run was dropped because one is already running', async () => {
+    mockApi(watching, 'authenticated');
+    vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'in progress' });
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /register now/i }));
+    await userEvent.click(screen.getByRole('button', { name: /register now/i }));
+    await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i));
+  });
+
+  it('tells the user the manual run was throttled, and blocks the button during the cooldown', async () => {
+    mockApi(watching, 'authenticated');
+    vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'cooldown', retryAfterMs: 45_000 });
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /register now/i }));
+    await userEvent.click(screen.getByRole('button', { name: /register now/i }));
+    await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/throttled to one per minute/i));
+    expect(screen.getByTestId('run-notice')).toHaveTextContent(/45s/);
+    expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+  });
+
+  it('reports an unknown drop reason honestly instead of staying silent', async () => {
+    mockApi(watching, 'authenticated');
+    vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'target is paused' });
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /register now/i }));
+    await userEvent.click(screen.getByRole('button', { name: /register now/i }));
+    await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/not being watched.*target is paused/i));
+  });
+
+  it('surfaces a failed run request instead of clearing the spinner silently', async () => {
+    mockApi(watching, 'authenticated');
+    vi.spyOn(api, 'runTarget').mockRejectedValue(new Error('run boom'));
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /register now/i }));
+    await userEvent.click(screen.getByRole('button', { name: /register now/i }));
+    await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/run boom/i));
+  });
+
+  it('shows an in-flight starting notice while the run request is pending', async () => {
+    mockApi(watching, 'authenticated');
+    let resolveRun!: (v: { started: boolean }) => void;
+    vi.spyOn(api, 'runTarget').mockReturnValue(
+      new Promise((r) => {
+        resolveRun = r;
+      }),
+    );
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /register now/i }));
+    await userEvent.click(screen.getByRole('button', { name: /register now/i }));
+    // The button goes back to its idle label only once the POST settles, and the
+    // card keeps a visible notice the whole time — no more one-frame flash.
+    await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/starting a manual check/i));
+    expect(screen.getByRole('button', { name: /… running/i })).toBeDisabled();
+    resolveRun({ started: true });
+    // An accepted run leaves no stale notice behind — the cycle announces itself
+    // through the console (and the card's "last poll") instead.
+    await waitFor(() => expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled());
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
 });

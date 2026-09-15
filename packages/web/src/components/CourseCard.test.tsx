@@ -78,4 +78,51 @@ describe('CourseCard', () => {
     expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
   });
+
+  // Regression (audit Q16/Q60): a dropped manual run must be visible. Before the
+  // fix the card only knew `running`, which the Dashboard cleared as soon as the
+  // POST returned, so a rejected request left no trace on screen at all.
+  it('shows the run notice when the manual run was not accepted', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        runNotice="A check for this course is already running"
+      />,
+    );
+    expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i);
+  });
+
+  it('renders no run notice by default', () => {
+    render(<CourseCard target={target} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />);
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
+
+  it('disables Register now while the manual-run cooldown is active', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        coolingUntil={Date.now() + 30_000}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+  });
+
+  it('re-enables Register now once the cooldown has passed', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        coolingUntil={Date.now() - 1}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled();
+  });
 });

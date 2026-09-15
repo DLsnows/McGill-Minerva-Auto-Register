@@ -5,7 +5,18 @@ import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { Store } from '../store/store';
 import { Budget } from '../budget/budget';
+import { Scheduler } from '../scheduler/scheduler';
 import { buildServer, type ApiDeps } from './server';
+
+/** ApiDeps for a test that drives the routes with a *real* Scheduler. */
+function makeSessionDeps(store: Store, scheduler: Scheduler): ApiDeps {
+  return {
+    store,
+    budget: new Budget(store),
+    session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+    scheduler,
+  };
+}
 
 let dir: string;
 let app: FastifyInstance;
@@ -20,7 +31,7 @@ function makeDeps(): ApiDeps {
       ensureLoggedIn: async () => undefined,
       isLoggedIn: async () => true,
     },
-    scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+    scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
   };
 }
 
@@ -192,7 +203,7 @@ describe('API', () => {
       store,
       budget: new Budget(store),
       session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
-      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
     });
     const r = await app2.inject({ method: 'GET', url: '/api/events?limit=abc' });
     expect(r.json()).toHaveLength(1);
@@ -206,7 +217,7 @@ describe('API', () => {
       store,
       budget: new Budget(store),
       session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
-      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
     });
     expect((await app2.inject({ method: 'GET', url: '/api/events' })).json()).toHaveLength(1);
     const del = await app2.inject({ method: 'DELETE', url: '/api/events' });
@@ -236,7 +247,7 @@ describe('API', () => {
         ensureLoggedIn: async () => undefined,
         isLoggedIn: async () => isLoggedIn,
       },
-      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
     });
     // Simulate a successful login — status becomes 'authenticated'
     await app2.inject({ method: 'POST', url: '/api/session/login' });
@@ -267,7 +278,7 @@ describe('API', () => {
           ensureLoggedIn: async () => undefined,
           isLoggedIn: async () => false,
         },
-        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
       });
       await app2.inject({ method: 'POST', url: '/api/session/login' });
       // Still mid-login before the timeout fires
@@ -286,7 +297,7 @@ describe('API', () => {
   it('POST /api/targets/:id/run triggers runTarget for an existing target', async () => {
     const store = new Store(dir);
     const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '2347', mode: 'notify' });
-    const runTarget = vi.fn();
+    const runTarget = vi.fn(() => ({ started: true }));
     const app2 = buildServer({
       store,
       budget: new Budget(store),
@@ -300,18 +311,109 @@ describe('API', () => {
     await app2.close();
   });
 
+  // Regression (audit Q16/Q60): a request dropped by the in-flight guard must not
+  // be reported as accepted. Before the fix the route ignored runTarget's outcome
+  // and unconditionally answered `{started:true}`.
+  it('POST /api/targets/:id/run reports started:false/reason:in progress when a cycle is already running', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '2347', mode: 'auto' });
+    const runTarget = vi.fn(() => ({ started: false, reason: 'in progress' }));
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget, isRunning: () => true },
+    });
+    const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({ started: false, reason: 'in progress' });
+    await app2.close();
+  });
+
+  // Regression (audit Q23): the manual-run cooldown is expressed through the same
+  // response, including how long the caller must wait.
+  it('POST /api/targets/:id/run reports started:false/reason:cooldown with retryAfterMs', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '2347', mode: 'auto' });
+    const runTarget = vi.fn(() => ({ started: false, reason: 'cooldown', retryAfterMs: 42_000 }));
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget, isRunning: () => false },
+    });
+    const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({ started: false, reason: 'cooldown', retryAfterMs: 42_000 });
+    await app2.close();
+  });
+
   it('POST /api/targets/:id/run returns 404 for a missing target', async () => {
     const r = await app.inject({ method: 'POST', url: '/api/targets/nope/run' });
     expect(r.statusCode).toBe(404);
   });
 
-  it('GET /api/scheduler reports running state', async () => {
+  // End-to-end through the *real* scheduler: the mocked-scheduler cases above
+  // pin the route's contract, these two pin that a real Scheduler actually
+  // produces those verdicts (a mock can happily return a shape no code emits).
+  it('POST /api/targets/:id/run answers {started:true} once, then cooldown for a real scheduler', async () => {
     const store = new Store(dir);
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '2347', mode: 'auto' });
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher: { checkCourse: async () => null },
+      actor: { act: async () => ({ kind: 'not-found', crn: '2347' }) },
+      session: { isLoggedIn: async () => true },
+      now: () => Date.now(),
+      random: () => 0.5,
+    });
+    const app2 = buildServer(makeSessionDeps(store, scheduler));
+    const first = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toEqual({ started: true });
+    const second = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().started).toBe(false);
+    expect(second.json().reason).toBe('cooldown');
+    expect(second.json().retryAfterMs).toBeGreaterThan(0);
+    await app2.close();
+  });
+
+  it('POST /api/targets/:id/run answers {started:false, reason:in progress} while a real cycle runs', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '2347', mode: 'auto' });
+    let releaseCheck!: () => void;
+    const gate = new Promise<void>((r) => (releaseCheck = r));
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher: {
+        checkCourse: async () => {
+          await gate;
+          return null;
+        },
+      },
+      actor: { act: async () => ({ kind: 'not-found', crn: '2347' }) },
+      session: { isLoggedIn: async () => true },
+      now: () => Date.now(),
+      random: () => 0.5,
+    });
+    const app2 = buildServer(makeSessionDeps(store, scheduler));
+    const first = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
+    expect(first.json()).toEqual({ started: true });
+    const second = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
+    expect(second.json()).toEqual({ started: false, reason: 'in progress' });
+    releaseCheck();
+    await app2.close();
+  });
+
+  it('GET /api/scheduler reports running state', async () => {    const store = new Store(dir);
     const app2 = buildServer({
       store,
       budget: new Budget(store),
       session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
-      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => true },
     });
     expect((await app2.inject({ method: 'GET', url: '/api/scheduler' })).json()).toEqual({ running: true });
     await app2.close();
@@ -321,7 +423,10 @@ describe('API', () => {
     const store = new Store(dir);
     const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '2347', mode: 'auto' });
     store.updateTarget(t.id, { status: 'paused' });
-    const runTarget = vi.fn();
+    // The status check lives in the scheduler now, so the route asks it and
+    // relays the verdict — a target paused between check and call is therefore
+    // still answered honestly instead of optimistically.
+    const runTarget = vi.fn(() => ({ started: false, reason: 'target is paused' }));
     const app2 = buildServer({
       store,
       budget: new Budget(store),
@@ -330,8 +435,7 @@ describe('API', () => {
     });
     const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
     expect(r.statusCode).toBe(200);
-    expect(r.json().started).toBe(false);
-    expect(runTarget).not.toHaveBeenCalled();
+    expect(r.json()).toEqual({ started: false, reason: 'target is paused' });
     await app2.close();
   });
 
@@ -345,7 +449,7 @@ describe('API', () => {
         store,
         budget: new Budget(store),
         session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
-        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
       });
       expect((await app2.inject({ method: 'GET', url: '/api/health' })).json()).toEqual({ ok: true });
       expect((await app2.inject({ method: 'GET', url: '/some-page' })).statusCode).toBe(404);
@@ -367,7 +471,7 @@ describe('API', () => {
         store,
         budget: new Budget(store),
         session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
-        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
       });
       const r = await app2.inject({ method: 'GET', url: '/dashboard' });
       expect(r.statusCode).toBe(200);
@@ -389,7 +493,7 @@ describe('API', () => {
       store,
       budget: new Budget(store),
       session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
-      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false, rescheduleWatching },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false, rescheduleWatching },
     });
     // Changed cadence (default is 30) → reschedule once.
     await app2.inject({ method: 'PUT', url: '/api/settings', payload: { pollIntervalMinutes: 15 } });
@@ -415,7 +519,7 @@ describe('API', () => {
       store,
       budget: new Budget(store),
       session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
-      scheduler: { start, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+      scheduler: { start, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
     });
     const r = await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' });
     expect(r.json()).toMatchObject({ running: true, resumed: 1 });
@@ -435,7 +539,7 @@ describe('API', () => {
       store,
       budget: new Budget(store),
       session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
-      scheduler: { start: () => undefined, stop, runTarget: () => undefined, isRunning: () => true },
+      scheduler: { start: () => undefined, stop, runTarget: () => ({ started: true }), isRunning: () => true },
     });
     const r = await app2.inject({ method: 'POST', url: '/api/scheduler/stop-all' });
     expect(r.json()).toMatchObject({ running: false, paused: 1 });
@@ -456,7 +560,7 @@ describe('API', () => {
       store,
       budget: new Budget(store),
       session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
-      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
     });
     await app2.ready();
     // Attach the message listener via onInit: injectWS delivers the snapshot

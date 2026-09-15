@@ -9,6 +9,21 @@ export interface SchedulerState {
   running: boolean;
 }
 
+/** Result of `POST /api/targets/:id/run` — what *this request* did.
+ *
+ * `started: true` means the cycle was accepted and is running in the background;
+ * its outcome still arrives via the event stream. `started: false` means the
+ * request was dropped, and `reason` says why — the UI must show it, otherwise
+ * the button just flashes and the click silently does nothing (audit Q16/Q60).
+ * `reason` is an open string (the server also reports `target is <status>`), so
+ * consumers fall back to a generic message for values they don't know. */
+export interface RunTargetResult {
+  started: boolean;
+  reason?: string;
+  /** Milliseconds until another manual run is accepted (present for 'cooldown'). */
+  retryAfterMs?: number;
+}
+
 type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'targetCrn' | 'mode'> &
   Partial<Pick<WatchTarget, 'faculty' | 'label'>>;
 
@@ -43,7 +58,7 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   removeTarget: (id: string) => req<{ ok: true }>(`/api/targets/${id}`, { method: 'DELETE' }),
-  runTarget: (id: string) => post<{ started: boolean }>(`/api/targets/${id}/run`),
+  runTarget: (id: string) => post<RunTargetResult>(`/api/targets/${id}/run`),
 
   getSettings: () => req<Settings>('/api/settings'),
   putSettings: (patch: Partial<Settings>) =>

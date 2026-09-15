@@ -12,6 +12,12 @@ interface Props {
   onRun: (id: string) => void;
   onTogglePolling: (id: string, next: WatchStatus) => void;
   running?: boolean;
+  /** Verdict of the last manual-run request ("in progress", "cooldown", …), so a
+   * dropped request is visible instead of the button silently flashing (Q16/Q60). */
+  runNotice?: string;
+  /** Epoch ms until which the manual-run cooldown is active for this target.
+   * The server enforces the same window; disabling here just avoids a futile click. */
+  coolingUntil?: number;
   /** When false (not logged in), resuming and one-click run are blocked. */
   loggedIn?: boolean;
 }
@@ -22,13 +28,23 @@ interface Props {
 const PAUSABLE: WatchStatus[] = ['watching'];
 const RESUMABLE: WatchStatus[] = ['paused'];
 
-export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, running, loggedIn = true }: Props) {
+export function CourseCard({
+  target,
+  onToggleMode,
+  onRun,
+  onTogglePolling,
+  running,
+  runNotice,
+  coolingUntil,
+  loggedIn = true,
+}: Props) {
   const { t } = useTranslation();
   const now = useNow(30_000); // ticks so "last poll Nm ago" stays current
   const title = target.label ?? `${target.subject} ${target.courseNumber}`;
   const canRun = target.status === 'watching';
   const canPause = PAUSABLE.includes(target.status);
   const canResume = RESUMABLE.includes(target.status);
+  const coolingSecs = coolingUntil ? Math.max(0, Math.ceil((coolingUntil - now) / 1000)) : 0;
   return (
     <div className="card glass">
       <div className="row1">
@@ -60,7 +76,7 @@ export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, runni
           <button
             type="button"
             className="btn btn-accent"
-            disabled={!canRun || running || !loggedIn}
+            disabled={!canRun || running || coolingSecs > 0 || !loggedIn}
             title={canRun && !loggedIn ? t('scheduler.loginFirst') : undefined}
             onClick={() => onRun(target.id)}
           >
@@ -68,6 +84,12 @@ export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, runni
           </button>
         </div>
       </div>
+
+      {runNotice && (
+        <div className="meta" role="status" data-testid="run-notice">
+          {runNotice}
+        </div>
+      )}
 
       <div className="meta">
         {target.lastPolledAt ? t('card.lastPoll', { rel: fmtRelative(target.lastPolledAt, now) }) : t('card.notPolled')}

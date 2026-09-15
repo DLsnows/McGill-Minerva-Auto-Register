@@ -13,6 +13,8 @@ export default function Dashboard() {
   const { targets, session, scheduler, budget } = useData();
   const { events, connected, clear } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
+  const [runNotice, setRunNotice] = useState<Record<string, string>>({});
+  const [coolingUntil, setCoolingUntil] = useState<Record<string, number>>({});
   const [schedErr, setSchedErr] = useState<string>();
   const [clearErr, setClearErr] = useState<string>();
   const [schedBusy, setSchedBusy] = useState(false);
@@ -84,18 +86,52 @@ export default function Dashboard() {
     [tr],
   );
 
-  const onRun = useCallback(async (id: string) => {
-    setRunning((s) => new Set(s).add(id));
-    try {
-      await api.runTarget(id);
-    } finally {
-      setRunning((s) => {
-        const next = new Set(s);
-        next.delete(id);
-        return next;
-      });
-    }
-  }, []);
+  const onRun = useCallback(
+    async (id: string) => {
+      // The POST only reports whether *this request* was accepted; the cycle
+      // itself keeps running server-side and reports through the event stream.
+      // So `running` covers the request round-trip, and `runNotice` carries the
+      // verdict — without it a dropped request was indistinguishable from an
+      // accepted one and the button just flashed (audit Q16/Q23/Q60).
+      const clearNotice = () =>
+        setRunNotice((s) => {
+          const next = { ...s };
+          delete next[id];
+          return next;
+        });
+      setRunning((s) => new Set(s).add(id));
+      setRunNotice((s) => ({ ...s, [id]: tr('run.starting') }));
+      try {
+        const res = await api.runTarget(id);
+        if (res.started) {
+          // Accepted: the cycle's own log line lands in the console, and the
+          // card's "last poll" catches up when the event arrives — a leftover
+          // "starting…" here would be a stale claim, so drop the notice.
+          clearNotice();
+          return;
+        }
+        if (res.reason === 'in progress') {
+          setRunNotice((s) => ({ ...s, [id]: tr('run.inProgress') }));
+        } else if (res.reason === 'cooldown') {
+          const secs = Math.ceil((res.retryAfterMs ?? 0) / 1000);
+          setRunNotice((s) => ({ ...s, [id]: tr('run.cooldown', { s: secs }) }));
+          setCoolingUntil((s) => ({ ...s, [id]: Date.now() + (res.retryAfterMs ?? 0) }));
+        } else {
+          setRunNotice((s) => ({ ...s, [id]: tr('run.notWatching', { reason: res.reason ?? 'unknown' }) }));
+        }
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        setRunNotice((s) => ({ ...s, [id]: tr('run.failed', { reason }) }));
+      } finally {
+        setRunning((s) => {
+          const next = new Set(s);
+          next.delete(id);
+          return next;
+        });
+      }
+    },
+    [tr],
+  );
 
   const schedBusyRef = useRef(false);
   const onToggleScheduler = useCallback(async () => {
@@ -157,6 +193,8 @@ export default function Dashboard() {
                   onRun={onRun}
                   onTogglePolling={onTogglePolling}
                   running={running.has(t.id)}
+                  runNotice={runNotice[t.id]}
+                  coolingUntil={coolingUntil[t.id]}
                   loggedIn={loggedIn}
                 />
               ))}

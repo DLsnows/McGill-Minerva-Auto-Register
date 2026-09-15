@@ -93,6 +93,9 @@ function assertEqual(actual, expected, label) {
   );
 }
 
+/** Matches the manual "Register now" POST (used to await its response/request). */
+const isRunPost = (r) => r.url().includes('/api/targets/') && r.url().endsWith('/run');
+
 async function waitFor(fn, label, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -383,6 +386,101 @@ const CASES = [
         await page.inputValue('input[aria-label="Term"]'),
         '',
         'term field should reset after add',
+      );
+
+      assertEqual(errors.length, 0, `unexpected browser errors: ${errors.join(' | ')}`);
+    },
+  },
+  {
+    name: 'run-cooldown-feedback',
+    title: 'Dashboard — a dropped "Register now" is visible, and the manual cooldown is throttled',
+    // The whole point of the Q16/Q23 fix: the second request inside the manual
+    // cooldown must be answered `{started:false, reason:'cooldown'}` and the UI
+    // must render that verdict on the card, instead of the button flashing and
+    // the click vanishing. This case needs the fake backend to implement the same
+    // cooldown contract the real server does — otherwise it would assert UI
+    // feedback no backend ever produces.
+    //
+    // targets >=3: this case's own POST + the list refetch + the dashboard GET.
+    endpoints: { '/api/targets': 3, '/api/targets/:id/run': 1 },
+    async run({ page, errors }) {
+      // The fake backend reports `logged-out` (nothing is logged in), which
+      // disables every action button — including the one under test. Opt this
+      // case into a truthful-looking session so the click exercises the real
+      // path (disabled logic → POST → rendered verdict) instead of a raw fetch.
+      await page.request.post(`${BASE_URL}/api/__session`, { data: { status: 'authenticated' } });
+
+      // Add a course of this case's own so its cooldown state is untouched by
+      // whatever earlier cases did to their targets.
+      await page.goto(`${BASE_URL}/courses`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('input[aria-label="Term"]', { timeout: 15_000 });
+      await page.fill('input[aria-label="Term"]', '202701');
+      await page.fill('input[aria-label="Subject"]', 'COMP');
+      await page.fill('input[aria-label="Faculty"]', 'Faculty of Science');
+      await page.fill('input[aria-label="Course #"]', '551');
+      await page.fill('input[aria-label="Target CRN"]', '2347');
+      await page.fill('input[aria-label="Label"]', 'W6 COOLDOWN');
+      await page.getByRole('button', { name: 'Add course', exact: true }).click();
+      await page.waitForSelector('text=W6 COOLDOWN', { timeout: 15_000 });
+
+      await page.getByRole('link', { name: 'Dashboard' }).click();
+      const card = page.locator('.cards .card').filter({ hasText: 'W6 COOLDOWN' });
+      await card.getByRole('button', { name: '⚡ Register now' }).waitFor({ timeout: 15_000 });
+
+      // First accepted run: the button shows the in-flight label, then returns.
+      const firstResponse = page.waitForResponse(isRunPost);
+      await card.getByRole('button', { name: '⚡ Register now' }).click();
+      const firstBody = await (await firstResponse).json();
+      assertEqual(firstBody.started, true, 'first manual run should be accepted');
+
+      // Second click inside the cooldown window: the server refuses it and the
+      // card must say so. The button is also disabled for the rest of the window.
+      const secondResponse = page.waitForResponse(isRunPost);
+      const secondRequest = page.waitForRequest(isRunPost);
+      await card.getByRole('button', { name: '⚡ Register now' }).click();
+      const [response, request] = await Promise.all([secondResponse, secondRequest]);
+      const secondBody = await response.json();
+      assertEqual(
+        secondBody.started,
+        false,
+        'second manual run inside the cooldown must not start',
+      );
+      assertEqual(secondBody.reason, 'cooldown', 'second manual run reason');
+      assertEqual(
+        request.postData(),
+        null,
+        'the run request stays bodyless (a JSON content-type with an empty body is a Fastify 400)',
+      );
+
+      const notice = card.getByTestId('run-notice');
+      await notice.waitFor({ timeout: 15_000 });
+      const noticeText = await notice.innerText();
+      assert(
+        /throttled to one per minute/i.test(noticeText),
+        `the cooldown verdict should be visible on the card, got "${noticeText}"`,
+      );
+      assert(
+        /Try again in \d+s/i.test(noticeText),
+        `the cooldown notice should count down the remaining seconds, got "${noticeText}"`,
+      );
+      await waitFor(
+        async () => await card.getByRole('button', { name: '⚡ Register now' }).isDisabled(),
+        'the run button to be disabled for the rest of the cooldown',
+      );
+
+      // The contract itself, straight from the endpoint the app just called.
+      const targets = await (await page.request.get(`${BASE_URL}/api/targets`)).json();
+      const created = targets.find((t) => t.label === 'W6 COOLDOWN');
+      assert(created, 'the case should have created its own target');
+      const repeat = await page.request.post(`${BASE_URL}/api/targets/${created.id}/run`);
+      const body = await repeat.json();
+      assertEqual(body.started, false, 'a repeat manual run inside the cooldown must not start');
+      assertEqual(body.reason, 'cooldown', 'repeat manual run reason');
+      assert(
+        typeof body.retryAfterMs === 'number' &&
+          body.retryAfterMs > 0 &&
+          body.retryAfterMs <= 60_000,
+        `retryAfterMs should be the remaining cooldown, got ${JSON.stringify(body.retryAfterMs)}`,
       );
 
       assertEqual(errors.length, 0, `unexpected browser errors: ${errors.join(' | ')}`);

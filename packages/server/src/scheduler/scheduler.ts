@@ -47,6 +47,28 @@ function errMsg(e: unknown): string {
  * clean cycle resets it. */
 const FAILURE_LIMIT = 3;
 
+/** Minimum gap between two manual forced runs of the same target ("⚡ Register
+ * now"). Manual runs deliberately skip `nextPollAt`, so without this a user
+ * tapping the button in a row would fire a real Minerva query every time — the
+ * only other brake is the shared daily query budget. 60s is long enough to stop
+ * double-clicks and button-mashing while still letting someone retry after
+ * reading the result of the previous cycle. It is deliberately NOT persisted as
+ * a setting: the point is a floor on human-triggered pacing, not a knob. */
+export const MANUAL_RUN_COOLDOWN_MS = 60_000;
+
+/** What a manual "run this target now" request actually did. Returned all the
+ * way to the HTTP layer so the UI can tell "accepted" apart from "dropped"
+ * (audit Q16/Q60) — before this existed both cases returned `{started: true}`. */
+export interface ForcedRunResult {
+  started: boolean;
+  /** Why nothing was started. `'in progress'` = a cycle is already running for
+   * this target; `'cooldown'` = the manual cooldown has not elapsed;
+   * `'target is <status>'` = the target left the watching state. */
+  reason?: string;
+  /** Milliseconds until the caller may try again (cooldown only). */
+  retryAfterMs?: number;
+}
+
 /**
  * Orchestrates a single watch cycle per target: session check → query → decide
  * → auto-act or notify → update state → schedule next (jittered, budget-aware).
@@ -76,15 +98,21 @@ export class Scheduler {
   /** Run a single cycle for one target. With `{ force: true }` the auto/notify
    * mode gate is bypassed (notify-mode courses still act on an opening) — used
    * by the one-click "Register now" path. Budgets + session checks still apply.
-   * A per-target in-flight guard prevents concurrent runs of the same target. */
-  async runOnce(targetId: string, opts: { force?: boolean } = {}): Promise<void> {
+   * A per-target in-flight guard prevents concurrent runs of the same target.
+   *
+   * Returns false when the guard dropped this call (a cycle was already running)
+   * so a caller can report the drop instead of pretending it was accepted. The
+   * guard itself is intentionally kept: it is what stops a manual run and the
+   * tick loop from double-registering the same course. */
+  async runOnce(targetId: string, opts: { force?: boolean } = {}): Promise<boolean> {
     if (this.inFlight.has(targetId)) {
       this.log('info', 'Run already in progress for this target — skipping concurrent run', targetId);
-      return;
+      return false;
     }
     this.inFlight.add(targetId);
     try {
       await this.runCycle(targetId, opts);
+      return true;
     } finally {
       this.inFlight.delete(targetId);
     }
@@ -215,11 +243,49 @@ export class Scheduler {
   }
 
   /** Trigger an immediate forced run for one target (one-click "Register now").
-   * Fire-and-forget; results surface via the event stream like a normal tick. */
-  runTarget(id: string): void {
+   * Fire-and-forget; results surface via the event stream like a normal tick.
+   * Returns what happened so the HTTP layer can answer honestly: a request that
+   * was dropped by the in-flight guard or blocked by the manual cooldown is
+   * reported as `started: false` instead of the blanket `started: true` the API
+   * used to return (audit Q16/Q23/Q60). */
+  runTarget(id: string): ForcedRunResult {
+    const target = this.deps.store.getTarget(id);
+    // Re-read the status here (not only in the route): a target can be paused
+    // between the check and this call, and claiming "in progress" for a paused
+    // course would be exactly the kind of dishonest answer this fix removes.
+    if (!target) return { started: false, reason: 'target not found' };
+    if (target.status !== 'watching') return { started: false, reason: `target is ${target.status}` };
+
+    if (this.inFlight.has(id)) {
+      // No extra log here — `runOnce` records the "skipping concurrent run" line.
+      return { started: false, reason: 'in progress' };
+    }
+
+    const now = this.now();
+    const remaining = this.manualCooldownRemaining(target, now);
+    if (remaining > 0) {
+      this.log(
+        'info',
+        `Manual run ignored — ${Math.ceil(remaining / 1000)}s of the ${MANUAL_RUN_COOLDOWN_MS / 1000}s cooldown between manual runs is left`,
+        id,
+      );
+      return { started: false, reason: 'cooldown', retryAfterMs: remaining };
+    }
+
+    // Start the cooldown when the run is *accepted* (not when it finishes), so
+    // mashing the button during a slow cycle cannot queue up back-to-back runs.
+    this.deps.store.updateTarget(id, { lastForcedRunAt: now });
     void this.runOnce(id, { force: true }).catch((e) =>
       this.log('error', `Forced run failed: ${errMsg(e)}`, id),
     );
+    return { started: true };
+  }
+
+  /** Milliseconds left of the manual-run cooldown, 0 when a forced run is allowed. */
+  private manualCooldownRemaining(target: WatchTarget, now: number): number {
+    if (target.lastForcedRunAt === undefined) return 0;
+    const elapsed = now - target.lastForcedRunAt;
+    return elapsed >= MANUAL_RUN_COOLDOWN_MS ? 0 : MANUAL_RUN_COOLDOWN_MS - Math.max(0, elapsed);
   }
 
   private applyOutcome(target: WatchTarget, outcome: RegisterOutcome): void {
@@ -333,6 +399,8 @@ export class Scheduler {
       .listTargets()
       .filter((t) => t.status === 'watching' && (t.nextPollAt ?? 0) <= now);
     for (const t of due) {
+      // A `false` here means the in-flight guard dropped this cycle (the manual
+      // "Register now" path got there first) — `runOnce` already logged why.
       await this.runOnce(t.id);
     }
   }
