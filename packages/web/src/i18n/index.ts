@@ -16,6 +16,13 @@ const en = {
   scheduler: { running: 'Watching · running', stopped: 'Watching · stopped', start: '▶ Start all', stop: '■ Stop all', loginFirst: 'Log in first' },
   status: { watching: 'WATCHING', waitlisted: 'WAITLISTED', registered: 'REGISTERED', paused: 'PAUSED', stopped: 'STOPPED', error: 'ERROR' },
   card: { registerNow: '⚡ Register now', running: '… running', lastPoll: 'last poll {{rel}}', notPolled: 'not polled yet', pause: '⏸ Pause', resume: '▶ Resume' },
+  run: {
+    starting: 'Starting a manual check…',
+    inProgress: 'A check for this course is already running — its result will appear in the console.',
+    cooldown: 'Manual checks are throttled to one per minute to stay human-like. Try again in {{s}}s.',
+    failed: 'Could not start a check: {{reason}}',
+    dropped: 'This check was not started ({{reason}}).',
+  },
   console: { liveStream: 'live stream', reconnecting: 'reconnecting…', clear: 'Clear', clearFailed: 'Failed to clear the console.' },
   form: {
     term: 'Term', subject: 'Subject', courseNumber: 'Course #', targetCrn: 'Target CRN',
@@ -42,6 +49,9 @@ const en = {
     empty: 'No courses watched yet. Add one from the Courses tab.',
     sessionBanner: 'Session is not active — open the Session tab to log in so polling can run.',
     schedToggleFailed: 'Scheduler toggle failed.',
+    loginToStart: 'Not logged in — open the Session tab and log in before starting the engine.',
+    engineRunning: 'Engine · running',
+    engineStopped: 'Engine · stopped',
   },
   courses: {
     addACourse: 'Add a course', addCourse: 'Add course', managed: 'Managed courses',
@@ -87,6 +97,13 @@ const zh: typeof en = {
   scheduler: { running: '监控 · 运行中', stopped: '监控 · 已停止', start: '▶ 全部启动', stop: '■ 全部停止', loginFirst: '请先登录' },
   status: { watching: '监控中', waitlisted: '候补中', registered: '已注册', paused: '已暂停', stopped: '已停止', error: '错误' },
   card: { registerNow: '⚡ 立即执行', running: '… 执行中', lastPoll: '上次轮询 {{rel}}', notPolled: '尚未轮询', pause: '⏸ 暂停', resume: '▶ 恢复' },
+  run: {
+    starting: '正在发起本次手动检查…',
+    inProgress: '该课程已有一轮检查正在进行 —— 结果会出现在控制台里。',
+    cooldown: '手动检查已限流为每分钟一次，以保持接近真人的节奏。请在 {{s}} 秒后重试。',
+    failed: '无法发起检查：{{reason}}',
+    dropped: '本次检查未启动（{{reason}}）。',
+  },
   console: { liveStream: '实时', reconnecting: '重连中…', clear: '清空', clearFailed: '清空控制台失败。' },
   form: {
     term: '学期', subject: '科目', courseNumber: '课程号', targetCrn: '目标 CRN',
@@ -113,6 +130,9 @@ const zh: typeof en = {
     empty: '还没有监控任何课程。在「课程」页添加。',
     sessionBanner: '会话未激活 —— 打开「会话」页登录,轮询才能运行。',
     schedToggleFailed: '调度器开关失败。',
+    loginToStart: '未登录 —— 请先到「会话」页登录,再启动引擎。',
+    engineRunning: '引擎 · 运行中',
+    engineStopped: '引擎 · 已停止',
   },
   courses: {
     addACourse: '添加课程', addCourse: '添加', managed: '已管理课程',
@@ -158,6 +178,13 @@ const fr: typeof en = {
   scheduler: { running: 'Surveillance · active', stopped: 'Surveillance · arrêtée', start: '▶ Tout démarrer', stop: '■ Tout arrêter', loginFirst: "Connectez-vous d'abord" },
   status: { watching: 'EN SURVEILLANCE', waitlisted: "LISTE D'ATTENTE", registered: 'INSCRIT', paused: 'EN PAUSE', stopped: 'ARRÊTÉ', error: 'ERREUR' },
   card: { registerNow: '⚡ Inscrire maintenant', running: '… en cours', lastPoll: 'dernier sondage {{rel}}', notPolled: 'pas encore sondé', pause: '⏸ Pause', resume: '▶ Reprendre' },
+  run: {
+    starting: 'Lancement d’une vérification manuelle…',
+    inProgress: 'Une vérification de ce cours est déjà en cours — son résultat apparaîtra dans la console.',
+    cooldown: 'Les vérifications manuelles sont limitées à une par minute pour rester naturelles. Réessayez dans {{s}} s.',
+    failed: 'Impossible de lancer une vérification : {{reason}}',
+    dropped: 'Cette vérification n’a pas été lancée ({{reason}}).',
+  },
   console: { liveStream: 'flux en direct', reconnecting: 'reconnexion…', clear: 'Effacer', clearFailed: "Échec de l'effacement de la console." },
   form: {
     term: 'Trimestre', subject: 'Matière', courseNumber: 'N° de cours', targetCrn: 'CRN cible',
@@ -184,6 +211,9 @@ const fr: typeof en = {
     empty: "Aucun cours surveillé. Ajoutez-en un dans l'onglet Cours.",
     sessionBanner: 'Session inactive — ouvrez l’onglet Session pour vous connecter et lancer le sondage.',
     schedToggleFailed: 'Échec du basculement du planificateur.',
+    loginToStart: "Non connecté — ouvrez l'onglet Session et connectez-vous avant de démarrer le moteur.",
+    engineRunning: 'Moteur · en marche',
+    engineStopped: 'Moteur · arrêté',
   },
   courses: {
     addACourse: 'Ajouter un cours', addCourse: 'Ajouter', managed: 'Cours gérés',
