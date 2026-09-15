@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DataProvider } from '../lib/DataContext';
 import Dashboard from './Dashboard';
@@ -171,7 +171,9 @@ describe('Dashboard', () => {
     await waitFor(() => screen.getByRole('button', { name: /register now/i }));
     await userEvent.click(screen.getByRole('button', { name: /register now/i }));
     await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/throttled to one per minute/i));
-    expect(screen.getByTestId('run-notice')).toHaveTextContent(/45s/);
+    // The remaining seconds are rendered from the live clock, so assert the
+    // countdown exists (and is in the right ballpark) rather than a frozen 45.
+    expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 4[456]s/i);
     expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
   });
 
@@ -209,9 +211,71 @@ describe('Dashboard', () => {
     await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/starting a manual check/i));
     expect(screen.getByRole('button', { name: /… running/i })).toBeDisabled();
     resolveRun({ started: true });
-    // An accepted run leaves no stale notice behind — the cycle announces itself
-    // through the console (and the card's "last poll") instead.
-    await waitFor(() => expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled());
-    expect(screen.queryByTestId('run-notice')).toBeNull();
+    // An accepted run leaves no "starting…" claim behind; the card switches to
+    // the cooldown notice (below) — the cycle announces itself in the console.
+    await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/throttled to one per minute/i));
+  });
+
+  // Review finding: after an *accepted* run the button stayed enabled for the
+  // whole window, so the next click just bounced off the server with 'cooldown'.
+  // Fake timers from the start (installing them mid-test leaves the card's
+  // already-scheduled tick on the real clock) and `fireEvent` rather than
+  // `userEvent`, whose own delay scheduling fights fake timers.
+  it('disables Register now for the whole window after an accepted run', async () => {
+    vi.useFakeTimers();
+    try {
+      mockApi(watching, 'authenticated');
+      const runTarget = vi.spyOn(api, 'runTarget').mockResolvedValue({ started: true });
+      renderDashboard();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0); // flush the mount fetches
+      });
+      fireEvent.click(screen.getByRole('button', { name: /register now/i }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0); // flush the run POST
+      });
+      expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 60s/i);
+      expect(runTarget).toHaveBeenCalledTimes(1); // no second request was possible
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(61_000);
+      });
+      expect(screen.queryByTestId('run-notice')).toBeNull();
+      expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review finding: the cooldown notice was a frozen string. It must tick down.
+  it('counts the cooldown notice down instead of freezing it', async () => {
+    vi.useFakeTimers();
+    try {
+      mockApi(watching, 'authenticated');
+      vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'cooldown', retryAfterMs: 5_000 });
+      renderDashboard();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.click(screen.getByRole('button', { name: /register now/i }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 5s/i);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000);
+      });
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 2s/i);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_100);
+      });
+      expect(screen.queryByTestId('run-notice')).toBeNull();
+      expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

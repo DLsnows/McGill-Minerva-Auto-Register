@@ -32,15 +32,23 @@ only makes the guard's verdict expressible.
 | `{ started: false, reason: 'target is <status>' }`     | The target is not `watching` (paused / registered / error / …).        |
 | `404 { error: 'not found' }`                           | No such target.                                                        |
 
+Every 200 body also carries **`lastForcedRunAt`** (epoch ms, omitted when the
+target never had a forced run): the start of the current cooldown window, i.e.
+the same value the store holds. The UI renders its countdown from this instead of
+from its own clock, so a skewed client clock cannot stretch or shrink the window
+it displays. An accepted run also answers `{ started: true, lastForcedRunAt: <now> }`.
+
 `started` describes **this request**, never the outcome of the cycle. A cycle that
 ends in a registration error still answers `{ started: true }` and reports the
 failure through the event stream — the same way a scheduled tick does.
 
 Consumers of this shape:
 
-- `packages/web/src/lib/api.ts` — `RunTargetResult`
+- `packages/web/src/lib/api.ts` — `RunTargetResult`, `MANUAL_RUN_COOLDOWN_MS`,
+  `cooldownRemainingMs`
 - `packages/web/src/pages/Dashboard.tsx` — `onRun` renders the verdict
 - `packages/web/src/components/CourseCard.tsx` — `runNotice` / `coolingUntil`
+  (the countdown notice is derived, not stored, so it ticks and clears itself)
 - `e2e/fake-server.mjs` — mirrors the contract (and the cooldown) for preview e2e
 - `e2e/run.mjs` — `run-cooldown-feedback` case asserts it end to end
 
@@ -69,7 +77,16 @@ Consumers of this shape:
   button for the rest of the window; `run.cooldown` is the only place the duration
   is stated to the user, so the two must be changed together.
 - **Feedback lifecycle**: the card shows `run.starting` while the POST is in
-  flight and swaps in the verdict when the response arrives. An _accepted_ run
-  then clears the notice (the cycle's own event lands in the console and the
-  card's "last poll" catches up), so no stale claim is left on screen; a dropped
-  run keeps its reason visible.
+  flight, then:
+  - **accepted** → the notice is dropped and the card switches to the cooldown
+    notice, because acceptance itself starts the window (the cycle's own event
+    lands in the console, and the card's "last poll" catches up);
+  - **cooldown** → the notice is _derived_ from `cooldownRemainingMs(...)`, so it
+    counts down every second and disappears when the window really ends, and the
+    button is disabled for exactly that window (a frozen string used to outlive
+    the window and sit next to an enabled button);
+  - **in progress / other drop** → the reason stays visible until the next run.
+- **What disables the button**: the same derived value, from
+  `target.lastForcedRunAt` (server truth, also echoed by the response) falling
+  back to `retryAfterMs`-based local state. It is a UI courtesy only — the server
+  re-checks every request, so a skewed client clock can never let a run through.

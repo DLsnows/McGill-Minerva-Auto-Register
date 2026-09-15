@@ -289,35 +289,39 @@ app.delete('/api/targets/:id', (req) => {
 /**
  * Manual-run cooldown, mirrored from MANUAL_RUN_COOLDOWN_MS in
  * packages/server/src/scheduler/scheduler.ts. Kept in sync deliberately: the real
- * `/run` answers `{started:false, reason:'cooldown', retryAfterMs}` for a second
- * request inside the window, and the UI's cooldown notice is only exercised if
- * this fake produces the same shape (the same class of drift that once left
- * `/api/budget` rendering "NaN / undefined" while the assertions still passed).
+ * `/run` answers `{started:false, reason:'cooldown', retryAfterMs, lastForcedRunAt}`
+ * for a second request inside the window, and the UI's cooldown countdown is only
+ * exercised if this fake produces the same shape (the same class of drift that
+ * once left `/api/budget` rendering "NaN / undefined" while the assertions still
+ * passed). The recorded timestamp is also written onto the target, exactly like
+ * the real store does, so a reload sees the window without hitting the rejection.
  */
 const MANUAL_RUN_COOLDOWN_MS = 60_000;
-const lastForcedRunAt = new Map();
 
 app.post('/api/targets/:id/run', (req, reply) => {
   const target = state.targets.find((t) => t.id === req.params.id);
   if (!target) return reply.code(404).send({ error: 'not found' });
+  const lastForcedRunAt = target.lastForcedRunAt;
   if (target.status !== 'watching') {
-    return reply.send({ started: false, reason: `target is ${target.status}` });
+    return reply.send({ started: false, reason: `target is ${target.status}`, lastForcedRunAt });
   }
   const at = now();
-  const last = lastForcedRunAt.get(target.id);
-  if (last !== undefined && at - last < MANUAL_RUN_COOLDOWN_MS) {
+  if (lastForcedRunAt !== undefined && at - lastForcedRunAt < MANUAL_RUN_COOLDOWN_MS) {
     return reply.send({
       started: false,
       reason: 'cooldown',
-      retryAfterMs: MANUAL_RUN_COOLDOWN_MS - (at - last),
+      retryAfterMs: MANUAL_RUN_COOLDOWN_MS - (at - lastForcedRunAt),
+      lastForcedRunAt,
     });
   }
-  lastForcedRunAt.set(target.id, at);
+  state.targets = state.targets.map((t) =>
+    t.id === target.id ? { ...t, lastForcedRunAt: at } : t,
+  );
   logEvent(
     'action',
     `[dry-run] Immediate cycle for ${target.label ?? target.targetCrn} (fake backend).`,
   );
-  return { started: true };
+  return { started: true, lastForcedRunAt: at };
 });
 
 // --- settings ---

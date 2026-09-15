@@ -9,6 +9,12 @@ export interface SchedulerState {
   running: boolean;
 }
 
+/** Manual-run cooldown, mirrored from `MANUAL_RUN_COOLDOWN_MS` in
+ * packages/server/src/scheduler/scheduler.ts. Used only to keep the run button
+ * disabled for the window the server just reported — `WatchTarget.lastForcedRunAt`
+ * is the authority once targets are refetched, and the server always re-checks. */
+export const MANUAL_RUN_COOLDOWN_MS = 60_000;
+
 /** Result of `POST /api/targets/:id/run` — what *this request* did.
  *
  * `started: true` means the cycle was accepted and is running in the background;
@@ -22,6 +28,24 @@ export interface RunTargetResult {
   reason?: string;
   /** Milliseconds until another manual run is accepted (present for 'cooldown'). */
   retryAfterMs?: number;
+  /** The target's `lastForcedRunAt` after this request (epoch ms, absent when it
+   * never had a forced run). The cooldown countdown is rendered from this server
+   * value, so a skewed client clock cannot stretch or shrink the window. */
+  lastForcedRunAt?: number;
+}
+
+/** Milliseconds of manual-run cooldown left, from the server's `lastForcedRunAt`
+ * (the cooldown window's authority, also echoed by the `/run` response) and/or a
+ * locally recorded window. 0 = a forced run is allowed now. */
+export function cooldownRemainingMs(
+  targetLastForcedRunAt: number | undefined,
+  localCoolingUntil: number | undefined,
+  now: number,
+): number {
+  const fromServer =
+    targetLastForcedRunAt === undefined ? 0 : targetLastForcedRunAt + MANUAL_RUN_COOLDOWN_MS - now;
+  const fromLocal = localCoolingUntil === undefined ? 0 : localCoolingUntil - now;
+  return Math.max(0, fromServer, fromLocal);
 }
 
 type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'targetCrn' | 'mode'> &

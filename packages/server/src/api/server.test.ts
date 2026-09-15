@@ -371,12 +371,17 @@ describe('API', () => {
     const app2 = buildServer(makeSessionDeps(store, scheduler));
     const first = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
     expect(first.statusCode).toBe(200);
-    expect(first.json()).toEqual({ started: true });
+    const firstBody = first.json();
+    expect(firstBody.started).toBe(true);
+    // The route echoes the window's start so the client can count down from the
+    // server's clock instead of its own.
+    expect(typeof firstBody.lastForcedRunAt).toBe('number');
     const second = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
     expect(second.statusCode).toBe(200);
     expect(second.json().started).toBe(false);
     expect(second.json().reason).toBe('cooldown');
     expect(second.json().retryAfterMs).toBeGreaterThan(0);
+    expect(second.json().lastForcedRunAt).toBe(firstBody.lastForcedRunAt);
     await app2.close();
   });
 
@@ -401,14 +406,19 @@ describe('API', () => {
     });
     const app2 = buildServer(makeSessionDeps(store, scheduler));
     const first = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
-    expect(first.json()).toEqual({ started: true });
+    expect(first.json().started).toBe(true);
     const second = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/run` });
-    expect(second.json()).toEqual({ started: false, reason: 'in progress' });
+    expect(second.json()).toEqual({
+      started: false,
+      reason: 'in progress',
+      lastForcedRunAt: first.json().lastForcedRunAt,
+    });
     releaseCheck();
     await app2.close();
   });
 
-  it('GET /api/scheduler reports running state', async () => {    const store = new Store(dir);
+  it('GET /api/scheduler reports running state', async () => {
+    const store = new Store(dir);
     const app2 = buildServer({
       store,
       budget: new Budget(store),

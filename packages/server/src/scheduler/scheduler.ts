@@ -67,6 +67,11 @@ export interface ForcedRunResult {
   reason?: string;
   /** Milliseconds until the caller may try again (cooldown only). */
   retryAfterMs?: number;
+  /** The target's current `lastForcedRunAt` (epoch ms, absent if it never had a
+   * forced run). The UI counts the cooldown down from this server value instead
+   * of its own clock, so a skewed client clock cannot stretch or shrink the
+   * window it renders. */
+  lastForcedRunAt?: number;
 }
 
 /**
@@ -250,15 +255,23 @@ export class Scheduler {
    * used to return (audit Q16/Q23/Q60). */
   runTarget(id: string): ForcedRunResult {
     const target = this.deps.store.getTarget(id);
+    // The window's authority is the stored value; the client renders its
+    // countdown from this rather than from its own clock.
+    const lastForcedRunAt = target?.lastForcedRunAt;
     // Re-read the status here (not only in the route): a target can be paused
     // between the check and this call, and claiming "in progress" for a paused
     // course would be exactly the kind of dishonest answer this fix removes.
     if (!target) return { started: false, reason: 'target not found' };
-    if (target.status !== 'watching') return { started: false, reason: `target is ${target.status}` };
+    if (target.status !== 'watching') {
+      return { started: false, reason: `target is ${target.status}`, lastForcedRunAt };
+    }
 
     if (this.inFlight.has(id)) {
-      // No extra log here — `runOnce` records the "skipping concurrent run" line.
-      return { started: false, reason: 'in progress' };
+      // Logged here, not left to `runOnce`: this branch returns before `runOnce`
+      // is ever called, and the guard's info line is the only trace a dropped
+      // click leaves. (`runOnce` logs the same message for its own callers.)
+      this.log('info', 'Run already in progress for this target — skipping concurrent run', id);
+      return { started: false, reason: 'in progress', lastForcedRunAt };
     }
 
     const now = this.now();
@@ -269,7 +282,7 @@ export class Scheduler {
         `Manual run ignored — ${Math.ceil(remaining / 1000)}s of the ${MANUAL_RUN_COOLDOWN_MS / 1000}s cooldown between manual runs is left`,
         id,
       );
-      return { started: false, reason: 'cooldown', retryAfterMs: remaining };
+      return { started: false, reason: 'cooldown', retryAfterMs: remaining, lastForcedRunAt };
     }
 
     // Start the cooldown when the run is *accepted* (not when it finishes), so
@@ -278,7 +291,7 @@ export class Scheduler {
     void this.runOnce(id, { force: true }).catch((e) =>
       this.log('error', `Forced run failed: ${errMsg(e)}`, id),
     );
-    return { started: true };
+    return { started: true, lastForcedRunAt: now };
   }
 
   /** Milliseconds left of the manual-run cooldown, 0 when a forced run is allowed. */

@@ -385,7 +385,9 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
 
   it('accepts the first manual run and records lastForcedRunAt', async () => {
     const { scheduler, store, watcher, target } = manualSetup();
-    expect(scheduler.runTarget(target.id)).toEqual({ started: true });
+    // `lastForcedRunAt` is echoed on every result so the client can render the
+    // countdown from the server's clock rather than its own.
+    expect(scheduler.runTarget(target.id)).toEqual({ started: true, lastForcedRunAt: NOW });
     expect(store.getTarget(target.id)!.lastForcedRunAt).toBe(NOW);
     await vi.waitFor(() => expect(watcher.calls).toBe(1));
   });
@@ -394,7 +396,7 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
   // click hit Minerva for real, bounded only by the shared daily query budget.
   it('refuses a second manual run inside the cooldown and reports how long is left', async () => {
     const { scheduler, watcher, target, setClock } = manualSetup();
-    expect(scheduler.runTarget(target.id)).toEqual({ started: true });
+    expect(scheduler.runTarget(target.id)).toEqual({ started: true, lastForcedRunAt: NOW });
     await vi.waitFor(() => expect(watcher.calls).toBe(1));
 
     setClock(NOW + 20_000); // 20s of the 60s window elapsed
@@ -402,6 +404,7 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
       started: false,
       reason: 'cooldown',
       retryAfterMs: MANUAL_RUN_COOLDOWN_MS - 20_000,
+      lastForcedRunAt: NOW,
     });
     // The refused click did not query Minerva again.
     expect(watcher.calls).toBe(1);
@@ -409,17 +412,20 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
 
   it('allows a manual run again once the cooldown has elapsed', async () => {
     const { scheduler, watcher, target, setClock } = manualSetup();
-    expect(scheduler.runTarget(target.id)).toEqual({ started: true });
+    expect(scheduler.runTarget(target.id)).toEqual({ started: true, lastForcedRunAt: NOW });
     await vi.waitFor(() => expect(watcher.calls).toBe(1));
 
     setClock(NOW + MANUAL_RUN_COOLDOWN_MS);
-    expect(scheduler.runTarget(target.id)).toEqual({ started: true });
+    expect(scheduler.runTarget(target.id)).toEqual({
+      started: true,
+      lastForcedRunAt: NOW + MANUAL_RUN_COOLDOWN_MS,
+    });
     await vi.waitFor(() => expect(watcher.calls).toBe(2));
   });
 
   it('does not let the automatic tick loop consume or need the manual cooldown', async () => {
     const { scheduler, store, watcher, target } = manualSetup();
-    expect(scheduler.runTarget(target.id)).toEqual({ started: true });
+    expect(scheduler.runTarget(target.id)).toEqual({ started: true, lastForcedRunAt: NOW });
     await vi.waitFor(() => expect(watcher.calls).toBe(1));
 
     // The cooldown throttles *manual* runs only: a due automatic cycle still runs.
@@ -447,8 +453,19 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
       now: () => NOW,
       random: () => 0.5,
     });
-    expect(scheduler.runTarget(t.id)).toEqual({ started: true });
-    expect(scheduler.runTarget(t.id)).toEqual({ started: false, reason: 'in progress' });
+    expect(scheduler.runTarget(t.id)).toEqual({ started: true, lastForcedRunAt: NOW });
+    expect(scheduler.runTarget(t.id)).toEqual({
+      started: false,
+      reason: 'in progress',
+      lastForcedRunAt: NOW,
+    });
+    // `runTarget` short-circuits *before* `runOnce`, so it has to emit the guard's
+    // info line itself — otherwise a dropped manual click would leave no trace at
+    // all (review finding: the first version relied on `runOnce`, which this
+    // branch never reaches).
+    expect(
+      store.recentEvents().filter((e) => e.message.includes('Run already in progress')),
+    ).toHaveLength(1);
     releaseCheck();
   });
 

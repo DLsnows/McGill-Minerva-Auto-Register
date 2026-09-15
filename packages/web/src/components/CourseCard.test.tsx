@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CourseCard } from './CourseCard';
 import type { WatchTarget } from '@autoregister/shared';
@@ -111,9 +111,10 @@ describe('CourseCard', () => {
       />,
     );
     expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+    expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in \d+s/i);
   });
 
-  it('re-enables Register now once the cooldown has passed', () => {
+  it('re-enables Register now and drops the notice once the cooldown has passed', () => {
     render(
       <CourseCard
         target={target}
@@ -124,5 +125,54 @@ describe('CourseCard', () => {
       />,
     );
     expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled();
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
+
+  // Review finding: the cooldown string was frozen at response time, so it
+  // outlived the window and sat next to an enabled button. It must count down
+  // and clear itself.
+  it('counts the cooldown down and clears it when it expires', () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <CourseCard
+          target={target}
+          onToggleMode={noop}
+          onRun={noop}
+          onTogglePolling={noop}
+          coolingUntil={Date.now() + 3_000}
+        />,
+      );
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 3s/i);
+      expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+
+      act(() => {
+        vi.advanceTimersByTime(2_000);
+      });
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 1s/i);
+
+      act(() => {
+        vi.advanceTimersByTime(1_100);
+      });
+      expect(screen.queryByTestId('run-notice')).toBeNull();
+      expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The server records the window on the target when it accepts a run, so a
+  // reload (or another tab) sees the cooldown without ever hitting a rejection.
+  it('derives the cooldown from the target’s lastForcedRunAt (server truth)', () => {
+    render(
+      <CourseCard
+        target={{ ...target, lastForcedRunAt: Date.now() - 20_000 }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+    expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 40s/i);
   });
 });

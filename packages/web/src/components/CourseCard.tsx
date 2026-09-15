@@ -5,6 +5,7 @@ import { StatusBadge } from './StatusBadge';
 import { ModeToggle } from './ModeToggle';
 import { fmtRelative } from '../lib/format';
 import { useNow } from '../lib/useNow';
+import { cooldownRemainingMs } from '../lib/api';
 
 interface Props {
   target: WatchTarget;
@@ -12,11 +13,15 @@ interface Props {
   onRun: (id: string) => void;
   onTogglePolling: (id: string, next: WatchStatus) => void;
   running?: boolean;
-  /** Verdict of the last manual-run request ("in progress", "cooldown", …), so a
-   * dropped request is visible instead of the button silently flashing (Q16/Q60). */
+  /** Verdict of the last manual-run request that was *dropped* ("in progress",
+   * a failure, …), so it is visible instead of the button silently flashing
+   * (Q16/Q60). The cooldown verdict is derived below instead of being frozen
+   * here, so it can count down and disappear. */
   runNotice?: string;
-  /** Epoch ms until which the manual-run cooldown is active for this target.
-   * The server enforces the same window; disabling here just avoids a futile click. */
+  /** Epoch ms until which the manual-run cooldown is active, when the client has
+   * to fall back to its own clock (a cooldown rejection reports `retryAfterMs`,
+   * not a start time). The server's `target.lastForcedRunAt` — echoed by the
+   * `/run` response — takes precedence; the server always re-checks anyway. */
   coolingUntil?: number;
   /** When false (not logged in), resuming and one-click run are blocked. */
   loggedIn?: boolean;
@@ -39,12 +44,18 @@ export function CourseCard({
   loggedIn = true,
 }: Props) {
   const { t } = useTranslation();
-  const now = useNow(30_000); // ticks so "last poll Nm ago" stays current
+  // 1s tick: the manual-run cooldown counts down (and clears itself) in the UI.
+  const now = useNow(1_000);
   const title = target.label ?? `${target.subject} ${target.courseNumber}`;
   const canRun = target.status === 'watching';
   const canPause = PAUSABLE.includes(target.status);
   const canResume = RESUMABLE.includes(target.status);
-  const coolingSecs = coolingUntil ? Math.max(0, Math.ceil((coolingUntil - now) / 1000)) : 0;
+  // Derived, not stored: recomputed on every tick, so the button re-enables and
+  // the notice disappears the moment the window really ends (review finding —
+  // a frozen "Try again in 45s" outlived the cooldown and sat next to an
+  // enabled button).
+  const cooldownSecs = Math.ceil(cooldownRemainingMs(target.lastForcedRunAt, coolingUntil, now) / 1000);
+  const cooling = cooldownSecs > 0;
   return (
     <div className="card glass">
       <div className="row1">
@@ -76,7 +87,7 @@ export function CourseCard({
           <button
             type="button"
             className="btn btn-accent"
-            disabled={!canRun || running || coolingSecs > 0 || !loggedIn}
+            disabled={!canRun || running || cooling || !loggedIn}
             title={canRun && !loggedIn ? t('scheduler.loginFirst') : undefined}
             onClick={() => onRun(target.id)}
           >
@@ -85,14 +96,22 @@ export function CourseCard({
         </div>
       </div>
 
-      {runNotice && (
+      {cooling ? (
         <div className="meta" role="status" data-testid="run-notice">
-          {runNotice}
+          {t('run.cooldown', { s: cooldownSecs })}
         </div>
+      ) : (
+        runNotice && (
+          <div className="meta" role="status" data-testid="run-notice">
+            {runNotice}
+          </div>
+        )
       )}
 
       <div className="meta">
-        {target.lastPolledAt ? t('card.lastPoll', { rel: fmtRelative(target.lastPolledAt, now) }) : t('card.notPolled')}
+        {target.lastPolledAt
+          ? t('card.lastPoll', { rel: fmtRelative(target.lastPolledAt, now) })
+          : t('card.notPolled')}
       </div>
     </div>
   );

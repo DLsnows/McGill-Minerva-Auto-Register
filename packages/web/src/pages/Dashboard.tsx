@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { WatchMode, WatchStatus } from '@autoregister/shared';
-import { api } from '../lib/api';
+import { api, MANUAL_RUN_COOLDOWN_MS } from '../lib/api';
 import { useData } from '../lib/DataContext';
 import { useEventStream } from '../lib/useEventStream';
 import { CourseCard } from '../components/CourseCard';
@@ -13,6 +13,9 @@ export default function Dashboard() {
   const { targets, session, scheduler, budget } = useData();
   const { events, connected, clear } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
+  /** Verdicts of *dropped* manual runs, keyed by target id. The cooldown verdict
+   * is deliberately not stored here — it is derived from `coolingUntil` /
+   * `target.lastForcedRunAt` in CourseCard so it counts down and clears. */
   const [runNotice, setRunNotice] = useState<Record<string, string>>({});
   const [coolingUntil, setCoolingUntil] = useState<Record<string, number>>({});
   const [schedErr, setSchedErr] = useState<string>();
@@ -90,38 +93,50 @@ export default function Dashboard() {
     async (id: string) => {
       // The POST only reports whether *this request* was accepted; the cycle
       // itself keeps running server-side and reports through the event stream.
-      // So `running` covers the request round-trip, and `runNotice` carries the
-      // verdict — without it a dropped request was indistinguishable from an
-      // accepted one and the button just flashed (audit Q16/Q23/Q60).
+      // So `running` covers the request round-trip, the cooldown is derived by
+      // the card, and `runNotice` carries the verdict of a *dropped* request —
+      // without that, a drop was indistinguishable from an accepted run and the
+      // button just flashed (audit Q16/Q23/Q60).
       const clearNotice = () =>
         setRunNotice((s) => {
           const next = { ...s };
           delete next[id];
           return next;
         });
+      const drop = (notice: string) => setRunNotice((s) => ({ ...s, [id]: notice }));
+      // Prefer the server's start time: the countdown is then rendered from the
+      // clock that actually enforces the window, so client skew cannot stretch it.
+      const markCooling = (lastForcedRunAt: number | undefined, retryAfterMs: number | undefined) =>
+        setCoolingUntil((s) => ({
+          ...s,
+          [id]: lastForcedRunAt !== undefined ? lastForcedRunAt : Date.now() + (retryAfterMs ?? 0),
+        }));
       setRunning((s) => new Set(s).add(id));
-      setRunNotice((s) => ({ ...s, [id]: tr('run.starting') }));
+      drop(tr('run.starting')); // in-flight hint; replaced by the verdict below
       try {
         const res = await api.runTarget(id);
         if (res.started) {
-          // Accepted: the cycle's own log line lands in the console, and the
-          // card's "last poll" catches up when the event arrives — a leftover
-          // "starting…" here would be a stale claim, so drop the notice.
+          // Accepted: the cycle announces itself in the console. Start the
+          // cooldown from the timestamp the server just recorded, so the button
+          // is disabled for the whole window instead of letting the next click
+          // bounce off the server (review finding).
+          markCooling(res.lastForcedRunAt, MANUAL_RUN_COOLDOWN_MS);
           clearNotice();
           return;
         }
         if (res.reason === 'in progress') {
-          setRunNotice((s) => ({ ...s, [id]: tr('run.inProgress') }));
+          drop(tr('run.inProgress'));
         } else if (res.reason === 'cooldown') {
-          const secs = Math.ceil((res.retryAfterMs ?? 0) / 1000);
-          setRunNotice((s) => ({ ...s, [id]: tr('run.cooldown', { s: secs }) }));
-          setCoolingUntil((s) => ({ ...s, [id]: Date.now() + (res.retryAfterMs ?? 0) }));
+          // The notice itself is derived from the cooldown in CourseCard so it
+          // counts down and disappears when the window ends.
+          markCooling(res.lastForcedRunAt, res.retryAfterMs);
+          clearNotice();
         } else {
-          setRunNotice((s) => ({ ...s, [id]: tr('run.notWatching', { reason: res.reason ?? 'unknown' }) }));
+          drop(tr('run.notWatching', { reason: res.reason ?? 'unknown' }));
         }
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
-        setRunNotice((s) => ({ ...s, [id]: tr('run.failed', { reason }) }));
+        drop(tr('run.failed', { reason }));
       } finally {
         setRunning((s) => {
           const next = new Set(s);
