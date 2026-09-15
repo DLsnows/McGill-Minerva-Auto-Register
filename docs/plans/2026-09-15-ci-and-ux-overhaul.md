@@ -9,16 +9,16 @@
 
 本次改动分八块：
 
-| 代号 | 内容 | 子支线 |
-|---|---|---|
-| A | 参照 Synchain 补齐 CI / 质量门禁（含 preview e2e + Lighthouse，控成本） | `feat/ci-quality-gates` |
-| B | 修复「预算进度显示错乱」报障 | `feat/budget-progress` |
-| C | 修复「首次点击开始不轮询」报障 | `feat/start-polling` |
-| D | 新增操作速度（操作间隔 + 抖动）设置 | `feat/pacing-controls` |
-| E | 邮件通知 UI 下架、后端保留且强制关闭 | `feat/email-sunset` |
-| F | Windows 一键不休眠开关（仅 Windows 显示，仅接电源生效） | `feat/keep-awake` |
-| G | 添加课程表单标注必填 / 选填 | `feat/course-form-labels` |
-| H | Dependabot 治理（9 个陈旧 PR + 新增分组配置） | 归入 A |
+| 代号 | 内容                                                                    | 子支线                    |
+| ---- | ----------------------------------------------------------------------- | ------------------------- |
+| A    | 参照 Synchain 补齐 CI / 质量门禁（含 preview e2e + Lighthouse，控成本） | `feat/ci-quality-gates`   |
+| B    | 修复「预算进度显示错乱」报障                                            | `feat/budget-progress`    |
+| C    | 修复「首次点击开始不轮询」报障                                          | `feat/start-polling`      |
+| D    | 新增操作速度（操作间隔 + 抖动）设置                                     | `feat/pacing-controls`    |
+| E    | 邮件通知 UI 下架、后端保留且强制关闭                                    | `feat/email-sunset`       |
+| F    | Windows 一键不休眠开关（仅 Windows 显示，仅接电源生效）                 | `feat/keep-awake`         |
+| G    | 添加课程表单标注必填 / 选填                                             | `feat/course-form-labels` |
+| H    | Dependabot 治理（9 个陈旧 PR + 新增分组配置）                           | 归入 A                    |
 
 代码审计（60 条问题，见 `docs/plans/2026-09-15-audit-inventory.md`）**不在本次修复范围内**，等所有者逐条批准后另开批次。
 
@@ -62,15 +62,15 @@ dev ──┬──────────────────────�
 
 ## 4. 任务分派
 
-| ID | 分支 | 交付物 | 主要涉及文件 | 依赖 |
-|---|---|---|---|---|
-| **P1** | `feat/ci-quality-gates` | `ci.yml`（lint/typecheck/prettier-changed/test+coverage）、`branch-gate.yml`、`preview-e2e.yml`、`lighthouse.yml`、`.github/dependabot.yml`、本地门禁脚本、CI 文档 | `.github/workflows/*`、`scripts/ci/*`、`.github/dependabot.yml`、`docs/CI.md` | 无 |
-| **P2** | `feat/budget-progress` | 预算「已用/上限」单一原子来源，消除跨快照减法 | `packages/server/src/budget/budget.ts`、`api/server.ts`、`packages/web/src/App.tsx`、`components/Ticker.tsx`、`lib/api.ts`、`pages/Settings.tsx` | P1 |
-| **P3** | `feat/start-polling` | 「开始」立即轮询；主开关绑定真实引擎状态；error 终态可恢复 | `scheduler/scheduler.ts`、`api/server.ts`、`api/main.ts`、`web/pages/Dashboard.tsx`、`components/SchedulerToggle.tsx`、`components/CourseCard.tsx` | P1 |
-| **P4** | `feat/pacing-controls` | `opPauseMs` / `opJitterMs` 设置，贯通到所有浏览器操作 | `shared/src/store-types.ts`、`server/src/util/pacing.ts`、`minerva/*-client.ts`、`web/pages/Settings.tsx` | P1 |
-| **P5** | `feat/email-sunset` | 邮件 UI 下架，后端保留但强制关闭 | `web/pages/Settings.tsx`、`server/src/notifier/*`、`api/server.ts`、`shared/src/store-types.ts` | P1 |
-| **P6** | `feat/keep-awake` | Windows 防休眠开关 + 电源状态展示 | `server/src/system/keep-awake.ts`、`api/server.ts`、`web/pages/Settings.tsx` | P1 |
-| **P7** | `feat/course-form-labels` | 表单必填 `*` / 选填标注 + 校验提示 | `web/src/components/CourseForm.tsx`、`shared/src/store-types.ts`、`web/src/i18n/index.ts`（三语） | P1 |
+| ID     | 分支                      | 交付物                                                                                                                                                             | 主要涉及文件                                                                                                                                       | 依赖 |
+| ------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| **P1** | `feat/ci-quality-gates`   | `ci.yml`（lint/typecheck/prettier-changed/test+coverage）、`branch-gate.yml`、`preview-e2e.yml`、`lighthouse.yml`、`.github/dependabot.yml`、本地门禁脚本、CI 文档 | `.github/workflows/*`、`scripts/ci/*`、`.github/dependabot.yml`、`docs/CI.md`                                                                      | 无   |
+| **P2** | `feat/budget-progress`    | 预算「已用/上限」单一原子来源，消除跨快照减法                                                                                                                      | `packages/server/src/budget/budget.ts`、`api/server.ts`、`packages/web/src/App.tsx`、`components/Ticker.tsx`、`lib/api.ts`、`pages/Settings.tsx`   | P1   |
+| **P3** | `feat/start-polling`      | 「开始」立即轮询；主开关绑定真实引擎状态；error 终态可恢复                                                                                                         | `scheduler/scheduler.ts`、`api/server.ts`、`api/main.ts`、`web/pages/Dashboard.tsx`、`components/SchedulerToggle.tsx`、`components/CourseCard.tsx` | P1   |
+| **P4** | `feat/pacing-controls`    | `opPauseMs` / `opJitterMs` 设置，贯通到所有浏览器操作                                                                                                              | `shared/src/store-types.ts`、`server/src/util/pacing.ts`、`minerva/*-client.ts`、`web/pages/Settings.tsx`                                          | P1   |
+| **P5** | `feat/email-sunset`       | 邮件 UI 下架，后端保留但强制关闭                                                                                                                                   | `web/pages/Settings.tsx`、`server/src/notifier/*`、`api/server.ts`、`shared/src/store-types.ts`                                                    | P1   |
+| **P6** | `feat/keep-awake`         | Windows 防休眠开关 + 电源状态展示                                                                                                                                  | `server/src/system/keep-awake.ts`、`api/server.ts`、`web/pages/Settings.tsx`                                                                       | P1   |
+| **P7** | `feat/course-form-labels` | 表单必填 `*` / 选填标注 + 校验提示                                                                                                                                 | `web/src/components/CourseForm.tsx`、`shared/src/store-types.ts`、`web/src/i18n/index.ts`（三语）                                                  | P1   |
 
 ### i18n 分工（避免同文件冲突）
 
@@ -89,6 +89,7 @@ dev ──┬──────────────────────�
 `packages/web/src/pages/Settings.tsx` 被 P4/P5/P6 同时改动；`packages/server/src/api/server.ts` 被 P2/P3/P5/P6 同时改动；`packages/shared/src/store-types.ts` 被 P4/P5/P6 同时改动。
 
 处理原则：
+
 1. 每个任务只做**追加式**改动，不重排既有代码块。
 2. 合入顺序：P2 → P3 → P4 → P5 → P6 → P7。
 3. 后合入的任务在开 PR 前先 `git rebase feat/ci-and-ux-overhaul` 解冲突，再重跑本地门禁。
@@ -109,12 +110,12 @@ npm run format:check:changed   # 仅检查本次改动文件（见 P1 产出）
 
 ### 5.2 CI 门禁
 
-| Workflow | 触发 | 成本策略 |
-|---|---|---|
-| `ci.yml` | PR base ∈ {dev, staging, prod}；以及 base 为 `feat/**`/`feature/**` 时只跑 lint+typecheck+test（轻量） | 全部 `ubuntu-slim`；只有 coverage job 用 `ubuntu-latest` |
-| `branch-gate.yml` | PR base ∈ {dev, staging, prod} | 1 个 job，秒级 |
-| `preview-e2e.yml` | PR base = dev，且 `types: [opened]` | 仅在首次创建 PR 时跑一次 |
-| `lighthouse.yml` | PR base = dev，且 `types: [opened]` | 同上；单次 runs=1 |
+| Workflow          | 触发                                                                                                   | 成本策略                                                 |
+| ----------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| `ci.yml`          | PR base ∈ {dev, staging, prod}；以及 base 为 `feat/**`/`feature/**` 时只跑 lint+typecheck+test（轻量） | 全部 `ubuntu-slim`；只有 coverage job 用 `ubuntu-latest` |
+| `branch-gate.yml` | PR base ∈ {dev, staging, prod}                                                                         | 1 个 job，秒级                                           |
+| `preview-e2e.yml` | PR base = dev，且 `types: [opened]`                                                                    | 仅在首次创建 PR 时跑一次                                 |
+| `lighthouse.yml`  | PR base = dev，且 `types: [opened]`                                                                    | 同上；单次 runs=1                                        |
 
 ---
 
@@ -123,6 +124,7 @@ npm run format:check:changed   # 仅检查本次改动文件（见 P1 产出）
 现状：9 个 open PR 全部 base=`prod`（默认分支），全部 `UNSTABLE` —— 因为 `prod` 不在现有 CI 的 `branches: [dev, staging]` 里，所以只有 review bot 在跑，而 Claude review 持续失败。
 
 处置：
+
 1. 新增 `.github/dependabot.yml`：`npm` 生态、**分组**（`dev-dependencies` / `production-dependencies`）、每周一次、`open-pull-requests-limit: 3`、target-branch 改为 `dev`。
 2. 关闭现有 9 个陈旧单包 PR（已被分组 PR 取代），并在关闭评论里说明原因。
 3. 依赖升级本身（fastify / undici / nodemailer / react-router 等）由新的分组 PR 在 `dev` 上带着完整 CI 重新提出。

@@ -3,11 +3,19 @@ name: Branch Gate
 # Enforces the promotion chain and keeps the long-lived branches clean:
 #   prod    <- staging | dev
 #   staging <- dev
-#   dev     <- feat/* | feature/*
+#   dev     <- feat/* | feature/* | dependabot/*
 #
 # Also rejects PRs whose head lives in a fork: `github.head_ref` is only a branch name
 # (a fork's `dev` branch would otherwise satisfy the promotion rules), and fork code must
 # never be treated as an in-repo promotion. Pure shell — no dependencies, no checkout.
+#
+# `dependabot/*` is allowed into `dev` on purpose. Dependabot is configured with
+# `target-branch: dev`, so every dependency PR it opens is named
+# `dependabot/npm_and_yarn/...`. Without this rule each one would be *guaranteed* to fail
+# the gate while still triggering the full CI matrix — producing exactly the kind of
+# permanently-red, unmergeable dependency PR this repository is trying to get rid of.
+# Dependency updates are reviewed and merged by a maintainer like any other PR, and the
+# branch name already identifies them as Dependabot-authored.
 #
 # Sub-task PRs whose base is a feature branch are intentionally NOT gated here; the
 # integration PR (feat/<integration> -> dev) is.
@@ -57,12 +65,12 @@ jobs:
             exit 1
           fi
 
-          # dev <- feat/* | feature/*
+          # dev <- feat/* | feature/* | dependabot/*
           if [ "$BASE" = "dev" ]; then
             case "$HEAD" in
-              feat/*|feature/*) ;;
+              feat/*|feature/*|dependabot/*) ;;
               *)
-                echo "::error::Only 'feat/*' or 'feature/*' branches can merge into 'dev'. Got: '$HEAD'"
+                echo "::error::Only 'feat/*', 'feature/*' or 'dependabot/*' branches can merge into 'dev'. Got: '$HEAD'"
                 exit 1
                 ;;
             esac

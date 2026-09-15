@@ -75,6 +75,7 @@ function validateWorkflow(file) {
   validateForkGuard(label, jobs);
 
   console.log(`  ✓ ${label} (jobs: ${Object.keys(jobs).join(', ')})`);
+  return doc;
 }
 
 /**
@@ -152,15 +153,73 @@ function validateDependabot() {
   console.log(
     `  ✓ ${label} (ecosystems: ${(doc?.updates ?? []).map((u) => u['package-ecosystem']).join(', ')})`,
   );
+  return doc;
+}
+
+/**
+ * `dependabot.yml` and `branch-gate.yml` have to agree: if Dependabot opens its PRs against
+ * `dev` (target-branch), the gate must let `dependabot/*` into `dev`. Otherwise every
+ * dependency PR is born red — gate failure plus a full CI run — which is the same
+ * "unmanaged dependency PR" problem this repository just set out to fix, only louder.
+ *
+ * The behavioural matrix lives in `branch-gate.test.mjs`; this is the static half, so a
+ * cross-file inconsistency is caught even where bash is unavailable.
+ */
+function validateDependabotGateAgreement(dependabotDoc, branchGateDoc) {
+  const label = '.github/dependabot.yml + .github/workflows/branch-gate.yml';
+
+  // A missing branch-gate document means the YAML failed to parse, which is already
+  // reported; adding "must allow dependabot/*" here would point at the wrong cause.
+  if (!branchGateDoc) return;
+
+  // Every ecosystem entry is checked, not just the npm one. The invariant is
+  // ecosystem-agnostic: Dependabot names its branches `dependabot/*` whatever it is
+  // updating, so a future `github-actions` or `docker` entry with a wrong or missing
+  // `target-branch` would open PRs that are born red exactly like the npm case this guard
+  // exists to prevent. (An earlier version filtered to npm and claimed otherwise in the
+  // comment above — the comment was stronger than the code.)
+  const entries = dependabotDoc?.updates ?? [];
+
+  // The *value* is asserted, not mere presence. A truthy-but-wrong target (`staging`,
+  // `prod`) would otherwise pass, and the `dependabot/*` reconciliation below would then be
+  // skipped — validating clean while re-introducing exactly the failure this guard exists to
+  // prevent: the branch gate only admits `dependabot/*` into `dev`, so dependency PRs opened
+  // against any other branch are born red.
+  let allTargetDev = entries.length > 0;
+  for (const [i, entry] of entries.entries()) {
+    const ecosystem = entry?.['package-ecosystem'] ?? 'unknown';
+    const target = entry?.['target-branch'];
+    const ok = target === 'dev';
+    allTargetDev &&= ok;
+    check(
+      ok,
+      `${label} (${ecosystem} entry #${i + 1})`,
+      `every Dependabot update entry must pin \`target-branch: dev\` (got ${target === undefined ? 'nothing — Dependabot would use the default branch `prod`' : `\`${target}\``}); the branch gate only admits \`dependabot/*\` into \`dev\`, so PRs opened against any other branch are guaranteed to fail it`,
+    );
+  }
+
+  // Nothing to reconcile when no npm entry targets dev (the mismatch is already reported
+  // above, so an extra "must allow dependabot/*" message would just repeat it).
+  if (!allTargetDev) return;
+
+  const steps = branchGateDoc?.jobs?.['branch-gate']?.steps ?? [];
+  const gateRun = steps.map((s) => s?.run ?? '').join('\n');
+  check(
+    gateRun.includes('dependabot/*'),
+    label,
+    '`dependabot.yml` targets `dev`, so branch-gate.yml must allow `dependabot/*` into `dev` (otherwise every dependency PR is guaranteed to fail the gate)',
+  );
 }
 
 console.log(`[validate-workflows] parsing ${WORKFLOW_DIR}`);
+const docs = new Map();
 for (const file of readdirSync(WORKFLOW_DIR)
   .filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
   .sort()) {
-  validateWorkflow(file);
+  docs.set(file, validateWorkflow(file));
 }
-validateDependabot();
+const dependabotDoc = validateDependabot();
+validateDependabotGateAgreement(dependabotDoc, docs.get('branch-gate.yml'));
 
 if (problems.length) {
   console.error('');

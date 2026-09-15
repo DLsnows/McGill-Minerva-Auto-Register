@@ -17,7 +17,7 @@
     "format:check:changed": "node scripts/ci/format-check-changed.mjs",
     "gates": "node scripts/ci/local-gates.mjs",
     "validate:workflows": "node scripts/ci/validate-workflows.mjs",
-    "test:ci-scripts": "node scripts/ci/format-check-changed.test.mjs",
+    "test:ci-scripts": "node scripts/ci/format-check-changed.test.mjs && node scripts/ci/branch-gate.test.mjs",
     "e2e:install": "node scripts/ci/install-e2e-browsers.mjs",
     "e2e": "npm run build:web && node e2e/run.mjs",
     "lighthouse": "node scripts/ci/lighthouse.mjs",

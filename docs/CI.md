@@ -109,20 +109,67 @@ npm run gates -- --base origin/dev --only lint,test
 - 历史债会以 `format-changed.json`（`CI_REPORT_PATH`）形式留给 CI，并在 sticky 评论里提示。
 - 只想严格判定（例如清理完历史债之后）：`--no-base-compare` 即回到「改动过的文件必须全部干净」。
 - 本地同样一条命令：`npm run format:check:changed`（或 `npm run gates` 里的 `format:changed`）。
+- **判定范围分两种（`--mode`，默认按 `CI` 自动选）**：
+
+  | 模式       | 何时用                                  | 变更集                                                               | 校验的内容                       |
+  | ---------- | --------------------------------------- | -------------------------------------------------------------------- | -------------------------------- |
+  | `worktree` | 本地 `npm run gates`（`CI` 未设时默认） | `<base>` ↔ **工作区**：已提交 + 已暂存 + 未暂存 + **全新未跟踪文件** | 磁盘上的文件内容                 |
+  | `commit`   | CI（`CI=true` 时默认）                  | `<base>...HEAD`                                                      | git index（即推送的那个 commit） |
+
+  为什么必须分：本地门禁如果只看提交，**未提交的改动——包括全新的未格式化文件——对 prettier
+  完全不可见**，于是对一份还没格式化的代码报绿。这正是「假的绿灯」比没有门禁更糟的地方。
+  `local-gates.mjs` 显式传 `--mode worktree`；`ci.yml` 显式传 `--mode commit`（两边都不依赖自动探测，
+  这样范围在 workflow / 脚本里就能直接看到）。未跟踪文件用 `git ls-files --others --exclude-standard`
+  收集——`git diff` 的任何变体都不会报告它们。
+
 - **这个策略本身有回归测试**：`npm run test:ci-scripts`
-  （`scripts/ci/format-check-changed.test.mjs`）。它在系统临时目录里建一个一次性 git 仓库，
-  对真实脚本跑 5 个场景：A 弄脏原本干净的文件 → 必须失败；B 改动历史脏文件 → 必须通过并报为
-  pre-existing；C 新增脏文件 → 必须失败；D 全干净 → 通过且报告为空；E 改动 `.prettierignore`
-  里的文件 → 被 Prettier 跳过、不报违规。CI 与 `npm run gates` 都会跑它。
+  （`scripts/ci/format-check-changed.test.mjs`，9 个场景）。它在系统临时目录里建一次性 git 仓库，
+  对**真实脚本**跑：
+
+  | 场景                                    | 断言                                           |
+  | --------------------------------------- | ---------------------------------------------- |
+  | A 弄脏原本干净的文件                    | 必须失败                                       |
+  | B 改动历史脏文件                        | 必须通过，并报为 pre-existing                  |
+  | C 新增脏文件                            | 必须失败                                       |
+  | D 全部干净                              | 通过，且报告里没有违规也没有历史债             |
+  | E 改动 `.prettierignore` 里的文件       | 被 Prettier 跳过，不报违规                     |
+  | F1 `commit` 范围看不到未提交文件        | 通过（**记录这个盲点**，证明 F2 测的是真东西） |
+  | F2 `worktree` 范围下的全新未跟踪脏文件  | 必须失败                                       |
+  | G `worktree` 范围下未暂存的改动弄脏文件 | 必须失败                                       |
+  | H `worktree` 范围下的历史债             | 仍然不阻塞                                     |
+
+  CI 与 `npm run gates` 都会跑它；同一个 npm script 还会跑 branch-gate 的 17 个晋升规则用例。
+
 - 脚本自身**不做** `.prettierignore` 过滤：`git check-ignore` 只读 git 自己的 ignore 链
   （`.gitignore` / `.git/info/exclude`），**不读 `.prettierignore`**，用它过滤等于空操作（曾经写过，
-  被评审指出后删掉）。Prettier 即使收到显式文件路径也会尊重 `.prettierignore`（已实测：
-  `.github/workflows/` 下的文件被跳过且整体仍然 exit 0），所以忽略规则由 Prettier 自己负责，
-  这正是场景 E 断言的行为。
+  被评审指出后删掉）。忽略规则交给 Prettier 自己。
+- 校验方式：把「待检查的内容」从 stdin 喂给
+  `prettier --check --config .prettierrc.json --stdin-filepath <repo 相对路径>`。
+  **必须用 `--stdin-filepath` 传真实的仓库相对路径**，这是被三个坑逼出来的做法：
+  1. 把内容写到系统临时目录的副本上跑，Prettier 找不到 `.prettierrc.json`（静默用默认值：双引号、
+     80 列）→ 所有文件都被判不合规；`.prettierignore` 里的目录模式（如 `docs/superpowers`）也永远
+     匹配不上，因为忽略模式是**相对忽略文件所在目录**解析的（`--ignore-path` 也救不了这一点）。
+  2. 副本还会丢文件名语义：JSON 只有**名为** `package.json` 才套用其专属设置。
+  3. `--stdin-filepath` 同时解决了「按 base 版本内容判定」——`git show <merge-base>:<path>` 的内容
+     可以带着正确的路径/配置/忽略规则被检查。
+     注意 `--stdin-filepath` 模式下 Prettier 即使 `--check` 也会把格式化结果打到 stdout，**只有退出码有意义**
+     （0=合规或已忽略，1=需格式化，2=真实错误）。
+- **`docs/plans` 与其它文件一样参与检查**（曾经一度想把它 ignore 掉，已否决）：ignore 会让
+  「报告历史债」退化成「假装历史债不存在」，而这个目录正在被智能体持续编辑 —— 被检查才能更早暴露
+  格式漂移。该目录已做过一次性格式化（CJK 表格按 Prettier 的显示宽度对齐，纯空白变化），
+  提交记录登记在 `.git-blame-ignore-revs` 里，`git blame` 可跳过它：
 
-想真正还这笔债：单独开一个 `chore/format-repo` PR 跑 `npm run format`，在 `.git-blame-ignore-revs` 里
-登记该 commit，然后把 `ci.yml` 的 prettier 步骤换成全量 `npm run format:check`（或保留本脚本并加
-`--no-base-compare`）。
+  ```bash
+  git config blame.ignoreRevsFile .git-blame-ignore-revs   # 每个 clone 各做一次
+  ```
+
+  仅 `docs/superpowers`（仓库早期就 ignore 的既有决定）与 `.github/workflows`、构建产物仍在
+  `.prettierignore` 里。`AGENTS.md`、`README*.md`、`docs/*.md` 全部参与检查。
+
+想真正还清剩下的债（当前 `npm run format:check` 仍有 **38 个文件**不过是，绝大多数是
+`packages/**` 下的产品代码）：单独开一个 `chore/format-repo` PR 跑 `npm run format`，把该 commit 加进
+`.git-blame-ignore-revs`，然后把 `ci.yml` 的 prettier 步骤换成全量 `npm run format:check`
+（或保留本脚本并加 `--no-base-compare`）。
 
 ## preview e2e（`preview-e2e.yml`）
 
@@ -136,6 +183,47 @@ npm run gates -- --base origin/dev --only lint,test
   `preview` 段没有 `/api` 代理）。
 - **覆盖的用例**（`e2e/run.mjs`）：首页标题/ticker/控制台无报错、课程页添加课程后出现在列表、
   设置页改轮询间隔并保存后重新加载仍是新值、语言切换 zh → en → fr 各自渲染导航文案。
+- **两条独立的判定**，缺一不可：
+  1. **端点覆盖断言**（主判据）。假后端用 `onRequest` / `onResponse` 钩子把**每个 API 端点的调用
+     次数与状态码**记进 ledger，通过 `GET /api/__requests` 暴露；每条用例在自身断言之后校验
+     「我依赖的端点被调用过 ≥N 次」且「本次用例没有让任何端点返回 4xx/5xx」。
+     这条能抓到「某端点压根没被请求」和「端点开始报错」两类问题——只看控制台是抓不到前者的。
+     三个实现要点：
+     - **ledger 只记录 `/api/*`**：静态资源由同一个进程托管，若把 `/favicon.ico` 的 404 也算进来，
+       每个用例都会因为一个无关资源而变红——这与「忽略列表容忍缺 favicon」自相矛盾。
+     - **计数按「每条用例的增量」判定，不是累计值**：ledger 活在整个服务进程里，而假后端在所有用例
+       之间复用。若用累计值，① 一个坏端点会把它之前的流量算到之后的每条用例上，级联重复报错；
+       ② `≥N` 会被更早用例的流量满足（`language-switch` 的 `/api/targets ≥1` 永远为真）。
+       所以 runner 在每条用例前、后用 `GET /api/__requests` 各取一次快照并做差
+       （失败信息里打印的就是「本次用例」的增量，便于对照）。
+     - **动态路径按模板归并**（`/api/targets/:id`、`/api/targets/:id/run`），否则计数被 id 打散。
+     - **假后端的存活性由探针自身保证**：`fetchLedger()` 在请求失败或非 2xx 时抛错，因此后端挂掉
+       会让用例直接失败，而不会被误读成「用例没调端点」。（不再单独断言探针计数——两个快照都来自
+       `fetchLedger()`，那对差值恒为 1，永远不会触发。）
+  2. **控制台哨兵**（辅助判据）。忽略列表**只**覆盖本环境里真正无法加载的外部资源：
+     Google Fonts 样式表（`index.html` 引用它，runner 没有外网）与 favicon——按**主机名/文件名**匹配；
+     以及**指向这些外部主机**的 `net::ERR_*` 连接层失败。**不再忽略**通用的 `Failed to load resource`
+     （后端返 500 时 Chromium 报的正是这一句），也**不忽略 `/api/*` 的连接失败**
+     （`net::ERR_CONNECTION_REFUSED` 不含外部主机名，因此会正常报出）。
+     另外监听 `requestfailed`：只把真正的网络错误（`net::ERR_*` 且非 `ERR_ABORTED`）算作失败——
+     `ERR_ABORTED` 是正常的请求被取代/取消，不是应用缺陷。
+
+     **判定必须同时看 `msg.text()` 与 `msg.location().url`**：Chromium 不把失败的 URL 放进消息文本。
+     实测（本地 abort 字体请求复现 runner 无外网的情形）：
+
+     ```
+     text:           "Failed to load resource: net::ERR_NAME_NOT_RESOLVED"
+     location().url: "https://fonts.googleapis.com/css2?family=Inter&display=swap"
+     ```
+
+     只匹配文本的话，离线的字体失败不会被过滤掉，**每条用例都会红**——而这正是这份忽略列表存在的
+     那个环境。所以两边都要匹配；同时把 `location().url` 附在报错信息后面，便于一眼看出是 API 还是
+     外部资源（例如 `console.error: Failed to load resource: ... status of 500 ... [http://127.0.0.1:4575/api/budget]`）。
+- **这套安全网本身是可测的**：`E2E_FAULT_ROUTES=/api/budget npm run e2e` 会让指定路由返回 500，
+  用来验证「端点坏掉时用例真的会失败」。实测两个负向场景都会红：
+  - `/api/budget` 返 500 → `console.error: Failed to load resource: the server responded with a status of 500`；
+  - 把期望的端点改成从未被请求的路径 → `endpoint coverage failed: expected >=1 call(s) to ... saw 0`
+    （并打印完整 ledger 便于定位）。
 - 产物：`e2e/artifacts/`（每个用例的截图、trace zip、`summary.md`/`summary.json`），
   上传为 `preview-e2e-artifacts` artifact（保留 7 天），并把 `summary.md` 作为 sticky 评论贴出来。
 - 本地：`npm run e2e:install`（把版本匹配的 Chromium 装到 `<repo>/.pw-browsers`，避免用机器级
@@ -143,6 +231,30 @@ npm run gates -- --base origin/dev --only lint,test
   Playwright 默认缓存。
 - 逃生阀：`E2E_SKIP=1 npm run e2e` 直接跳过（退出码 0）；`E2E_ALLOW_SKIP=1` 在缺浏览器时降级为
   "跳过并记一笔"。**CI 上不使用这两个变量**——CI 必须真跑。
+
+### 怎么验证 e2e 的安全网还有效（`E2E_FAULT_ROUTES`）
+
+一个不能被验证的断言等于没有断言。假后端因此提供了一个故障注入入口：
+
+```bash
+E2E_FAULT_ROUTES=/api/budget npm run e2e              # 指定路由一律返回 500（逗号分隔多个）
+E2E_FAULT_ROUTES=/api/settings,/api/targets npm run e2e
+```
+
+用途是**验证「坏掉的端点会让用例变红」这件事本身**，而不是日常跑法（CI 不设置这个变量）。
+预期结果：
+
+- `/api/budget` 返 500 →
+  `✗ home-renders — unexpected browser errors: console.error: Failed to load resource: the server responded with a status of 500 ...`
+  —— 这同时证明了收窄后的控制台过滤不再吞掉 API 错误。
+- 想验证「端点压根没被请求」那一层，把某条用例 `endpoints` 里的路径改成一个不存在的路径，
+  应当得到：
+  `endpoint coverage failed: expected >=1 call(s) to /api/does-not-exist, saw 0 (ledger: {...})`
+  —— 失败信息会打印完整 ledger，便于对照真实调用次数。
+
+`endpoints` 里的数字都是**最小值**（`≥N`），每个 `N` 旁边的注释写明了它的来源（例如
+`add-course` 的 `/api/targets ≥2` = 初次加载 1 次 + 提交后 refetch 1 次）。这样下一个人不必猜，
+也就不会改错。
 
 ## Lighthouse（`lighthouse.yml`）
 
@@ -177,12 +289,15 @@ npm run gates -- --base origin/dev --only lint,test
 ```
 prod    ← staging | dev
 staging ← dev
-dev     ← feat/* | feature/*
+dev     ← feat/* | feature/* | dependabot/*
 ```
 
 `branch-gate.yml` 用纯 shell 检查 `github.base_ref` / `github.head_ref`（`runs-on: ubuntu-slim`，
 不需要 checkout）。它**先拒绝 fork**：`github.head_ref` 只是分支名（不带 fork 前缀），
 否则 fork 里同名的 `dev` 分支就能混过晋升链。
+
+规则本身有**行为测试**（`scripts/ci/branch-gate.test.mjs`）：它把 workflow YAML 里那段 shell
+原样取出来、用 bash 跑 17 个 (base, head, 来源仓库) 组合。不是复制一份规则来测，而是测真实那一段。
 
 ## 成本考量一览
 
@@ -206,21 +321,46 @@ commit 前缀 `build(deps)`。
 - **major 一律单独成 PR**（groups 只收 `update-types: [minor, patch]`）。
 - `@types/*` 的 major 更新被 ignore（DefinitelyTyped 的 major 跟随上游库发布，噪音大于价值）。
 
-因为目标是 `dev`，这些 PR 会走 `ci.yml` + branch gate。注意 branch gate 要求 head 是
-`feat/*` / `feature/*`，而 Dependabot 的分支名是 `dependabot/npm_and_yarn/...`，**因此依赖 PR 会被
-branch gate 拦下**。这是有意的：依赖升级应当由维护者审阅后自行开 `feat/` 分支（或临时放行）合入，
-而不是自动流进 `dev`。若希望放行，在 `branch-gate.yml` 的 `dev` case 里加上 `dependabot/*`。
+因为目标是 `dev`，这些 PR 会走 `ci.yml` + branch gate + 两个 AI 评审（`claude-code-review.yml`
+已通过 `allowed_bots: 'dependabot[bot]'` 放行 bot 触发的 PR）。
+
+**`dependabot/*` 被显式放行进 `dev`**：Dependabot 的分支名是 `dependabot/npm_and_yarn/...`，
+而 branch gate 的 `dev` 规则原本只收 `feat/*` / `feature/*`。若不放行，**每一个依赖 PR 都注定
+gate 失败**，同时还会白跑一遍全量 CI —— 那就把「没人管的依赖 PR」换成了「注定失败的依赖 PR」，
+与把 `target-branch` 从 `prod` 改成 `dev` 的初衷直接矛盾。所以 `branch-gate.yml` 的 `dev` case 是：
+
+```sh
+case "$HEAD" in
+  feat/*|feature/*|dependabot/*) ;;
+  *) echo "::error::Only 'feat/*', 'feature/*' or 'dependabot/*' branches can merge into 'dev'. Got: '$HEAD'"; exit 1 ;;
+esac
+```
+
+依赖升级仍然和别的 PR 一样需要维护者审阅后合并（`AGENTS.md`：不要自动合并任何 PR 到 `dev`）。
+`prod` 依然**只**接受 `dev` / `staging`，所以 `dependabot/*` → `prod` 会被拒绝。
+
+这条一致性由两处机器检查保证，删掉放行规则会立刻变红：
+
+- `scripts/ci/branch-gate.test.mjs` —— 从 workflow YAML 里**提取真实的 shell 步骤**并用 bash 执行，
+  跑 17 个 (base, head, 来源仓库) 组合（含 `dependabot/*` → `dev` 必须通过、`dependabot/*` → `prod` 必须拒绝）。
+  它同时**断言 workflow 的 `env:` 接线**（`BASE`/`HEAD`/`HEAD_REPO`/`THIS_REPO` 各自对应哪个
+  `${{ ... }}` 表达式）：`run:` 里只有 `$BASE` 这类变量名，表达式在 `env:` 里，只读 `run:` 的话
+  「替换表达式」其实什么都没替换，测试会假绿；改了 `env` 的键名会被这一断言当场逮住。
+- `scripts/ci/validate-workflows.mjs` —— 静态断言：只要 `dependabot.yml` 的 `target-branch` 是 `dev`，
+  `branch-gate.yml` 就必须出现 `dependabot/*`。
 
 ## 故障排查
 
-| 现象                                                               | 原因 / 处理                                                                                       |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| 子支线 PR 上没有任何 CI                                            | 按设计如此（base 不是长期分支，四个 workflow 的 `branches` 都不含 `feat/**`）。跑 `npm run gates` |
-| `format:check:changed` 报 `could not resolve a base revision`      | 浅克隆或缺 `origin/*`。`fetch-depth: 0` 已配好；本地执行 `git fetch origin` 或 `--base <ref>`     |
-| `format:check:changed` 打印 `pre-existing formatting debt`         | 正常：这些文件在 base 上就不过 prettier，**不阻塞**。不要在本 PR 里顺手格式化它们                 |
-| `format:check:changed` 报 `newly-introduced formatting violations` | 本次改动把某个原本干净的文件写脏了（或新增了脏文件）→ `npx prettier --write <列出的文件>`         |
-| preview e2e 报 `Executable doesn't exist`                          | 本地缺版本匹配的 Chromium：`npm run e2e:install`                                                  |
-| preview e2e 报 `web build not found`                               | 先 `npm run build:web`（`npm run e2e` 已经串了这一步）                                            |
-| Lighthouse 报 `Chrome` 找不到                                      | CI 用 `ubuntu-latest`（自带 Chrome）；本地用 `LH_CHROME_PATH` / `CHROME_PATH` 指定                |
-| Lighthouse 某路由显示「report 已写出但退出码非 0」                 | chrome-launcher 清理临时 profile 的竞态（Windows 常见）。报告仍然有效，评论里会标注降级           |
-| 想重跑 Lighthouse / e2e                                            | 它们只在 `opened` 触发 → 开新 PR，或本地 `npm run lighthouse` / `npm run e2e`                     |
+| 现象                                                               | 原因 / 处理                                                                                              |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| 子支线 PR 上没有任何 CI                                            | 按设计如此（base 不是长期分支，四个 workflow 的 `branches` 都不含 `feat/**`）。跑 `npm run gates`        |
+| `format:check:changed` 报 `could not resolve a base revision`      | 浅克隆或缺 `origin/*`。`fetch-depth: 0` 已配好；本地执行 `git fetch origin` 或 `--base <ref>`            |
+| `format:check:changed` 打印 `pre-existing formatting debt`         | 正常：这些文件在 base 上就不过 prettier，**不阻塞**。不要在本 PR 里顺手格式化它们                        |
+| `format:check:changed` 报 `newly-introduced formatting violations` | 本次改动把某个原本干净的文件写脏了（或新增了脏文件）→ `npx prettier --write <列出的文件>`                |
+| preview e2e 报 `Executable doesn't exist`                          | 本地缺版本匹配的 Chromium：`npm run e2e:install`（依赖升级后 Playwright 可能要新构建，报错里会写明路径） |
+| preview e2e 报 `web build not found`                               | 先 `npm run build:web`（`npm run e2e` 已经串了这一步）                                                   |
+| 想验证 e2e 的安全网还有效                                          | `E2E_FAULT_ROUTES=/api/budget npm run e2e` → 指定路由返 500，用例必须变红（实测会红）                    |
+| Lighthouse 报 `Chrome` 找不到                                      | CI 用 `ubuntu-latest`（自带 Chrome）；本地用 `LH_CHROME_PATH` / `CHROME_PATH` 指定                       |
+| Lighthouse 某路由显示「report 已写出但退出码非 0」                 | chrome-launcher 清理临时 profile 的竞态（Windows 常见）。报告仍然有效，评论里会标注降级                  |
+| 想重跑 Lighthouse / e2e                                            | 它们只在 `opened` 触发 → 开新 PR，或本地 `npm run lighthouse` / `npm run e2e`                            |
+| 依赖 PR 会不会被 gate 拦下                                         | 不会：`dependabot/*` → `dev` 已放行（见「Dependabot」一节）；`dependabot/*` → `prod` 仍拒绝              |

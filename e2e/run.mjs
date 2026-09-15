@@ -104,21 +104,132 @@ async function waitFor(fn, label, timeoutMs = 10_000) {
 }
 
 // ── console-error watchdog ─────────────────────────────────────────────────────────────
-/** Failures that are environmental, not app bugs: the headless runner has no network
- * access to Google Fonts, so the font stylesheet fetch reports "Failed to load resource".
- * The app itself must never log an error or throw. */
-const IGNORED_CONSOLE = [/Failed to load resource/i, /net::ERR_/i, /favicon/i];
+/**
+ * Console errors are a *supplementary* sentinel, not the main one — see the endpoint
+ * coverage assertions below, which is what actually proves the app talked to the API
+ * successfully.
+ *
+ * The ignore list is deliberately narrow. An earlier version dropped every
+ * "Failed to load resource" and every `net::ERR_`, which also swallowed the exact symptom
+ * of a broken backend (`/api/targets` returning 500 renders as "Failed to load resource:
+ * the server responded with a status of 500") — the app could be completely broken and the
+ * "no console errors" assertion would still pass.
+ *
+ * What is tolerated, and how it is scoped:
+ *   - the Google Fonts stylesheet (index.html loads it; the runner has no external network)
+ *     and the favicon (the fixture build ships none) — matched by *host/filename*;
+ *   - connection-level `net::ERR_*` failures — but only for an external host. A
+ *     `net::ERR_CONNECTION_REFUSED` on `/api/*` is a real failure and must not be swallowed;
+ *     the coverage assertions would catch it as a count of 0, but the sentinel should not be
+ *     lying about it either.
+ *
+ * Classification must look at BOTH `msg.text()` and `msg.location().url`, because Chromium
+ * does not put the failing URL in the text. Measured:
+ *   text:           "Failed to load resource: net::ERR_NAME_NOT_RESOLVED"
+ *   location().url: "https://fonts.googleapis.com/css2?family=Inter&display=swap"
+ * Matching only the text would leave the offline font failure unfiltered and turn every case
+ * red on a runner without external network — the exact environment this list exists for.
+ */
+const IGNORED_CONSOLE = [/fonts\.googleapis\.com/i, /fonts\.gstatic\.com/i, /favicon/i];
+const EXTERNAL_HOST = /^https?:\/\/(?:fonts\.googleapis\.com|fonts\.gstatic\.com)\//i;
 
 function watchConsole(page) {
   const errors = [];
   page.on('console', (msg) => {
     if (msg.type() !== 'error') return;
     const text = msg.text();
-    if (IGNORED_CONSOLE.some((re) => re.test(text))) return;
-    errors.push(`console.error: ${text}`);
+    const locationUrl = msg.location()?.url ?? '';
+    const matches = (re) => re.test(text) || (locationUrl !== '' && re.test(locationUrl));
+
+    if (IGNORED_CONSOLE.some(matches)) return;
+    if (/net::ERR_/i.test(text) && matches(EXTERNAL_HOST)) return;
+    errors.push(`console.error: ${text}${locationUrl ? ` [${locationUrl}]` : ''}`);
   });
   page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`));
+  // A connection-level failure that never reaches the console would otherwise be silent.
+  // Only genuine network errors count — `net::ERR_ABORTED` is what a normal cancelled or
+  // superseded request looks like, and it is not an app failure.
+  page.on('requestfailed', (request) => {
+    const url = request.url();
+    const errorText = request.failure()?.errorText ?? '';
+    if (EXTERNAL_HOST.test(url)) return;
+    if (!errorText.startsWith('net::ERR_') || errorText === 'net::ERR_ABORTED') return;
+    errors.push(`requestfailed: ${url} (${errorText})`);
+  });
   return errors;
+}
+
+// ── endpoint coverage ─────────────────────────────────────────────────────────────────
+/**
+ * Absolute per-route counters from the fake backend, at the moment of the call.
+ *
+ * Called from the *runner* rather than from the page: a baseline is needed before a case
+ * has navigated anywhere, and a page-level fetch from `about:blank` cannot resolve a
+ * relative URL. The probe endpoint exists for the runner's benefit.
+ */
+async function fetchLedger() {
+  const res = await fetch(`${BASE_URL}/api/__requests`);
+  if (!res.ok) throw new Error(`coverage probe failed: GET /api/__requests returned ${res.status}`);
+  return res.json();
+}
+
+function deltaCount(before, after, route) {
+  return Math.max(0, (after.routes?.[route]?.count ?? 0) - (before.routes?.[route]?.count ?? 0));
+}
+
+/** Failure statuses a route produced *within* this window (counts are cumulative). */
+function deltaFailures(before, after, route) {
+  const seen = before.routes?.[route]?.statuses ?? {};
+  const now = after.routes?.[route]?.statuses ?? {};
+  return Object.entries(now)
+    .filter(([status, count]) => status >= 400 && count > (seen[status] ?? 0))
+    .map(([status]) => Number(status));
+}
+
+function renderDelta(before, after) {
+  return Object.fromEntries(
+    Object.keys(after.routes ?? {})
+      .map((route) => [route, deltaCount(before, after, route)])
+      .filter(([, count]) => count > 0),
+  );
+}
+
+/**
+ * Asserts the API calls a case depends on, scoped to *that case*.
+ *
+ * The ledger itself is cumulative (the fake backend outlives every case), so both
+ * assertions work on a before/after diff taken around the case:
+ *   - `>= N` means "this case issued at least N calls", which a cumulative counter could
+ *     not express — an earlier case's traffic would satisfy a later case's minimum;
+ *   - a 5xx is only charged to the case that caused it, so one broken endpoint no longer
+ *     re-fails every subsequent case with the same message.
+ *
+ * Liveness of the fake backend is enforced by `fetchLedger()` itself: it throws when the
+ * probe request fails or answers non-2xx, so a dead backend fails the case here rather than
+ * being misread as "the case never called its endpoints". There is deliberately no separate
+ * probe-counter assertion — both snapshots come from `fetchLedger()`, so that delta is
+ * always exactly 1 and could never fail.
+ */
+async function assertEndpoints(expected, before) {
+  const after = await fetchLedger();
+  const problems = [];
+
+  for (const [route, min] of Object.entries(expected)) {
+    const count = deltaCount(before, after, route);
+    if (count < min) problems.push(`expected >=${min} call(s) to ${route}, saw ${count}`);
+  }
+  for (const route of Object.keys(after.routes ?? {})) {
+    const failures = deltaFailures(before, after, route);
+    if (failures.length) problems.push(`${route} returned ${[...new Set(failures)].join('/')}`);
+  }
+  const newServerErrors = after.serverErrors.length - before.serverErrors.length;
+  if (newServerErrors > 0)
+    problems.push(`fake backend produced ${newServerErrors} new 5xx response(s)`);
+
+  assert(
+    problems.length === 0,
+    `endpoint coverage failed: ${problems.join('; ')} (this case: ${JSON.stringify(renderDelta(before, after))})`,
+  );
 }
 
 // ── test cases ────────────────────────────────────────────────────────────────────────
@@ -126,6 +237,23 @@ const CASES = [
   {
     name: 'home-renders',
     title: 'Home renders title + ticker with no console errors',
+    // Endpoints the dashboard must have talked to, with a minimum call count. The counts are
+    // *minimums*, not exact matches, so an extra fetch won't fail the case — but each one is
+    // justified here, because "why ≥3?" is otherwise unanswerable for the next reader:
+    //   targets 1   — DataProvider's initial GET; renders the watched-course list
+    //   settings 1  — DataProvider's initial GET; drives the ticker interval + budgets
+    //   budget 1    — DataProvider's initial GET; drives the ticker counters
+    //   session 1   — DataProvider's initial GET; drives the ticker session cell
+    //   scheduler 1 — DataProvider's initial GET; the engine's running state
+    // These can legitimately grow (the dashboard live-refetches budget/targets when a stream
+    // event arrives); the assertion is that they never shrink or disappear.
+    endpoints: {
+      '/api/targets': 1,
+      '/api/settings': 1,
+      '/api/budget': 1,
+      '/api/session': 1,
+      '/api/scheduler': 1,
+    },
     async run({ page, errors }) {
       await page.goto(`${BASE_URL}/`, { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('.ticker', { timeout: 15_000 });
@@ -180,6 +308,16 @@ const CASES = [
   {
     name: 'add-course',
     title: 'Courses page — adding a course shows it in the list',
+    // targets >=2, and the key counts BOTH the GETs and the POST (they share one ledger key,
+    // since the route template is derived from the path without the method). So the real
+    // traffic is 3: initial list GET (1), POST the new course (1), refetch after the add (1).
+    // The minimum stays at 2 rather than 3 on purpose: what must never disappear is the
+    // post-add refetch, and pinning the exact number would make the case fail on any future
+    // extra fetch. If the refetch stops happening the count drops to 2 and this still passes
+    // -- which is why the visible assertion below ("the new course appears in the list") is
+    // the real guard for that regression; this endpoint check exists to catch the endpoint
+    // erroring or never being called at all.
+    endpoints: { '/api/targets': 2, '/api/settings': 1 },
     async run({ page, errors }) {
       await page.goto(`${BASE_URL}/courses`, { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('input[aria-label="Term"]', { timeout: 15_000 });
@@ -215,6 +353,11 @@ const CASES = [
   {
     name: 'settings-persist',
     title: 'Settings page — poll interval saves and survives a reload',
+    // settings ≥4: initial GET (1) + the PUT that saves the new interval (1) + the
+    // explicit refetch Settings.tsx performs after a successful save (1) + the GET after
+    // the page reload (1). Fewer than 4 means the save never reached the server, or the
+    // reload did not re-read it — i.e. the value shown afterwards is stale local state.
+    endpoints: { '/api/settings': 4 },
     async run({ page, errors }) {
       const NEW_INTERVAL = 17;
 
@@ -251,6 +394,10 @@ const CASES = [
   {
     name: 'language-switch',
     title: 'Language switch — zh → en → fr each render the nav copy',
+    // targets ≥1: the initial DataProvider GET. Language switching is purely client-side,
+    // so this exists to prove the page really loaded the app shell rather than to check
+    // any i18n-specific traffic.
+    endpoints: { '/api/targets': 1 },
     async run({ page, errors }) {
       const languageButton = (label) => page.getByRole('button', { name: label, exact: true });
 
@@ -449,7 +596,21 @@ async function main() {
     const errors = watchConsole(page);
     const result = { name: testCase.name, title: testCase.title, status: 'passed', durationMs: 0 };
     try {
+      // Snapshot the cumulative ledger before the case runs so its coverage assertions can
+      // be scoped to this case's own traffic (see assertEndpoints). At this point the page is
+      // still `about:blank`, so the snapshot cannot include this case's traffic.
+      //
+      // Inside the try on purpose: if the fake backend died between cases, `fetchLedger()`
+      // throws, and this becomes a normal per-case failure with a screenshot and a written
+      // summary — instead of aborting the whole run before any artifact exists.
+      const ledgerBefore = await fetchLedger();
       await testCase.run({ page, context, errors });
+      // Runs after the case's own assertions so the ledger has seen every call the case
+      // makes — including the ones triggered by a page reload.
+      if (testCase.endpoints) {
+        await assertEndpoints(testCase.endpoints, ledgerBefore);
+        result.endpoints = testCase.endpoints;
+      }
       console.log(`  ✓ ${testCase.name} — ${testCase.title}`);
     } catch (err) {
       result.status = 'failed';

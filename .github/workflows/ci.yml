@@ -101,11 +101,15 @@ jobs:
           CI_REPORT_PATH: format-changed.json
         run: |
           set -o pipefail
-          npm run format:check:changed 2>&1 | tee format-output.txt
+          # `--mode commit` judges `<base>...HEAD` and reads the index: exactly the commit
+          # under test. (`CI=true` would select that mode implicitly; stating it here keeps
+          # the scope reviewable in the workflow itself.)
+          npm run format:check:changed -- --mode commit 2>&1 | tee format-output.txt
 
       # The prettier policy above is subtle enough to be worth guarding: this asserts the
-      # A/B/C/D/E scenarios (new violation fails, pre-existing debt passes, new file fails,
-      # clean passes, ignored file skipped) against a throwaway fixture repository.
+      # A–H scenarios (new violation fails, pre-existing debt passes, new file fails, clean
+      # passes, ignored file skipped, plus the worktree-scope cases) against throwaway
+      # fixture repositories, and runs the branch-gate promotion matrix through bash.
       - name: CI script policy tests
         id: script-tests
         continue-on-error: true

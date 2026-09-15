@@ -87,13 +87,144 @@ const now = () => Date.now();
 
 const REQUIRED_TARGET_FIELDS = ['term', 'subject', 'courseNumber', 'targetCrn', 'faculty'];
 
+/**
+ * Per-endpoint request ledger.
+ *
+ * Why this exists: the e2e suite's "no console errors" assertion cannot distinguish an app
+ * bug from a blocked font request, and a 500 from `/api/targets` looks like any other
+ * "Failed to load resource" line. Counting calls and recording non-2xx statuses per route
+ * gives the suite a signal that is both precise and impossible to satisfy accidentally —
+ * and it also catches the opposite failure ("this endpoint was never called at all"), which
+ * an error-only assertion can never see.
+ *
+ * `/api/__requests` and `/api/health` are not routes the frontend calls, so they are kept
+ * out of the per-route map; the coverage probe still has to prove it was served, so its
+ * count is reported separately as `probeCalls`.
+ */
+
+/** The two paths that exist for the test harness, not for the app. */
+const HARNESS_PATHS = new Set(['/api/__requests', '/api/health']);
+const requestLedger = new Map();
+let harnessCalls = 0;
+
+/** Paths that carry an id — counted under their route template so counts stay meaningful. */
+const DYNAMIC_ROUTE_TEMPLATES = [
+  [/^\/api\/targets\/[^/]+\/run$/, '/api/targets/:id/run'],
+  [/^\/api\/targets\/[^/]+$/, '/api/targets/:id'],
+];
+
+function ledgerKeyFor(pathname) {
+  for (const [pattern, template] of DYNAMIC_ROUTE_TEMPLATES) {
+    if (pattern.test(pathname)) return template;
+  }
+  return pathname;
+}
+
+/**
+ * Records only API traffic. Static assets are served by this same process, so without the
+ * `/api/` filter a 404 on e.g. `/favicon.ico` would enter the ledger and trip the suite's
+ * "no route failed" assertion — contradicting the whole point of a ledger that exists to
+ * judge the *API contract*. The console sentinel deliberately tolerates a missing favicon
+ * too; the two signals should agree.
+ */
+function isLedgerRoute(pathname) {
+  return pathname.startsWith('/api/') && !HARNESS_PATHS.has(pathname);
+}
+
+function recordRequest(req) {
+  // GitHub-hosted Actions masks the query string in `req.url`, so never parse it.
+  const pathname = req.url.split('?')[0];
+  if (HARNESS_PATHS.has(pathname)) {
+    harnessCalls += 1;
+    return;
+  }
+  if (!isLedgerRoute(pathname)) return;
+  const key = ledgerKeyFor(pathname);
+  const entry = requestLedger.get(key) ?? { count: 0, statuses: {}, failures: [] };
+  entry.count += 1;
+  requestLedger.set(key, entry);
+}
+
+function recordResponse(req, reply) {
+  const pathname = req.url.split('?')[0];
+  if (!isLedgerRoute(pathname)) return;
+  const key = ledgerKeyFor(pathname);
+  const status = reply.statusCode;
+  const entry = requestLedger.get(key) ?? { count: 0, statuses: {}, failures: [] };
+  entry.statuses[status] = (entry.statuses[status] ?? 0) + 1;
+  if (status >= 400) entry.failures.push(status);
+  requestLedger.set(key, entry);
+}
+
+/**
+ * Snapshot for the test runner: absolute counts + failure statuses per API route.
+ *
+ * Absolute, not per-case: `e2e/run.mjs` diffs two snapshots around each case so that a
+ * broken endpoint does not cascade into every later case, and so an `>= N` minimum can
+ * only be satisfied by the case's *own* traffic (a cumulative ledger would let an earlier
+ * case silently satisfy a later case's assertion).
+ */
+function ledgerSnapshot() {
+  const routes = {};
+  for (const [route, entry] of requestLedger) {
+    routes[route] = { count: entry.count, statuses: entry.statuses, failures: entry.failures };
+  }
+  return {
+    routes,
+    // Monotonic counter for the harness paths, so the runner can prove the probe itself was
+    // served (a down or wedged fake backend would otherwise make every route's delta 0 and
+    // read as "the case never called it").
+    probeCalls: harnessCalls,
+    serverErrors: [...requestLedger].flatMap(([, e]) => e.failures.filter((s) => s >= 500)),
+  };
+}
+
 const app = Fastify({ logger: false });
+
+/**
+ * Fault injection for testing the suite's own safety net: with
+ * `E2E_FAULT_ROUTES=/api/budget,/api/settings` the listed routes answer 500 instead of 200.
+ * Used to prove that a broken endpoint actually fails the run (and that the console filter
+ * no longer swallows it) rather than silently passing.
+ */
+const FAULT_ROUTES = new Set(
+  (process.env.E2E_FAULT_ROUTES ?? '')
+    .split(',')
+    .map((r) => r.trim())
+    .filter(Boolean),
+);
+
+app.addHook('onRequest', (req, _reply, done) => {
+  recordRequest(req);
+  done();
+});
+
+// `async` so the fault path can short-circuit by *returning* the reply. A callback-style
+// hook that calls `reply.send()` and returns without `done()` never completes Fastify's hook
+// chain: the route handler is not dispatched, and any later `preHandler` would silently not
+// run for fault-injected routes. It happens to work because `reply.send()` flushes the
+// response and fires `onResponse` on its own — but that is not the documented idiom.
+app.addHook('preHandler', async (req, reply) => {
+  const pathname = req.url.split('?')[0];
+  if (FAULT_ROUTES.has(pathname)) {
+    return reply.code(500).send({ error: `injected fault for ${pathname}` });
+  }
+  return undefined;
+});
+
+app.addHook('onResponse', (req, reply, done) => {
+  recordResponse(req, reply);
+  done();
+});
 
 app.register(websocketPlugin).after((err) => {
   if (err) console.error('[fake-server] websocket plugin failed to load:', err);
 });
 
 app.get('/api/health', () => ({ ok: true }));
+
+// Test-support endpoint: which fake endpoints were hit, and did any of them fail?
+app.get('/api/__requests', () => ledgerSnapshot());
 
 // --- targets ---
 app.get('/api/targets', () => state.targets);

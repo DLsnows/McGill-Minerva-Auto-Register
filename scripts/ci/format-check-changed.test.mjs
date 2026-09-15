@@ -35,7 +35,10 @@ const CONFIG = {
   printWidth: 100,
   tabWidth: 2,
 };
-const IGNORE = ['README.md'];
+// `ignored/` mirrors the real repo's ignored directories (`.github/workflows`,
+// `docs/superpowers`): a whole directory pattern, which is the shape that actually exercises
+// Prettier's ignore resolution.
+const IGNORE = ['README.md', 'ignored'];
 
 // Deliberately not Prettier-formatted (double quotes, over-long line).
 const DIRTY = [
@@ -80,21 +83,20 @@ function commit(root, message) {
 }
 
 /** Runs the real script against the fixture repo; returns { code, stdout, report }. */
-function runCheck(root) {
+function runCheck(root, { scope = 'commit' } = {}) {
   const reportPath = join(root, '.report.json');
+  rmSync(reportPath, { force: true });
   let stdout = '';
   let code = 0;
+  const args = [SCRIPT, '--repo', root, '--base', 'HEAD~1', '--ext', '.ts,.md', '--mode', scope];
   try {
-    stdout = execFileSync(
-      process.execPath,
-      [SCRIPT, '--repo', root, '--base', 'HEAD~1', '--ext', '.ts,.md'],
-      {
-        cwd: root,
-        encoding: 'utf8',
-        env: { ...process.env, CI_REPORT_PATH: reportPath },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
+    stdout = execFileSync(process.execPath, args, {
+      cwd: root,
+      encoding: 'utf8',
+      // CI must be cleared: the script would otherwise fall back to `commit` on its own.
+      env: { ...process.env, CI: '', CI_REPORT_PATH: reportPath },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
   } catch (err) {
     code = err.status ?? 1;
     stdout = `${err.stdout ?? ''}${err.stderr ?? ''}`;
@@ -110,8 +112,14 @@ function check(name, condition, detail) {
   );
 }
 
-/** Builds a fresh fixture repo with a `base` commit and returns { root, cleanup }. */
-function makeFixture(mutate) {
+/**
+ * Builds a fresh fixture repo with a `base` commit, applies `mutate`, then commits it.
+ *
+ * Pass `commitChange: false` to leave the mutation uncommitted — that is how the worktree
+ * scenarios exercise staged/unstaged/untracked detection. It needs *some* committed change
+ * so `--base HEAD~1` resolves, so it commits a trivial no-op instead.
+ */
+function makeFixture(mutate, { commitChange = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'format-policy-'));
   write(root, '.prettierrc.json', `${JSON.stringify(CONFIG, null, 2)}\n`);
   write(root, '.prettierignore', `${IGNORE.join('\n')}\n`);
@@ -121,8 +129,17 @@ function makeFixture(mutate) {
   git(root, 'init', '-q');
   git(root, 'config', 'commit.gpgsign', 'false');
   commit(root, 'base');
+
   mutate(root);
-  commit(root, 'change');
+
+  if (commitChange) {
+    commit(root, 'change');
+  } else {
+    // Commit something unrelated so HEAD~1 exists, leaving `mutate`'s edits uncommitted.
+    // `git stash` is not an option: it would also stash the mutation.
+    write(root, '.base-marker', 'marker\n');
+    commit(root, 'noop');
+  }
   return root;
 }
 
@@ -186,18 +203,90 @@ console.log('[test-ci-scripts] format-check-changed policy');
 
 // ── E: .prettierignore'd files are skipped by Prettier itself ──────────────────────────
 {
-  // README.md is in .prettierignore and is deliberately unformatted. It is listed as a
-  // changed candidate, but Prettier honours the ignore rule and reports it clean — which is
-  // exactly why this script needs no ignore handling of its own (`git check-ignore` does not
-  // read `.prettierignore`, so a filter built on it would have been dead code anyway).
+  // The interesting case is a **brand-new** unformatted file inside an ignored directory.
+  // A modified-but-already-dirty ignored file would pass either way (it would simply be
+  // classified as pre-existing debt), so it could not tell "Prettier honours
+  // `.prettierignore`" apart from "the ignore rule is broken". A new file has no base
+  // version, so without the ignore rule it becomes a "newly added file is not formatted"
+  // violation — which is exactly the regression this scenario has to catch.
   const root = makeFixture((r) =>
-    write(r, 'README.md', '# fixture\n\nSome    unformatted     text\nmore\n'),
+    write(r, 'ignored/new-file.md', '# ignored\n\nNot    formatted\n'),
   );
   const { code, stdout, report } = runCheck(root);
   check(
-    'E. a changed .prettierignore file is skipped by Prettier, not flagged',
-    code === 0 && report?.files?.includes('README.md') && report?.violations?.length === 0,
+    'E1. a NEW unformatted file under .prettierignore is skipped, not flagged',
+    code === 0 &&
+      report?.files?.includes('ignored/new-file.md') &&
+      report?.violations?.length === 0,
     `exit=${code}, files=${JSON.stringify(report?.files)}, violations=${JSON.stringify(report?.violations)}\n${stdout}`,
+  );
+  rmSync(root, { recursive: true, force: true });
+}
+
+// ── E2: the mirror image — a NEW unformatted file NOT ignored must fail ────────────────
+{
+  // Without this, E1 would also pass if the checker simply never flagged new files at all.
+  const root = makeFixture((r) => write(r, 'src/new-file.ts', BROKEN));
+  const { code, stdout, report } = runCheck(root);
+  check(
+    'E2. the same shape of file outside .prettierignore IS flagged (E1 is a real skip)',
+    code === 1 && report?.violations?.some((v) => v.file === 'src/new-file.ts'),
+    `exit=${code}, violations=${JSON.stringify(report?.violations)}\n${stdout}`,
+  );
+  rmSync(root, { recursive: true, force: true });
+}
+
+// ── F: WORKTREE scope — an uncommitted, unformatted file must fail ─────────────────────
+{
+  // The regression this mode exists for: with `commit` scope an uncommitted file is
+  // invisible, so a local `npm run gates` reports green on work that is not formatted.
+  const root = makeFixture(() => {}, { commitChange: false });
+  write(root, 'src/uncommitted.ts', BROKEN); // never committed, never staged
+
+  const commitScope = runCheck(root, { scope: 'commit' });
+  check(
+    'F1. commit scope cannot see an uncommitted file (documents the old blind spot)',
+    commitScope.code === 0 && !commitScope.report?.files?.includes('src/uncommitted.ts'),
+    `exit=${commitScope.code}, files=${JSON.stringify(commitScope.report?.files)}\n${commitScope.stdout}`,
+  );
+
+  const worktreeScope = runCheck(root, { scope: 'worktree' });
+  check(
+    'F2. worktree scope fails on an untracked unformatted file',
+    worktreeScope.code === 1 &&
+      worktreeScope.report?.violations?.some((v) => v.file === 'src/uncommitted.ts'),
+    `exit=${worktreeScope.code}, violations=${JSON.stringify(worktreeScope.report?.violations)}\n${worktreeScope.stdout}`,
+  );
+  rmSync(root, { recursive: true, force: true });
+}
+
+// ── G: WORKTREE scope — an uncommitted edit to a clean file must fail ──────────────────
+{
+  const root = makeFixture(() => {}, { commitChange: false });
+  write(root, 'src/clean.ts', BROKEN); // plain working-tree edit, not staged
+
+  const worktreeScope = runCheck(root, { scope: 'worktree' });
+  check(
+    'G. worktree scope fails on an unstaged edit that breaks formatting',
+    worktreeScope.code === 1 &&
+      worktreeScope.report?.violations?.some((v) => v.file === 'src/clean.ts'),
+    `exit=${worktreeScope.code}, violations=${JSON.stringify(worktreeScope.report?.violations)}\n${worktreeScope.stdout}`,
+  );
+  rmSync(root, { recursive: true, force: true });
+}
+
+// ── H: WORKTREE scope — debt detection still works against the base, not the commit ────
+{
+  const root = makeFixture(() => {}, { commitChange: false });
+  write(root, 'src/dirty.ts', `${DIRTY}// uncommitted touch\n`); // worktree-only edit
+
+  const worktreeScope = runCheck(root, { scope: 'worktree' });
+  check(
+    'H. worktree scope still classifies pre-existing debt as non-blocking',
+    worktreeScope.code === 0 &&
+      worktreeScope.report?.preExisting?.includes('src/dirty.ts') &&
+      worktreeScope.report?.violations?.length === 0,
+    `exit=${worktreeScope.code}, preExisting=${JSON.stringify(worktreeScope.report?.preExisting)}, violations=${JSON.stringify(worktreeScope.report?.violations)}\n${worktreeScope.stdout}`,
   );
   rmSync(root, { recursive: true, force: true });
 }

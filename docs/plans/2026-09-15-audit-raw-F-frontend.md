@@ -64,7 +64,7 @@
 - **trigger**：
   1. 清空「每日注册预算」后直接保存：`Number('') === 0`，服务端 `min(0)` 放行，静默存成 0。
   2. SMTP 端口填 `99999`/`-1`/`0.5`：`emailComplete` 只判真值（`Settings.tsx:70`），三者全部为真值 → 前端放行 → 服务端 `emailSchema`（`server.ts:50-56`，`int().min(1).max(65535)`）返回 400。设计 §6 明确要求"port 为合法整数，保存前拦截"，实现未做。
-- **impact**：注册预算存成 0 → `budget.canRegister()` 恒 false（`budget.ts:11-13`）→ 调度器在命中空位时只打一行 `'Daily register budget reached — will retry next cycle'`（`scheduler.ts:174-179`）并跳过，当天所有真实注册被跳过，且该文案在预算**从未被用掉**时是误导性的；Ticker 显示 `0 / 0`。越界值场景则是界面直接出现 ``PUT /api/settings failed: 400 — {"error":{"formErrors":[],"fieldErrors":{...}}}``（`api.ts:18-26` 原样拼接 `res.text()`，`server.ts:131` 发送 `parsed.error.flatten()`）而非字段级提示。
+- **impact**：注册预算存成 0 → `budget.canRegister()` 恒 false（`budget.ts:11-13`）→ 调度器在命中空位时只打一行 `'Daily register budget reached — will retry next cycle'`（`scheduler.ts:174-179`）并跳过，当天所有真实注册被跳过，且该文案在预算**从未被用掉**时是误导性的；Ticker 显示 `0 / 0`。越界值场景则是界面直接出现 `PUT /api/settings failed: 400 — {"error":{"formErrors":[],"fieldErrors":{...}}}`（`api.ts:18-26` 原样拼接 `res.text()`，`server.ts:131` 发送 `parsed.error.flatten()`）而非字段级提示。
 - **evidence**：`Settings.tsx:28` `onChange={(e) => onChange(Number(e.target.value))}`（`Number('') === 0`）；`NumField` 未设 `min/max/step`；`Settings.tsx:70` 的 `emailComplete` 对 port 只做真值判断；`Settings.tsx:144` 的 port 走 `TextField` + `Number(s)`，同样无整数校验；`server.ts:58-68` 的 `settingsSchema` 确为 `.partial()`，但被赋值的键仍走各自的 `min/max`。
 - **suggestion**：给 `NumField` 加 `min/max/step`，空串单独处理（不要 `Number('')`）；保存前按服务端同款约束做字段级校验（含 port 整数），并把 `error.fieldErrors` 映射成字段旁提示而不是原始 JSON。
 
@@ -138,11 +138,11 @@
 
 ## 附：被证伪的具体断言（不单独成条，供交叉核对）
 
-| 原报告断言 | 复核结果 |
-|---|---|
-| 「重连后要等下一个事件才刷新（可能整整一个轮询间隔，或永远不来）」 | **不成立**（Dashboard 挂载时）。`server.ts:240` 建连即推 `recent` 快照 → `useEventStream.ts:40` 替换数组 → `Dashboard.tsx:38-43` 的 `lastEventId` 变化 → 触发 refetch。缺口只在非 Dashboard 路由与 session 资源。 |
-| 「dry-run … 与真实抢课表现几乎一致 / 控制台滚动 'Opening found (REGISTER)'」 | **不成立**。`scheduler.ts:163-168` 每个命中周期都额外输出 `DRY-RUN: would REGISTER <CRN> — <reason>`，与 `Opening found` 相邻可见。 |
-| 「清空『轮询间隔』或『每日查询预算』后保存」被归入"静默变 0" | **部分不成立**。这两项服务端 `.min(1)` 会 400；静默被接受的只有 `registerBudget`（`.min(0)`）。 |
-| 「用户误以为已强制抢课一轮」（`started:false` 被当成成功） | **可达性极低**。`CourseCard.tsx:29,63` 在非 `watching`/未登录时禁用按钮，需竞态才可点。 |
-| 「ticker 显示 0/100」 | **成立**，`App.tsx:40` 在 `budget.data` 缺失时 `queryUsed = queryBudget - queryBudget = 0`。 |
-| 「三语字典键集合由类型锁死」 | **成立**，`i18n/index.ts:71,135` 以 `const zh: typeof en` / `const fr: typeof en` 声明，键集合与 `{{j}}`/`{{rel}}` 插值三语一致（`minSuffix`/`lastPoll` 均带同名占位符）。 |
+| 原报告断言                                                                   | 复核结果                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 「重连后要等下一个事件才刷新（可能整整一个轮询间隔，或永远不来）」           | **不成立**（Dashboard 挂载时）。`server.ts:240` 建连即推 `recent` 快照 → `useEventStream.ts:40` 替换数组 → `Dashboard.tsx:38-43` 的 `lastEventId` 变化 → 触发 refetch。缺口只在非 Dashboard 路由与 session 资源。 |
+| 「dry-run … 与真实抢课表现几乎一致 / 控制台滚动 'Opening found (REGISTER)'」 | **不成立**。`scheduler.ts:163-168` 每个命中周期都额外输出 `DRY-RUN: would REGISTER <CRN> — <reason>`，与 `Opening found` 相邻可见。                                                                               |
+| 「清空『轮询间隔』或『每日查询预算』后保存」被归入"静默变 0"                 | **部分不成立**。这两项服务端 `.min(1)` 会 400；静默被接受的只有 `registerBudget`（`.min(0)`）。                                                                                                                   |
+| 「用户误以为已强制抢课一轮」（`started:false` 被当成成功）                   | **可达性极低**。`CourseCard.tsx:29,63` 在非 `watching`/未登录时禁用按钮，需竞态才可点。                                                                                                                           |
+| 「ticker 显示 0/100」                                                        | **成立**，`App.tsx:40` 在 `budget.data` 缺失时 `queryUsed = queryBudget - queryBudget = 0`。                                                                                                                      |
+| 「三语字典键集合由类型锁死」                                                 | **成立**，`i18n/index.ts:71,135` 以 `const zh: typeof en` / `const fr: typeof en` 声明，键集合与 `{{j}}`/`{{rel}}` 插值三语一致（`minSuffix`/`lastPoll` 均带同名占位符）。                                        |

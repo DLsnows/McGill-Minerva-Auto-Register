@@ -76,17 +76,25 @@ const GATES = [
   },
   {
     id: 'format:changed',
-    label: `Prettier (files changed vs ${baseRef ?? 'unknown'})`,
+    label: `Prettier (working tree vs ${baseRef ?? 'unknown'})`,
     command: [
       'node',
-      ['scripts/ci/format-check-changed.mjs', ...(baseRef ? ['--base', baseRef] : [])],
+      [
+        'scripts/ci/format-check-changed.mjs',
+        // Local gates judge the *working tree* — including staged, unstaged and untracked
+        // files — not just the last commit. A gate that ignored uncommitted work would
+        // report green for code nobody has formatted yet.
+        '--mode',
+        'worktree',
+        ...(baseRef ? ['--base', baseRef] : []),
+      ],
     ],
     enabled: Boolean(baseRef),
     skipReason: 'no base revision could be resolved — pass --base <ref> or set BASE_REF',
   },
   {
     id: 'ci-script-tests',
-    label: 'CI script policy tests (prettier new-violation policy)',
+    label: 'CI script policy tests (prettier policy + branch gate)',
     command: ['npm', ['run', 'test:ci-scripts']],
   },
   {

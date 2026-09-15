@@ -693,7 +693,7 @@ P2/P3 共 47 条建议单独排期，不要塞进本次。
 - **用户可见**: 不会（属事后取证能力）
 - **状态**: 新增
 - **修复方向**: 备份名带时间戳；日志按实际结果措辞（并入 Q32 同一改动）。
-- **证据**: `store.ts:64-73`：`const corruptPath = \`${this.file}.corrupt\`` 固定；catch 块空，但 `console.error` 无条件宣称已备份。
+- **证据**: `store.ts:64-73`：`const corruptPath = \`${this.file}.corrupt\``固定；catch 块空，但`console.error` 无条件宣称已备份。
 
 ### Q59 [low] `runCycle` 的失败路径不消耗注册预算但计入失败 streak（计数口径说明）
 

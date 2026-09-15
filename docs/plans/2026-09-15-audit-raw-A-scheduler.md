@@ -240,11 +240,11 @@ private save(): void {
 
 ## 跨 lane 去重提示（供汇总）
 
-| 本条 | 与其它 lane 的关系 | 汇总建议 |
-| --- | --- | --- |
-| A-2 error 死状态（high） | = lane D 已验证报告 NEW-1（high） | 只计一次 |
-| A-6 stop/pause 不中断在飞周期（medium） | = lane D 已验证报告"已核实但未单列"第 1 条（medium） | 只计一次 |
-| A-4 的"恢复不重算 nextPollAt"变体（low） | = lane D 已验证报告 D-3（medium） | 该变体归 D-3；A-4 只保留"无午夜上界 + 改预算不重排" |
-| new 候选 1（加课默认 watching / 引擎未启动） | = lane D D-1（high） | 不重复列 |
-| new 候选 3（runCycle 活引用） | = lane D 未单列第 2 条（low） | 不重复列 |
-| A-5 ×3 拉伸（medium） | 与 lane C（settings/budget）同一代码分支 | 汇总时核对是否重复 |
+| 本条                                         | 与其它 lane 的关系                                   | 汇总建议                                            |
+| -------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------- |
+| A-2 error 死状态（high）                     | = lane D 已验证报告 NEW-1（high）                    | 只计一次                                            |
+| A-6 stop/pause 不中断在飞周期（medium）      | = lane D 已验证报告"已核实但未单列"第 1 条（medium） | 只计一次                                            |
+| A-4 的"恢复不重算 nextPollAt"变体（low）     | = lane D 已验证报告 D-3（medium）                    | 该变体归 D-3；A-4 只保留"无午夜上界 + 改预算不重排" |
+| new 候选 1（加课默认 watching / 引擎未启动） | = lane D D-1（high）                                 | 不重复列                                            |
+| new 候选 3（runCycle 活引用）                | = lane D 未单列第 2 条（low）                        | 不重复列                                            |
+| A-5 ×3 拉伸（medium）                        | 与 lane C（settings/budget）同一代码分支             | 汇总时核对是否重复                                  |

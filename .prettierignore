@@ -3,5 +3,5 @@ build
 node_modules
 coverage
 package-lock.json
-docs/superpowers
 .github/workflows
+docs/superpowers
