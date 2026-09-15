@@ -444,6 +444,55 @@ describe('Scheduler.start', () => {
     expect(watcher.calls).toBe(2);
     scheduler.stop();
   });
+
+  it('tickSoon() during an in-flight tick queues another pass instead of dropping it', async () => {
+    // Regression: `runTick()` used to *drop* a request that arrived mid-tick. That
+    // silently broke the "revive ⇒ poll now" invariant for a whole class of real
+    // interactions — clicking Resume on several error cards in a row (the first resume
+    // starts the engine and ticks; the rest were dropped) or a route landing exactly on
+    // a 30s interval tick. `start()` is a no-op while the engine is up, so the revived
+    // target fell back to waiting a full interval, which is the very bug this PR fixes.
+    const { scheduler, watcher, store, target } = setup({ decision: { action: 'NOOP', reason: 'full' } });
+    // Keep the FIRST tick in flight by holding the watcher open.
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const original = watcher.checkCourse.bind(watcher);
+    let held = false;
+    watcher.checkCourse = async () => {
+      if (!held) {
+        held = true;
+        await gate;
+      }
+      return original();
+    };
+
+    store.updateTarget(target.id, { nextPollAt: NOW });
+    scheduler.start(); // tick 1 begins and blocks inside checkCourse
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(watcher.calls).toBe(0); // still blocked
+
+    // A second target arrives and asks for an immediate poll while tick 1 is stuck.
+    const late = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '7777',
+      mode: 'auto',
+    });
+    store.updateTarget(late.id, { nextPollAt: NOW });
+    scheduler.tickSoon();
+
+    releaseFirst();
+    for (let i = 0; i < 24; i++) await Promise.resolve();
+
+    // Both targets were polled: the dropped request would have left `late` unpolled.
+    expect(watcher.calls).toBe(2);
+    expect(store.getTarget(late.id)!.lastPolledAt).toBe(NOW);
+    scheduler.stop();
+  });
 });
 
 describe('Scheduler.clearFailures', () => {

@@ -469,6 +469,10 @@ describe('API', () => {
     expect(created.nextPollAt).toBeGreaterThanOrEqual(before);
     expect(created.nextPollAt!).toBeLessThanOrEqual(Date.now());
     expect(res.json().nextPollAt).toBe(created.nextPollAt);
+    // Regression: this route armed `nextPollAt` but never kicked a tick, so adding a
+    // course while the engine was already running left it waiting a full 30s interval
+    // for its first poll — unlike PATCH / `/resume` / `start-all`, which all tick.
+    expect(tickSoon).toHaveBeenCalledTimes(1);
     await app2.close();
   });
 
@@ -558,8 +562,9 @@ describe('API', () => {
     // and the card UI never offers Resume for them. The route itself used to accept
     // *any* id, which would put a course that already has a seat back into the polling
     // loop — burning the query budget every cycle and, if `decide()` saw an opening,
-    // reaching `actor.act()` for a duplicate submit.
-    for (const status of ['registered', 'waitlisted'] as const) {
+    // reaching `actor.act()` for a duplicate submit. 'stopped' is included so this route
+    // and PATCH agree on the terminal set.
+    for (const status of ['registered', 'waitlisted', 'stopped'] as const) {
       const t = seededStore.addTarget({ ...validTarget, targetCrn: '4242' });
       seededStore.updateTarget(t.id, { status });
 
@@ -571,21 +576,25 @@ describe('API', () => {
     }
   });
 
-  it('PATCH cannot flip a registered/waitlisted target back to watching', async () => {
+  it('PATCH cannot flip a terminal target back to watching', async () => {
     // Same hazard on the PATCH path, which additionally arms an immediate poll and
     // clears the failure streak — so a stray `{ status: 'watching' }` used to both
-    // restart polling and hand the course a fresh set of retries.
-    const t = seededStore.addTarget({ ...validTarget, targetCrn: '5150' });
-    seededStore.updateTarget(t.id, { status: 'registered' });
+    // restart polling and hand the course a fresh set of retries. The set must match
+    // `/resume`: 'stopped' used to slip through here while `/resume` rejected it.
+    for (const status of ['registered', 'waitlisted', 'stopped'] as const) {
+      const t = seededStore.addTarget({ ...validTarget, targetCrn: '5150' });
+      seededStore.updateTarget(t.id, { status });
 
-    const r = await app.inject({
-      method: 'PATCH',
-      url: `/api/targets/${t.id}`,
-      payload: { status: 'watching' },
-    });
+      const r = await app.inject({
+        method: 'PATCH',
+        url: `/api/targets/${t.id}`,
+        payload: { status: 'watching' },
+      });
 
-    expect(r.statusCode).toBe(409);
-    expect(seededStore.getTarget(t.id)!.status).toBe('registered');
+      expect(r.statusCode).toBe(409);
+      expect(seededStore.getTarget(t.id)!.status).toBe(status);
+      seededStore.removeTarget(t.id);
+    }
   });
 
   it('REGRESSION: start-all arms revived targets as due-now and polls them in the same request', async () => {

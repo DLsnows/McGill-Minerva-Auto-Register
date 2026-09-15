@@ -1,4 +1,4 @@
-import type { LogEvent, Settings, WatchStatus, WatchTarget } from '@autoregister/shared';
+import type { BudgetSnapshot, LogEvent, Settings, WatchStatus, WatchTarget } from '@autoregister/shared';
 
 export type { BudgetCount, BudgetSnapshot } from '@autoregister/shared';
 export type SessionStatus = 'unknown' | 'authenticated' | 'logged-out' | 'logging-in';

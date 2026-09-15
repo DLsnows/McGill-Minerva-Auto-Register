@@ -57,6 +57,9 @@ export class Scheduler {
   private readonly random: () => number;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /** A tick was requested while one was already in flight — re-run it once that one
+   * settles, so a request is never silently dropped (see `runTick`). */
+  private tickQueued = false;
   /** Targets with a runOnce currently executing — prevents the tick loop and a
    * manual `runTarget` (or two manual runs) from double-acting the same course. */
   private readonly inFlight = new Set<string>();
@@ -330,12 +333,26 @@ export class Scheduler {
     this.runTick();
   }
 
-  /** Kick off a tick without waiting for it (shared by `start` and `tickSoon`). */
+  /** Kick off a tick without waiting for it (shared by `start` and `tickSoon`).
+   *
+   * The in-flight guard used to *drop* a request that arrived mid-tick. That silently
+   * defeated the "revive ⇒ poll now" invariant: a target revived while a tick was
+   * already running (clicking Resume on several error cards in a row, or a route
+   * landing exactly on a 30s interval tick) got no immediate poll at all — `start()`
+   * is a no-op when the engine is up — so it fell back to waiting a full interval.
+   * The request is now *queued* and re-run once the current tick settles. */
   private runTick(): void {
-    if (this.ticking) return; // skip if a tick is already in flight
+    if (this.ticking) {
+      this.tickQueued = true;
+      return;
+    }
     this.ticking = true;
     void this.tick().finally(() => {
       this.ticking = false;
+      if (this.tickQueued) {
+        this.tickQueued = false;
+        this.runTick();
+      }
     });
   }
 

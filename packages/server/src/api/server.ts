@@ -64,8 +64,18 @@ export interface ApiDeps {
   now?: () => number;
 }
 
-const targetSchema = z.object({
-  term: z.string().min(1),
+/**
+ * Statuses a target cannot be revived out of.
+ *
+ * `registered` / `waitlisted` are finished; `stopped` is a deliberate user decision.
+ * Every route that can put a target back into `watching` must agree on this set —
+ * PATCH and `/resume` consult it, and `start-all` uses the same three statuses in its
+ * `isDone` filter — because disagreeing is how a route ends up restarting polling on a
+ * course that already has a seat.
+ */
+const TERMINAL_STATUSES: readonly string[] = ['registered', 'waitlisted', 'stopped'];
+
+const targetSchema = z.object({  term: z.string().min(1),
   subject: z.string().min(1),
   courseNumber: z.string().min(1),
   targetCrn: z.string().min(1),
@@ -129,7 +139,13 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     // poll time right away: without it `nextPollAt` stays undefined and the
     // target is only picked up by the next tick, and there is no `watching`
     // transition afterwards that would set it.
-    return deps.store.addTarget({ ...parsed.data, nextPollAt: armForImmediatePoll(now()) });
+    const created = deps.store.addTarget({ ...parsed.data, nextPollAt: armForImmediatePoll(now()) });
+    // Adding a course while the engine is already running should poll it now, not on the
+    // next 30s interval. Every other route that puts a target into `watching` (PATCH,
+    // /resume, start-all) kicks a tick for exactly this reason; this one did not, so a
+    // course added mid-run silently waited a full interval for its first poll.
+    deps.scheduler.tickSoon?.();
+    return created;
   });
   app.patch('/api/targets/:id', (req, reply) => {
     const parsed = targetPatchSchema.safeParse(req.body);
@@ -139,12 +155,15 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     // to 'watching' now both arms an immediate poll AND clears the failure streak, so a
     // stray `{ status: 'watching' }` aimed at a course that already has a seat would
     // restart polling on it (burning the query budget every cycle) and could reach
-    // `actor.act()` for a duplicate registration. Terminal states stay terminal; the
-    // other routes already honour that, and `/resume` returns 409 for them too.
+    // `actor.act()` for a duplicate registration.
+    //
+    // The terminal set matches `/resume` and `start-all`'s `isDone` exactly. `stopped` is
+    // included: whether it is "finished" or "deliberately turned off", both routes treat
+    // it as terminal, and having PATCH disagree with them was the inconsistency.
     if (parsed.data.status === 'watching') {
       const existing = deps.store.getTarget(id);
       if (!existing) return reply.code(404).send({ error: 'not found' });
-      if (existing.status === 'registered' || existing.status === 'waitlisted') {
+      if (TERMINAL_STATUSES.includes(existing.status)) {
         return reply
           .code(409)
           .send({ error: `cannot resume a target in status "${existing.status}"`, status: existing.status });
@@ -327,11 +346,11 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     const target = deps.store.getTarget(id);
     if (!target) return reply.code(404).send({ error: 'not found' });
     // Only 'paused' and 'error' are revivable. 'registered' / 'waitlisted' are terminal
-    // by design — `start-all` deliberately never touches them (see the `isDone` filter
-    // above) — and 'stopped' is a deliberate user decision. Without this guard the route
-    // would put a course that already has a seat back into the polling loop: it would
-    // burn the daily query budget every cycle and, if `decide()` saw an opening for the
-    // target CRN, reach `actor.act()` and submit a *duplicate* registration attempt.
+    // by design — `start-all` deliberately never touches them — and 'stopped' is a
+    // deliberate user decision. Without this guard the route would put a course that
+    // already has a seat back into the polling loop: it would burn the daily query
+    // budget every cycle and, if `decide()` saw an opening for the target CRN, reach
+    // `actor.act()` and submit a *duplicate* registration attempt.
     if (target.status !== 'paused' && target.status !== 'error') {
       return reply
         .code(409)
