@@ -106,6 +106,16 @@ describe('CourseForm', () => {
     expect(submitted.missing).toEqual(['subject', 'courseNumber']);
   });
 
+  it('normalises a nullish optional field to an empty string on submit', async () => {
+    // `trimAll` carries the same nullish guard as `isBlank`, so an un-coerced `initial` value
+    // cannot leak the string "null" into onSubmit.
+    const onSubmit = vi.fn();
+    const initial = { term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', faculty: 'Faculty of Science', label: null, mode: 'auto' } as unknown as CourseFormValues;
+    render(<CourseForm onSubmit={onSubmit} initial={initial} submitLabel="Add" />);
+    await userEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ label: '' }));
+  });
+
   it('reduces values and missing together, so a batched update keeps both patches', () => {
     // The decisive guard for the reviewer-flagged regression. React applies queued actions one
     // by one and commits the resulting state as a whole, so the "both patches survive and the

@@ -42,13 +42,14 @@ const REQUIRED_KEYS = FIELDS.filter((f) => f.required).map((f) => f.key);
  */
 const isBlank = (v: CourseFormValues, key: keyof CourseFormValues) => !String(v[key] ?? '').trim();
 
+/** Trims every text field. Uses the same nullish guard as `isBlank` so the two stay symmetric. */
 const trimAll = (v: CourseFormValues): CourseFormValues => ({
-  term: v.term.trim(),
-  subject: v.subject.trim(),
-  courseNumber: v.courseNumber.trim(),
-  targetCrn: v.targetCrn.trim(),
-  faculty: v.faculty.trim(),
-  label: v.label.trim(),
+  term: (v.term ?? '').trim(),
+  subject: (v.subject ?? '').trim(),
+  courseNumber: (v.courseNumber ?? '').trim(),
+  targetCrn: (v.targetCrn ?? '').trim(),
+  faculty: (v.faculty ?? '').trim(),
+  label: (v.label ?? '').trim(),
   mode: v.mode,
 });
 
