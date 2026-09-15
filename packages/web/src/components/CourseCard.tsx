@@ -5,7 +5,7 @@ import { StatusBadge } from './StatusBadge';
 import { ModeToggle } from './ModeToggle';
 import { fmtRelative } from '../lib/format';
 import { useNow } from '../lib/useNow';
-import { cooldownRemainingMs } from '../lib/api';
+import { cooldownRemainingMs, MANUAL_RUN_COOLDOWN_MS } from '../lib/api';
 
 interface Props {
   target: WatchTarget;
@@ -44,8 +44,13 @@ export function CourseCard({
   loggedIn = true,
 }: Props) {
   const { t } = useTranslation();
-  // 1s tick: the manual-run cooldown counts down (and clears itself) in the UI.
-  const now = useNow(1_000);
+  // Tick fast only while a cooldown is counting down: every tick re-renders this
+  // card, so a permanent per-second interval on every idle card is wasted work
+  // (review finding). The interval relaxes back to 30s at the same render that
+  // drops the notice.
+  const coolingByResponse = Date.now() < (coolingUntil ?? 0);
+  const coolingByTarget = Date.now() < (target.lastForcedRunAt ?? 0) + MANUAL_RUN_COOLDOWN_MS;
+  const now = useNow(coolingByResponse || coolingByTarget ? 1_000 : 30_000);
   const title = target.label ?? `${target.subject} ${target.courseNumber}`;
   const canRun = target.status === 'watching';
   const canPause = PAUSABLE.includes(target.status);

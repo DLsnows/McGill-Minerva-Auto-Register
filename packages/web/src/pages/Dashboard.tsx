@@ -104,12 +104,15 @@ export default function Dashboard() {
           return next;
         });
       const drop = (notice: string) => setRunNotice((s) => ({ ...s, [id]: notice }));
-      // Prefer the server's start time: the countdown is then rendered from the
-      // clock that actually enforces the window, so client skew cannot stretch it.
-      const markCooling = (lastForcedRunAt: number | undefined, retryAfterMs: number | undefined) =>
+      // `coolingUntil` is an *end* timestamp. Prefer the server's start time, so
+      // the window is rendered from the clock that enforces it (client skew can
+      // neither stretch nor shrink it); a cooldown rejection that reports only
+      // the remaining time falls back to the local clock. (Review finding: this
+      // used to store the *start* time, which made the local fallback dead.)
+      const markCooling = (lastForcedRunAt: number | undefined, retryAfterMs: number) =>
         setCoolingUntil((s) => ({
           ...s,
-          [id]: lastForcedRunAt !== undefined ? lastForcedRunAt : Date.now() + (retryAfterMs ?? 0),
+          [id]: lastForcedRunAt !== undefined ? lastForcedRunAt + MANUAL_RUN_COOLDOWN_MS : Date.now() + retryAfterMs,
         }));
       setRunning((s) => new Set(s).add(id));
       drop(tr('run.starting')); // in-flight hint; replaced by the verdict below
@@ -129,7 +132,7 @@ export default function Dashboard() {
         } else if (res.reason === 'cooldown') {
           // The notice itself is derived from the cooldown in CourseCard so it
           // counts down and disappears when the window ends.
-          markCooling(res.lastForcedRunAt, res.retryAfterMs);
+          markCooling(res.lastForcedRunAt, res.retryAfterMs ?? 0);
           clearNotice();
         } else {
           drop(tr('run.notWatching', { reason: res.reason ?? 'unknown' }));
