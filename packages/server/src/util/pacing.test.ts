@@ -3,9 +3,9 @@ import { DEFAULT_SETTINGS, MAX_OP_PAUSE_MS, MIN_OP_PAUSE_MS } from '@autoregiste
 import {
   applyPacingSettings,
   configurePacing,
-  effectiveJitterMs,
   getPacing,
   humanPause,
+  jitterOffset,
   resetPacing,
 } from './pacing';
 
@@ -58,7 +58,8 @@ describe('humanPause', () => {
     configurePacing({ baseMs: 500, jitterMs: 100 });
     expect(scheduledDelay()).toBeGreaterThanOrEqual(400);
     expect(scheduledDelay()).toBeLessThanOrEqual(600);
-    // Extremes of the uniform jitter hit the exact bounds.
+    // The jitter fits inside the headroom above the floor, so the full symmetric range is
+    // preserved and the extremes hit the exact bounds.
     withRandom(0, () => expect(scheduledDelay()).toBe(400));
     withRandom(0.5, () => expect(scheduledDelay()).toBe(500));
     withRandom(1, () => expect(scheduledDelay()).toBe(600));
@@ -73,39 +74,78 @@ describe('humanPause', () => {
   });
 
   /**
-   * Regression: making the two values independently configurable exposed an interaction
-   * the hardcoded 3000 ± 1000 never had. With base = 250 and jitter = 60000, every
-   * negative jitter term (Math.random() <= 0.5) collapsed onto the 250ms floor while the
-   * rest spread to ~60s — half of all browser pauses sitting on the hard minimum, i.e. a
-   * bimodal and obviously mechanical distribution.
+   * Regression, in two rounds.
+   *
+   * Round 1: making the two values independently configurable exposed an interaction the
+   * hardcoded 3000 ± 1000 never had. With base = 250 and jitter = 60000, every negative
+   * jitter term (Math.random() <= 0.5) collapsed onto the 250ms floor while the rest
+   * spread to ~60s — half of all browser pauses sitting on the hard minimum, a bimodal
+   * and obviously mechanical distribution.
+   *
+   * Round 2 (review): the first fix capped the jitter *symmetrically* at
+   * `base - MIN_OP_PAUSE_MS`, which cured the spike by silently discarding most of the
+   * configured jitter — with base = 3000, jitter = 60000 the pauses actually ranged
+   * 250–5750ms, and with base = 250 the jitter vanished entirely (a constant 250ms).
+   * Silently ignoring a setting the user chose is its own bug.
+   *
+   * Current shape: only the half that cannot reach is truncated. The default and every
+   * configuration whose jitter fits above the floor keep the documented symmetric `±`.
    */
-  describe('jitter cannot make the floor the mode', () => {
-    it('caps the jitter at the headroom above the floor', () => {
-      expect(effectiveJitterMs(250, 60000)).toBe(0);
-      expect(effectiveJitterMs(1000, 60000)).toBe(1000 - MIN_OP_PAUSE_MS);
-      // Below the headroom the configured value is untouched.
-      expect(effectiveJitterMs(3000, 1000)).toBe(1000);
-      // A base under the floor has no headroom at all.
-      expect(effectiveJitterMs(0, 5000)).toBe(0);
+  describe('jitter cannot make the floor the mode (without shrinking the spread)', () => {
+    it('leaves the offset symmetric while it fits above the floor', () => {
+      withRandom(0.5, () => expect(jitterOffset(3000, 0)).toBe(0));
+      // jitter < headroom (2750): the full range is available.
+      withRandom(0, () => expect(jitterOffset(3000, 1000)).toBe(-1000));
+      withRandom(0.5, () => expect(jitterOffset(3000, 1000)).toBe(0));
+      withRandom(1, () => expect(jitterOffset(3000, 1000)).toBe(1000));
+      // jitter == headroom exactly: still symmetric, the floor is just reachable.
+      withRandom(0, () => expect(jitterOffset(3000, 2750)).toBe(-2750));
+      withRandom(1, () => expect(jitterOffset(3000, 2750)).toBe(2750));
     });
 
-    it('keeps the whole distribution above the floor instead of piling up on it', () => {
-      configurePacing({ baseMs: MIN_OP_PAUSE_MS, jitterMs: 60000 });
-      // The lowest possible draw (random = 0) and a mid draw (random = 0.5) both stay at
-      // the floor precisely because the effective jitter is 0 — but they are no longer a
-      // *spike*: every other draw is 250 too, so the distribution is a point, not a mode.
-      for (const r of [0, 0.25, 0.5, 0.75, 1] as const) {
-        withRandom(r, () => expect(scheduledDelay()).toBe(MIN_OP_PAUSE_MS));
-      }
+    it('truncates only the unreachable half once the jitter exceeds the headroom', () => {
+      // base sits on the floor: nothing may be subtracted, so the draw is [0, jitter].
+      // `random = 0` maps to the lower bound, which is 0 here (the floor itself), and
+      // `random = 1` still reaches the configured maximum.
+      withRandom(0, () => expect(jitterOffset(MIN_OP_PAUSE_MS, 60000)).toBe(0));
+      withRandom(1, () => expect(jitterOffset(MIN_OP_PAUSE_MS, 60000)).toBe(60000));
+      // Headroom is positive but smaller than the jitter: the low side is cut to the
+      // floor, the high side is untouched.
+      withRandom(0, () => expect(jitterOffset(1000, 60000)).toBe(MIN_OP_PAUSE_MS - 1000));
+      withRandom(1, () => expect(jitterOffset(1000, 60000)).toBe(60000));
     });
 
-    it('still spreads upward when the base is above the floor', () => {
+    it('honours a large configured jitter instead of silently shrinking it', () => {
       configurePacing({ baseMs: 3000, jitterMs: 60000 });
-      // Headroom is 2750ms, so the spread is 250 … 5750 — never below the floor, and no
-      // sample can land on it twice as often as anywhere else.
+      // The old symmetric cap produced 250…5750 here; the configured 60s is now reached,
+      // and the low side is truncated at the floor rather than at `base - 2750`.
       withRandom(0, () => expect(scheduledDelay()).toBe(MIN_OP_PAUSE_MS));
+      withRandom(1, () => expect(scheduledDelay()).toBe(63000));
+    });
+
+    it('keeps the default 3000 ± 1000 symmetric and centred', () => {
+      // The whole point of truncating only the unreachable half: the shipped default must
+      // not change. A reflection-based fix would have made this 3000…4000 (+17% per op).
+      // `jitter = 0` is the degenerate case — the offset is 0 for every draw.
+      configurePacing({ baseMs: 3000, jitterMs: 0 });
+      for (const r of [0, 0.5, 1] as const) {
+        withRandom(r, () => expect(scheduledDelay()).toBe(3000));
+      }
+      // And with the real default jitter the full symmetric range is available.
+      resetPacing();
+      withRandom(0, () => expect(scheduledDelay()).toBe(2000));
       withRandom(0.5, () => expect(scheduledDelay()).toBe(3000));
-      withRandom(1, () => expect(scheduledDelay()).toBe(3000 + (3000 - MIN_OP_PAUSE_MS)));
+      withRandom(1, () => expect(scheduledDelay()).toBe(4000));
+    });
+
+    it('keeps every draw at or above the floor when the base sits on it', () => {
+      configurePacing({ baseMs: MIN_OP_PAUSE_MS, jitterMs: 60000 });
+      // The floor is a single point of the support (`random = 0` maps to the lower bound,
+      // which is exactly 0 here), not the mode: every other draw is strictly above it.
+      withRandom(0, () => expect(scheduledDelay()).toBe(MIN_OP_PAUSE_MS));
+      for (const r of [0.25, 0.5, 0.75, 1] as const) {
+        withRandom(r, () => expect(scheduledDelay()).toBeGreaterThan(MIN_OP_PAUSE_MS));
+      }
     });
   });
 
