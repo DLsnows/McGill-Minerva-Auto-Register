@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DataProvider } from '../lib/DataContext';
 import Courses from './Courses';
@@ -50,6 +50,50 @@ describe('Courses', () => {
     await waitFor(() => expect(add).toHaveBeenCalledWith(expect.objectContaining({ subject: 'COMP', targetCrn: '2347', faculty: 'Faculty of Science' })));
     // the form resets after a successful add
     await waitFor(() => expect((screen.getByLabelText('Target CRN') as HTMLInputElement).value).toBe(''));
+  });
+
+  it('shows the required/optional marks in the edit form too (same CourseForm)', async () => {
+    mockAll([
+      { id: 't1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 },
+    ]);
+    renderCourses();
+    await waitFor(() => expect(screen.getByText('COMP 551', { selector: '.title' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /edit/i }));
+    // the add form is still mounted, so scope the assertions to the edit form itself
+    const editForm = screen.getByRole('button', { name: 'Save' }).closest('form');
+    expect(editForm).not.toBeNull();
+    expect(within(editForm!).getByText(/marked with \* are required/i)).toBeInTheDocument();
+    expect(within(editForm!).getByLabelText('Target CRN')).toHaveAttribute('aria-required', 'true');
+    expect(within(editForm!).getByLabelText('Label')).not.toHaveAttribute('aria-required');
+    expect(within(editForm!).getByText('(optional)')).toBeInTheDocument();
+  });
+
+  it('keeps the per-field error ids unique when the add and edit forms are both mounted', async () => {
+    mockAll([
+      { id: 't1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 },
+    ]);
+    renderCourses();
+    await waitFor(() => expect(screen.getByText('COMP 551', { selector: '.title' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /edit/i }));
+    const editForm = screen.getByRole('button', { name: 'Save' }).closest('form')!;
+    const addForm = screen.getByRole('button', { name: 'Add course' }).closest('form')!;
+
+    // the edit form is prefilled, so clear one required field to make it flag a field too
+    await userEvent.click(screen.getByRole('button', { name: 'Add course' })); // add form flagged entirely
+    await userEvent.clear(within(editForm).getByLabelText('Target CRN'));
+    await userEvent.click(within(editForm).getByRole('button', { name: 'Save' }));
+
+    const ids = [addForm, editForm]
+      .flatMap((form) => within(form).getAllByText('This field is required.'))
+      .map((el) => el.id);
+    expect(ids).toHaveLength(7); // 5 from the empty add form + 2 from the edit form (empty in the fixture)
+    expect(new Set(ids).size).toBe(ids.length);
+    // each input points at its own form's message
+    const editTarget = within(editForm).getByLabelText('Target CRN');
+    const addTarget = within(addForm).getByLabelText('Target CRN');
+    expect(editTarget).toHaveAccessibleDescription('This field is required.');
+    expect(addTarget).toHaveAccessibleDescription('This field is required.');
+    expect(editTarget.getAttribute('aria-describedby')).not.toBe(addTarget.getAttribute('aria-describedby'));
   });
 
   it('deletes a target', async () => {
