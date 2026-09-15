@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -363,5 +363,211 @@ describe('Scheduler.isRunning', () => {
     expect(scheduler.isRunning()).toBe(true);
     scheduler.stop();
     expect(scheduler.isRunning()).toBe(false);
+  });
+});
+
+describe('Scheduler.start', () => {
+  // The 30s interval alone meant a fresh Start produced no console output for
+  // half a minute, which users read as "the button did nothing".
+  it('polls a due target immediately on start instead of waiting for the first tick interval', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new Store(dir);
+      const watcher = new FakeWatcher({
+        stats: stats(),
+        decision: { action: 'NOOP', reason: 'full' },
+      });
+      const scheduler = new Scheduler({
+        store, budget: new Budget(store), watcher,
+        actor: new FakeActor({ kind: 'registered', crn: '1814' }),
+        session: new FakeSession(true), now: () => NOW, random: () => 0.5,
+      });
+      const t = store.addTarget({
+        term: '202701', subject: 'COMP', faculty: 'Faculty of Science',
+        courseNumber: '551', targetCrn: '1814', mode: 'auto',
+      });
+      store.updateTarget(t.id, { nextPollAt: NOW }); // due now (as the API arms it)
+
+      scheduler.start();
+      // Deliver the microtasks the unawaited tick is waiting on — no timer advance.
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+
+      expect(watcher.calls).toBe(1);
+      expect(store.recentEvents().some((e) => /No opening/.test(e.message))).toBe(true);
+      scheduler.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves a not-yet-due target alone on start', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new Store(dir);
+      const watcher = new FakeWatcher({ stats: stats(), decision: { action: 'NOOP', reason: 'full' } });
+      const scheduler = new Scheduler({
+        store, budget: new Budget(store), watcher,
+        actor: new FakeActor({ kind: 'registered', crn: '1814' }),
+        session: new FakeSession(true), now: () => NOW, random: () => 0.5,
+      });
+      const t = store.addTarget({
+        term: '202701', subject: 'COMP', faculty: 'Faculty of Science',
+        courseNumber: '551', targetCrn: '1814', mode: 'auto',
+      });
+      store.updateTarget(t.id, { nextPollAt: NOW + 60_000 });
+
+      scheduler.start();
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(watcher.calls).toBe(0);
+      scheduler.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('tickSoon runs a tick only while the engine is running', async () => {
+    const { scheduler, watcher, store, target } = setup({ decision: { action: 'NOOP', reason: 'full' } });
+    store.updateTarget(target.id, { nextPollAt: NOW });
+
+    scheduler.tickSoon(); // engine stopped — nothing may poll
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(watcher.calls).toBe(0);
+
+    scheduler.start(); // start() itself already ticks the due target
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(watcher.calls).toBe(1);
+
+    // Once the engine is up, an explicit tickSoon() picks up a due target too.
+    store.updateTarget(target.id, { nextPollAt: NOW });
+    scheduler.tickSoon();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(watcher.calls).toBe(2);
+    scheduler.stop();
+  });
+
+  it('tickSoon() during an in-flight tick queues another pass instead of dropping it', async () => {
+    // Regression: `runTick()` used to *drop* a request that arrived mid-tick. That
+    // silently broke the "revive ⇒ poll now" invariant for a whole class of real
+    // interactions — clicking Resume on several error cards in a row (the first resume
+    // starts the engine and ticks; the rest were dropped) or a route landing exactly on
+    // a 30s interval tick. `start()` is a no-op while the engine is up, so the revived
+    // target fell back to waiting a full interval, which is the very bug this PR fixes.
+    const { scheduler, watcher, store, target } = setup({ decision: { action: 'NOOP', reason: 'full' } });
+    // Keep the FIRST tick in flight by holding the watcher open.
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const original = watcher.checkCourse.bind(watcher);
+    let held = false;
+    watcher.checkCourse = async () => {
+      if (!held) {
+        held = true;
+        await gate;
+      }
+      return original();
+    };
+
+    store.updateTarget(target.id, { nextPollAt: NOW });
+    scheduler.start(); // tick 1 begins and blocks inside checkCourse
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(watcher.calls).toBe(0); // still blocked
+
+    // A second target arrives and asks for an immediate poll while tick 1 is stuck.
+    const late = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '7777',
+      mode: 'auto',
+    });
+    store.updateTarget(late.id, { nextPollAt: NOW });
+    scheduler.tickSoon();
+
+    releaseFirst();
+    for (let i = 0; i < 24; i++) await Promise.resolve();
+
+    // Both targets were polled: the dropped request would have left `late` unpolled.
+    expect(watcher.calls).toBe(2);
+    expect(store.getTarget(late.id)!.lastPolledAt).toBe(NOW);
+    scheduler.stop();
+  });
+
+  it('stop() cancels a tick that was queued while one was in flight', async () => {
+    // Regression: the queued re-run used to fire unconditionally in the in-flight tick's
+    // `finally`, so a tick requested a moment before `stop()` still ran afterwards and
+    // polled every target left in `watching` — a "Stop" that does not stop. `stop-all`
+    // hides it (it pauses every target first), but a bare `POST /api/scheduler/stop`
+    // leaves them watching, so the effect was reachable.
+    const { scheduler, watcher, store, target } = setup({ decision: { action: 'NOOP', reason: 'full' } });
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const original = watcher.checkCourse.bind(watcher);
+    let held = false;
+    watcher.checkCourse = async () => {
+      if (!held) {
+        held = true;
+        await gate;
+      }
+      return original();
+    };
+
+    store.updateTarget(target.id, { nextPollAt: NOW });
+    scheduler.start(); // tick 1 blocks inside checkCourse
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(watcher.calls).toBe(0);
+
+    // A second target asks for an immediate poll, then the engine is stopped.
+    const late = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '7777',
+      mode: 'auto',
+    });
+    store.updateTarget(late.id, { nextPollAt: NOW });
+    scheduler.tickSoon();
+    scheduler.stop();
+
+    releaseFirst();
+    for (let i = 0; i < 24; i++) await Promise.resolve();
+
+    // Only the in-flight tick's own target was polled; the queued pass was dropped.
+    expect(watcher.calls).toBe(1);
+    expect(store.getTarget(late.id)!.lastPolledAt).toBeUndefined();
+  });
+});
+
+describe('Scheduler.clearFailures', () => {
+  // Reviving a course out of 'error' must start the three-strikes breaker from
+  // zero, otherwise the revived course would trip again on its very next failure
+  // and the "recoverable" state would be a lie.
+  it('resets the streak so a revived target gets a full FAILURE_LIMIT of tries', async () => {
+    const store = new Store(dir);
+    const watcher = new FakeWatcher(null); // CRN never found → every cycle fails
+    const scheduler = new Scheduler({
+      store, budget: new Budget(store), watcher,
+      actor: new FakeActor({ kind: 'registered', crn: '1814' }),
+      session: new FakeSession(true), now: () => NOW, random: () => 0.5,
+    });
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '9999', mode: 'auto' });
+
+    // Two failures carry over, but never tripped the breaker.
+    await scheduler.runOnce(t.id);
+    await scheduler.runOnce(t.id);
+
+    // The user revives it (start-all / resume): the streak is cleared…
+    scheduler.clearFailures(t.id);
+    store.updateTarget(t.id, { status: 'watching' });
+
+    await scheduler.runOnce(t.id); // failure 1 of the new run
+    await scheduler.runOnce(t.id); // failure 2 of the new run
+    expect(store.getTarget(t.id)!.status).toBe('watching'); // NOT tripped by stale failures
+    await scheduler.runOnce(t.id); // failure 3 → the breaker trips again
+    expect(store.getTarget(t.id)!.status).toBe('error');
   });
 });

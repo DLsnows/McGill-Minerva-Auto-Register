@@ -13,9 +13,9 @@ const en = {
     notLoaded: '— / —',
   },
   mode: { notify: 'Notify', auto: 'Auto', toggleAria: 'toggle mode' },
-  scheduler: { running: 'Watching · running', stopped: 'Watching · stopped', start: '▶ Start all', stop: '■ Stop all', loginFirst: 'Log in first' },
+  scheduler: { running: 'Watching · running', stopped: 'Watching · stopped', loading: 'Checking…', start: '▶ Start all', stop: '■ Stop all', loginFirst: 'Log in first' },
   status: { watching: 'WATCHING', waitlisted: 'WAITLISTED', registered: 'REGISTERED', paused: 'PAUSED', stopped: 'STOPPED', error: 'ERROR' },
-  card: { registerNow: '⚡ Register now', running: '… running', lastPoll: 'last poll {{rel}}', notPolled: 'not polled yet', pause: '⏸ Pause', resume: '▶ Resume' },
+  card: { registerNow: '⚡ Register now', running: '… running', lastPoll: 'last poll {{rel}}', notPolled: 'not polled yet', pause: '⏸ Pause', resume: '▶ Resume', retryWatching: '⟳ Resume watching', retryHint: 'Start watching this course again after repeated failures' },
   console: { liveStream: 'live stream', reconnecting: 'reconnecting…', clear: 'Clear', clearFailed: 'Failed to clear the console.' },
   form: {
     term: 'Term', subject: 'Subject', courseNumber: 'Course #', targetCrn: 'Target CRN',
@@ -42,6 +42,8 @@ const en = {
     empty: 'No courses watched yet. Add one from the Courses tab.',
     sessionBanner: 'Session is not active — open the Session tab to log in so polling can run.',
     schedToggleFailed: 'Scheduler toggle failed.',
+    engineOffHint: 'The polling engine is stopped — these courses are listed as watching, but nothing is being polled.',
+    startedAll: 'Started · {{resumed}} resumed, {{recovered}} recovered from error, {{skipped}} already finished.',
   },
   courses: {
     addACourse: 'Add a course', addCourse: 'Add course', managed: 'Managed courses',
@@ -84,9 +86,9 @@ const zh: typeof en = {
     notLoaded: '— / —',
   },
   mode: { notify: '提醒', auto: '自动', toggleAria: '切换模式' },
-  scheduler: { running: '监控 · 运行中', stopped: '监控 · 已停止', start: '▶ 全部启动', stop: '■ 全部停止', loginFirst: '请先登录' },
+  scheduler: { running: '监控 · 运行中', stopped: '监控 · 已停止', loading: '检查中…', start: '▶ 全部启动', stop: '■ 全部停止', loginFirst: '请先登录' },
   status: { watching: '监控中', waitlisted: '候补中', registered: '已注册', paused: '已暂停', stopped: '已停止', error: '错误' },
-  card: { registerNow: '⚡ 立即执行', running: '… 执行中', lastPoll: '上次轮询 {{rel}}', notPolled: '尚未轮询', pause: '⏸ 暂停', resume: '▶ 恢复' },
+  card: { registerNow: '⚡ 立即执行', running: '… 执行中', lastPoll: '上次轮询 {{rel}}', notPolled: '尚未轮询', pause: '⏸ 暂停', resume: '▶ 恢复', retryWatching: '⟳ 重新监控', retryHint: '连续失败后重新开始监控这门课' },
   console: { liveStream: '实时', reconnecting: '重连中…', clear: '清空', clearFailed: '清空控制台失败。' },
   form: {
     term: '学期', subject: '科目', courseNumber: '课程号', targetCrn: '目标 CRN',
@@ -113,6 +115,8 @@ const zh: typeof en = {
     empty: '还没有监控任何课程。在「课程」页添加。',
     sessionBanner: '会话未激活 —— 打开「会话」页登录,轮询才能运行。',
     schedToggleFailed: '调度器开关失败。',
+    engineOffHint: '轮询引擎已停止 —— 这些课程虽然显示为「监控中」,但当前并没有在轮询。',
+    startedAll: '已启动 · 恢复 {{resumed}} 门、从错误状态找回 {{recovered}} 门,{{skipped}} 门已完成。',
   },
   courses: {
     addACourse: '添加课程', addCourse: '添加', managed: '已管理课程',
@@ -155,9 +159,9 @@ const fr: typeof en = {
     notLoaded: '— / —',
   },
   mode: { notify: 'Notifier', auto: 'Auto', toggleAria: 'changer de mode' },
-  scheduler: { running: 'Surveillance · active', stopped: 'Surveillance · arrêtée', start: '▶ Tout démarrer', stop: '■ Tout arrêter', loginFirst: "Connectez-vous d'abord" },
+  scheduler: { running: 'Surveillance · active', stopped: 'Surveillance · arrêtée', loading: 'Vérification…', start: '▶ Tout démarrer', stop: '■ Tout arrêter', loginFirst: "Connectez-vous d'abord" },
   status: { watching: 'EN SURVEILLANCE', waitlisted: "LISTE D'ATTENTE", registered: 'INSCRIT', paused: 'EN PAUSE', stopped: 'ARRÊTÉ', error: 'ERREUR' },
-  card: { registerNow: '⚡ Inscrire maintenant', running: '… en cours', lastPoll: 'dernier sondage {{rel}}', notPolled: 'pas encore sondé', pause: '⏸ Pause', resume: '▶ Reprendre' },
+  card: { registerNow: '⚡ Inscrire maintenant', running: '… en cours', lastPoll: 'dernier sondage {{rel}}', notPolled: 'pas encore sondé', pause: '⏸ Pause', resume: '▶ Reprendre', retryWatching: '⟳ Relancer la surveillance', retryHint: 'Relancer la surveillance de ce cours après des échecs répétés' },
   console: { liveStream: 'flux en direct', reconnecting: 'reconnexion…', clear: 'Effacer', clearFailed: "Échec de l'effacement de la console." },
   form: {
     term: 'Trimestre', subject: 'Matière', courseNumber: 'N° de cours', targetCrn: 'CRN cible',
@@ -184,6 +188,8 @@ const fr: typeof en = {
     empty: "Aucun cours surveillé. Ajoutez-en un dans l'onglet Cours.",
     sessionBanner: 'Session inactive — ouvrez l’onglet Session pour vous connecter et lancer le sondage.',
     schedToggleFailed: 'Échec du basculement du planificateur.',
+    engineOffHint: "Le moteur de sondage est arrêté — ces cours sont listés comme surveillés, mais rien n'est sondé.",
+    startedAll: 'Démarré · {{resumed}} repris, {{recovered}} récupérés après erreur, {{skipped}} déjà terminés.',
   },
   courses: {
     addACourse: 'Ajouter un cours', addCourse: 'Ajouter', managed: 'Cours gérés',

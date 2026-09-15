@@ -11,24 +11,38 @@ interface Props {
   onToggleMode: (id: string, next: WatchMode) => void;
   onRun: (id: string) => void;
   onTogglePolling: (id: string, next: WatchStatus) => void;
+  /** Revive a target the failure breaker parked in 'error'. */
+  onResume?: (id: string) => void;
   running?: boolean;
   /** When false (not logged in), resuming and one-click run are blocked. */
   loggedIn?: boolean;
 }
 
 // Only an actively-watching course can be paused, and only a paused course can
-// be resumed. 'error' and the completed states (registered / waitlisted) are
-// terminal — they cannot be resumed from here.
+// be resumed. 'error' gets its own recovery action ("Resume watching"): the
+// three-strikes breaker used to park a course there permanently, with no way
+// back except deleting and re-creating it. The completed states
+// (registered / waitlisted) stay terminal.
 const PAUSABLE: WatchStatus[] = ['watching'];
 const RESUMABLE: WatchStatus[] = ['paused'];
+const RECOVERABLE: WatchStatus[] = ['error'];
 
-export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, running, loggedIn = true }: Props) {
+export function CourseCard({
+  target,
+  onToggleMode,
+  onRun,
+  onTogglePolling,
+  onResume,
+  running,
+  loggedIn = true,
+}: Props) {
   const { t } = useTranslation();
   const now = useNow(30_000); // ticks so "last poll Nm ago" stays current
   const title = target.label ?? `${target.subject} ${target.courseNumber}`;
   const canRun = target.status === 'watching';
   const canPause = PAUSABLE.includes(target.status);
   const canResume = RESUMABLE.includes(target.status);
+  const canRecover = RECOVERABLE.includes(target.status);
   return (
     <div className="card glass">
       <div className="row1">
@@ -55,6 +69,17 @@ export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, runni
               onClick={() => onTogglePolling(target.id, canPause ? 'paused' : 'watching')}
             >
               {canPause ? t('card.pause') : t('card.resume')}
+            </button>
+          )}
+          {canRecover && (
+            <button
+              type="button"
+              className="btn"
+              disabled={!loggedIn}
+              title={!loggedIn ? t('scheduler.loginFirst') : t('card.retryHint')}
+              onClick={() => onResume?.(target.id)}
+            >
+              {t('card.retryWatching')}
             </button>
           )}
           <button

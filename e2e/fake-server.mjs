@@ -108,6 +108,7 @@ const requestLedger = new Map();
 /** Paths that carry an id — counted under their route template so counts stay meaningful. */
 const DYNAMIC_ROUTE_TEMPLATES = [
   [/^\/api\/targets\/[^/]+\/run$/, '/api/targets/:id/run'],
+  [/^\/api\/targets\/[^/]+\/resume$/, '/api/targets/:id/resume'],
   [/^\/api\/targets\/[^/]+$/, '/api/targets/:id'],
 ];
 
@@ -280,6 +281,28 @@ app.delete('/api/targets/:id', (req) => {
   return { ok: true };
 });
 
+// Both per-card actions (`▶ Resume` and `⟳ Resume watching`) go through this route
+// (`packages/web/src/lib/api.ts` -> `resumeTarget`), so without it the fake backend
+// 404s on them, `req()` throws and the card shows a scheduler error. This is the same
+// "second consumer of the contract" drift that the `start-all` response shape had --
+// the real route deliberately refuses to revive a terminal target, so mirror that too.
+app.post('/api/targets/:id/resume', (req, reply) => {
+  const { id } = req.params;
+  const index = state.targets.findIndex((t) => t.id === id);
+  if (index < 0) return reply.code(404).send({ error: 'not found' });
+  const target = state.targets[index];
+  if (target.status !== 'paused' && target.status !== 'error') {
+    return reply.code(409).send({
+      error: `cannot resume a target in status "${target.status}"`,
+      status: target.status,
+    });
+  }
+  state.targets = state.targets.map((t, i) => (i === index ? { ...t, status: 'watching' } : t));
+  state.schedulerRunning = true;
+  logEvent('ok', `Resumed ${target.label ?? target.targetCrn}.`);
+  return { running: true, status: 'watching' };
+});
+
 app.post('/api/targets/:id/run', (req, reply) => {
   const target = state.targets.find((t) => t.id === req.params.id);
   if (!target) return reply.code(404).send({ error: 'not found' });
@@ -346,13 +369,25 @@ app.post('/api/scheduler/stop', () => {
 });
 
 app.post('/api/scheduler/start-all', () => {
-  const paused = state.targets.filter((t) => t.status === 'paused');
-  state.targets = state.targets.map((t) =>
-    t.status === 'paused' ? { ...t, status: 'watching' } : t,
+  // Mirrors the real route's response shape exactly. The web client reads all three
+  // counts for its "Start all" notice (`Dashboard.tsx`), so returning only `resumed` made
+  // that notice render `undefined` against the fake backend -- the same class of
+  // drift the budget snapshot contract already had to be fixed for.
+  const all = state.targets;
+  const resumable = all.filter((t) => t.status === 'paused' || t.status === 'error');
+  const recovered = resumable.filter((t) => t.status === 'error').length;
+  const isDone = (s) => s === 'registered' || s === 'waitlisted' || s === 'stopped';
+  state.targets = all.map((t) =>
+    t.status === 'paused' || t.status === 'error' ? { ...t, status: 'watching' } : t,
   );
   state.schedulerRunning = true;
-  logEvent('ok', `Start all: resumed ${paused.length} course(s).`);
-  return { running: true, resumed: paused.length };
+  logEvent('ok', `Start all: resumed ${resumable.length - recovered} course(s).`);
+  return {
+    running: true,
+    recovered,
+    resumed: resumable.length - recovered,
+    skipped: all.filter((t) => isDone(t.status)).length,
+  };
 });
 
 app.post('/api/scheduler/stop-all', () => {

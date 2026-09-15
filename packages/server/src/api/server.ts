@@ -29,16 +29,53 @@ export interface ApiScheduler {
   /** Re-apply the poll cadence to already-scheduled targets (after a settings
    * change). Optional so lightweight test doubles can omit it. */
   rescheduleWatching?(): void;
+  /** Run one tick immediately if the engine is running (optional: test doubles). */
+  tickSoon?(): void;
+  /** Drop one target's consecutive-failure streak when it enters `watching`. */
+  clearFailures?(id: string): void;
 }
+
+/** First-poll timestamp for a target that just entered `watching`: *due now*.
+ *
+ * Deliberately not "now + a little jitter". `Scheduler.tick()` only runs targets
+ * with `(nextPollAt ?? 0) <= now`, and `start()`/`tickSoon()` tick at essentially
+ * the same `now` — so a timestamp even a few milliseconds in the future makes the
+ * freshly armed target miss that immediate tick and wait a whole 30s interval,
+ * which is exactly the "I clicked Start and nothing happened" bug this change
+ * exists to fix. (The first cut of this PR did jitter by 0-3s and had that bug.)
+ *
+ * Jitter would also buy nothing: `tick()` dispatches sequentially
+ * (`for (const t of due) await this.runOnce(t.id)`), so several targets armed at
+ * the same instant still hit Minerva one after another, never concurrently. */
+function armForImmediatePoll(now: number): number {
+  return now;
+}
+
 export interface ApiDeps {
   store: Store;
   budget: Budget;
   session: ApiSession;
   scheduler: ApiScheduler;
+  /** Injectable clock. Defaults to `Date.now`, and mirrors the scheduler's own `now`
+   * hook so a test can drive both from one source. Asserting "the route armed it due
+   * now" against `Date.now()` instead is fragile: another test in the same file may
+   * have fake timers installed, in which case `Date.now()` and the scheduler's clock
+   * disagree by however far the fake clock was advanced. */
+  now?: () => number;
 }
 
-const targetSchema = z.object({
-  term: z.string().min(1),
+/**
+ * Statuses a target cannot be revived out of.
+ *
+ * `registered` / `waitlisted` are finished; `stopped` is a deliberate user decision.
+ * Every route that can put a target back into `watching` must agree on this set —
+ * PATCH and `/resume` consult it, and `start-all` uses the same three statuses in its
+ * `isDone` filter — because disagreeing is how a route ends up restarting polling on a
+ * course that already has a seat.
+ */
+const TERMINAL_STATUSES: readonly string[] = ['registered', 'waitlisted', 'stopped'];
+
+const targetSchema = z.object({  term: z.string().min(1),
   subject: z.string().min(1),
   courseNumber: z.string().min(1),
   targetCrn: z.string().min(1),
@@ -80,6 +117,9 @@ const targetPatchSchema = targetSchema
  * WS client set (also used by the event broadcaster). */
 export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()): FastifyInstance {
   const app = Fastify({ logger: false });
+  // One clock for every "arm it now" decision. Injectable so tests can drive it from
+  // the same source as the scheduler (see ApiDeps.now).
+  const now = deps.now ?? Date.now;
   let sessionStatus: 'unknown' | 'authenticated' | 'logged-out' | 'logging-in' = 'unknown';
 
   // `.after()` (not `.catch()`) — surfacing a plugin load failure without
@@ -95,13 +135,60 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   app.post('/api/targets', (req, reply) => {
     const parsed = targetSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    return deps.store.addTarget(parsed.data);
+    // New targets default to 'watching' (store.addTarget). Give them a first
+    // poll time right away: without it `nextPollAt` stays undefined and the
+    // target is only picked up by the next tick, and there is no `watching`
+    // transition afterwards that would set it.
+    const created = deps.store.addTarget({ ...parsed.data, nextPollAt: armForImmediatePoll(now()) });
+    // Adding a course while the engine is already running should poll it now, not on the
+    // next 30s interval. Every other route that puts a target into `watching` (PATCH,
+    // /resume, start-all) kicks a tick for exactly this reason; this one did not, so a
+    // course added mid-run silently waited a full interval for its first poll.
+    deps.scheduler.tickSoon?.();
+    return created;
   });
   app.patch('/api/targets/:id', (req, reply) => {
     const parsed = targetPatchSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    const updated = deps.store.updateTarget((req.params as { id: string }).id, parsed.data);
+    const { id } = req.params as { id: string };
+    // Guard the one transition this branch makes eager. A PATCH that flips a course back
+    // to 'watching' now both arms an immediate poll AND clears the failure streak, so a
+    // stray `{ status: 'watching' }` aimed at a course that already has a seat would
+    // restart polling on it (burning the query budget every cycle) and could reach
+    // `actor.act()` for a duplicate registration.
+    //
+    // The terminal set matches `/resume` and `start-all`'s `isDone` exactly. `stopped` is
+    // included: whether it is "finished" or "deliberately turned off", both routes treat
+    // it as terminal, and having PATCH disagree with them was the inconsistency.
+    if (parsed.data.status === 'watching') {
+      const existing = deps.store.getTarget(id);
+      if (!existing) return reply.code(404).send({ error: 'not found' });
+      if (TERMINAL_STATUSES.includes(existing.status)) {
+        return reply
+          .code(409)
+          .send({ error: `cannot resume a target in status "${existing.status}"`, status: existing.status });
+      }
+    }
+    const updated = deps.store.updateTarget(id, parsed.data);
     if (!updated) return reply.code(404).send({ error: 'not found' });
+    // A target (re-)entering 'watching' (resume from pause, revive from error,
+    // un-terminal from stopped) must poll immediately rather than wait a full
+    // tick, and must not carry an old failure streak into the new run.
+    //
+    // `start()` is called before `tickSoon()` on purpose: `tickSoon()` is a no-op while
+    // the engine is stopped (`scheduler.ts` guards on `this.timer`), so arming the poll
+    // and asking for a tick without starting the engine would leave the target
+    // `watching` but un-polled until something else started it — the route's own promise
+    // ("must poll immediately") would be false for direct API callers. The web UI no
+    // longer reaches this path (it uses `/resume`), so this is about the contract, not
+    // about the UI.
+    if (parsed.data.status === 'watching') {
+      const fresh = deps.store.updateTarget(id, { nextPollAt: armForImmediatePoll(now()) });
+      deps.scheduler.clearFailures?.(id);
+      deps.scheduler.start();
+      deps.scheduler.tickSoon?.();
+      return fresh;
+    }
     return updated;
   });
   app.delete('/api/targets/:id', (req) => {
@@ -202,13 +289,52 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     deps.scheduler.stop();
     return { running: false };
   });
-  // "Start all": resume every PAUSED target (error / registered / waitlisted /
-  // stopped are intentionally left untouched), then start the engine.
+  // "Start all": revive every recoverable target — 'paused' (deliberately
+  // stopped) and 'error' (parked by the three-strikes breaker) — then start the
+  // engine. 'error' used to be a dead end the UI could not leave: it is neither
+  // pausable nor resumable from the course card, and start-all collected only
+  // 'paused', so the only way out was deleting and re-creating the course.
+  // The completed states (registered / waitlisted / stopped) stay untouched.
+  //
+  // Every revived target is also armed as *due now*, so the immediate tick that
+  // `scheduler.start()` fires polls it right away: that is the fix for "the first
+  // Start does not actually start polling" — previously the flip to 'watching'
+  // carried no `nextPollAt`, so the first real poll waited a whole 30s tick and
+  // looked like a no-op.
   app.post('/api/scheduler/start-all', () => {
-    const resumed = deps.store.listTargets().filter((t) => t.status === 'paused');
-    for (const t of resumed) deps.store.updateTarget(t.id, { status: 'watching' });
+    const all = deps.store.listTargets();
+    const resumable = all.filter((t) => t.status === 'paused' || t.status === 'error');
+    // One timestamp for the whole batch, read from the injectable clock so it matches
+    // the instant the immediate tick below will compare against.
+    const armedAt = now();
+    let recovered = 0;
+    for (const t of resumable) {
+      if (t.status === 'error') recovered += 1;
+      deps.store.updateTarget(t.id, { status: 'watching', nextPollAt: armForImmediatePoll(armedAt) });
+      // A revived target starts with a clean failure streak, otherwise its very
+      // next failure would immediately re-trip the breaker. Scoped to the targets
+      // actually being revived — a watching course that is simply continuing must
+      // keep its streak (clearing it would silently give a flaky course three more
+      // tries for free).
+      deps.scheduler.clearFailures?.(t.id);
+    }
     deps.scheduler.start();
-    return { running: true, resumed: resumed.length };
+    // `start()` is a no-op when the engine is already running (a second, stale tab, or
+    // simply another course still being watched), so without this the targets revived
+    // above would wait up to a full 30s interval for the first poll — reopening the very
+    // "I clicked Start and nothing happened" gap this route exists to close. `/resume`
+    // calls this for the same reason.
+    deps.scheduler.tickSoon?.();
+    const isDone = (s: string) => s === 'registered' || s === 'waitlisted' || s === 'stopped';
+    return {
+      running: true,
+      /** Targets revived out of the 'error' terminal state. */
+      recovered,
+      /** Paused targets put back under watch. */
+      resumed: resumable.length - recovered,
+      /** Terminal non-error targets left untouched. */
+      skipped: all.filter((t) => isDone(t.status)).length,
+    };
   });
   // "Stop all": pause every actively-watching target, then stop the engine.
   app.post('/api/scheduler/stop-all', () => {
@@ -216,6 +342,34 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     for (const t of paused) deps.store.updateTarget(t.id, { status: 'paused' });
     deps.scheduler.stop();
     return { running: false, paused: paused.length };
+  });
+  // "Resume watching" for one target: the per-course escape hatch out of 'error'
+  // (a hard target that tripped the breaker). PATCH /api/targets/:id with status
+  // 'watching' does the same, but this route gives the course card one
+  // unambiguous action and makes sure a tick happens now: `start()` is a no-op
+  // when the engine is ALREADY running (other courses still being watched), so
+  // without `tickSoon()` the resumed course would wait out the rest of the 30s
+  // interval — the very gap that made "Resume" look broken.
+  app.post('/api/targets/:id/resume', (req, reply) => {
+    const { id } = req.params as { id: string };
+    const target = deps.store.getTarget(id);
+    if (!target) return reply.code(404).send({ error: 'not found' });
+    // Only 'paused' and 'error' are revivable. 'registered' / 'waitlisted' are terminal
+    // by design — `start-all` deliberately never touches them — and 'stopped' is a
+    // deliberate user decision. Without this guard the route would put a course that
+    // already has a seat back into the polling loop: it would burn the daily query
+    // budget every cycle and, if `decide()` saw an opening for the target CRN, reach
+    // `actor.act()` and submit a *duplicate* registration attempt.
+    if (target.status !== 'paused' && target.status !== 'error') {
+      return reply
+        .code(409)
+        .send({ error: `cannot resume a target in status "${target.status}"`, status: target.status });
+    }
+    deps.store.updateTarget(id, { status: 'watching', nextPollAt: armForImmediatePoll(now()) });
+    deps.scheduler.clearFailures?.(id);
+    deps.scheduler.start();
+    deps.scheduler.tickSoon?.();
+    return { running: true, status: 'watching' as const };
   });
 
   // --- events + budget ---
