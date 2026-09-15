@@ -7,6 +7,7 @@ import type { WebSocket } from 'ws';
 import { z } from 'zod';
 import type { LogEvent, Settings } from '@autoregister/shared';
 import type { Budget } from '../budget/budget';
+import type { KeepAwakeReason, KeepAwakeStatus, PowerSource } from '../system/keep-awake';
 import type { Store } from '../store/store';
 
 /** Safety net for a login that hangs outside the session flow's own control
@@ -30,11 +31,19 @@ export interface ApiScheduler {
    * change). Optional so lightweight test doubles can omit it. */
   rescheduleWatching?(): void;
 }
+/** Windows keep-awake controller. Optional so non-Windows callers and test
+ * doubles can omit it entirely. */
+export interface ApiKeepAwake {
+  status(): KeepAwakeStatus;
+  apply(settings: { keepAwake?: boolean }): KeepAwakeStatus;
+  stop(): KeepAwakeStatus;
+}
 export interface ApiDeps {
   store: Store;
   budget: Budget;
   session: ApiSession;
   scheduler: ApiScheduler;
+  keepAwake?: ApiKeepAwake;
 }
 
 const targetSchema = z.object({
@@ -64,6 +73,7 @@ const settingsSchema = z
     notify: z.object({ desktop: z.boolean(), sound: z.boolean(), email: z.boolean() }),
     email: emailSchema,
     dryRun: z.boolean(),
+    keepAwake: z.boolean(),
   })
   .partial();
 
@@ -75,6 +85,35 @@ const targetPatchSchema = targetSchema
       .optional(),
   })
   .strict();
+
+/** Wire shape of `GET /api/power` (and of the `keepAwake` block the settings UI
+ * reads). `enabled` is the persisted setting, `active` what is happening now. */
+export interface PowerStatusDto {
+  supported: boolean;
+  enabled: boolean;
+  active: boolean;
+  powerSource: PowerSource;
+  reason: KeepAwakeReason;
+}
+
+/** What we report when no keep-awake controller was wired in at all. */
+const UNSUPPORTED_POWER: KeepAwakeStatus = {
+  supported: false,
+  settingEnabled: false,
+  active: false,
+  powerSource: 'unknown',
+  reason: 'unsupported',
+};
+
+function toPowerDto(status: KeepAwakeStatus): PowerStatusDto {
+  return {
+    supported: status.supported,
+    enabled: status.settingEnabled,
+    active: status.active,
+    powerSource: status.powerSource,
+    reason: status.reason,
+  };
+}
 
 /** Build the local HTTP/WebSocket API over the runtime. `clients` is the shared
  * WS client set (also used by the event broadcaster). */
@@ -151,8 +190,14 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     // Re-apply a changed cadence to already-scheduled targets now, so it takes
     // effect immediately rather than only from each target's next cycle.
     if (cadenceChanged) deps.scheduler.rescheduleWatching?.();
+    // Keep-awake: flip the keeper immediately on save. Applied on every save
+    // (not just on change) so the caller's response reports the real state.
+    if (deps.keepAwake) deps.keepAwake.apply(updated);
     return updated;
   });
+
+  // --- power / keep-awake (Windows only; `supported:false` elsewhere) ---
+  app.get('/api/power', () => toPowerDto(deps.keepAwake?.status() ?? UNSUPPORTED_POWER));
 
   // --- session ---
   app.get('/api/session', async () => {

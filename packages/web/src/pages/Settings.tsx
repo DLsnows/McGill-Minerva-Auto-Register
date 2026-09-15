@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Settings } from '@autoregister/shared';
-import { api } from '../lib/api';
+import { api, type PowerStatus } from '../lib/api';
 import { useData } from '../lib/DataContext';
 
 // NOTE: email/SMTP notifications are temporarily sunset — the UI is hidden and
@@ -9,6 +9,18 @@ import { useData } from '../lib/DataContext';
 // + scheduler/runtime.ts). The backend code, the `EmailConfig` type and
 // docs/EMAIL_SETUP.md are intentionally kept so the feature can be restored with
 // a small change. The `settings.email*` i18n keys are kept but no longer rendered.
+
+/** Maps the server's keep-awake `reason` to a translation key. */
+const KEEP_AWAKE_REASON_KEY: Record<PowerStatus['reason'], string> = {
+  active: 'settings.keepAwakeStatusActive',
+  battery: 'settings.keepAwakeStatusBattery',
+  disabled: 'settings.keepAwakeStatusDisabled',
+  unavailable: 'settings.keepAwakeStatusUnavailable',
+  unsupported: 'settings.keepAwakeStatusUnsupported',
+  pending: 'settings.keepAwakeStatusPending',
+};
+
+const noteStyle = { color: 'var(--tx-2)', fontSize: 12, lineHeight: 1.6 } as const;
 
 const inputStyle = {
   padding: 8,
@@ -39,6 +51,25 @@ export default function SettingsPage() {
   const [form, setForm] = useState<Settings | null>(null);
   const [err, setErr] = useState<string>();
   const [saved, setSaved] = useState(false);
+  // Windows-only keep-awake status. `null` = not loaded / unsupported (the whole
+  // block stays unrendered, so non-Windows users never see a dead switch).
+  const [power, setPower] = useState<PowerStatus | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getPower()
+      .then((p) => {
+        if (!cancelled) setPower(p);
+      })
+      .catch(() => {
+        // Network/API failure is not "unsupported" — leave the block hidden.
+        if (!cancelled) setPower(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (settings.data && !form) {
@@ -68,6 +99,15 @@ export default function SettingsPage() {
         setSaved(false);
         setErr(`${t('settings.savedButRefreshFailed')} ${failed.message}`);
         return;
+      }
+      // The server applies keep-awake on save — pull the resulting state so the
+      // status line reflects reality (keeper running / waiting for AC / off).
+      if (power?.supported) {
+        try {
+          setPower(await api.getPower());
+        } catch {
+          // Keep the previous status rather than blanking the block.
+        }
       }
       setSaved(true);
     } catch (e) {
@@ -115,6 +155,37 @@ export default function SettingsPage() {
           </label>
         </div>
       </div>
+
+      {power?.supported && (
+        <>
+          <div className="col-h" style={{ marginTop: 22 }}>
+            <h2 className="serif">{t('settings.keepAwakeSection')}</h2>
+          </div>
+          <div className="card glass">
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="checkbox"
+                aria-label={t('settings.keepAwakeAria')}
+                checked={form.keepAwake ?? false}
+                onChange={(e) => setForm({ ...form, keepAwake: e.target.checked })}
+              />
+              {t('settings.keepAwake')}
+            </label>
+
+            <div style={{ ...noteStyle, marginTop: 8 }}>
+              <div>💤 {t('settings.keepAwakeNoSleep')}</div>
+              <div>🖥️ {t('settings.keepAwakeDisplayNote')}</div>
+              <div>🔌 {t('settings.keepAwakeLaptopNote')}</div>
+              <div>🖲️ {t('settings.keepAwakeDesktopNote')}</div>
+              <div>↩️ {t('settings.keepAwakeExitNote')}</div>
+            </div>
+
+            <div data-testid="keep-awake-status" style={{ ...noteStyle, marginTop: 10 }}>
+              {t('settings.keepAwakeStatus')}: {t(KEEP_AWAKE_REASON_KEY[power.reason])}
+            </div>
+          </div>
+        </>
+      )}
 
       {err && <div className="errbar">{err}</div>}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14 }}>

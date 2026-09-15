@@ -9,6 +9,7 @@
     "session:login": "tsx src/session/login-script.ts",
     "query": "tsx src/minerva/query-script.ts",
     "register": "tsx src/minerva/register-script.ts",
+    "keep-awake:smoke": "tsx src/system/keep-awake-smoke.ts",
     "serve": "tsx src/api/main.ts"
   },
   "dependencies": {

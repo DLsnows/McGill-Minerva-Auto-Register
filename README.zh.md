@@ -150,6 +150,23 @@ npm run serve
 地方,改成打一条 `DRY-RUN: would REGISTER <CRN>` 的日志,并让那门课继续保持盯着。
 盯着控制台确认它的行为符合预期,然后把 dry-run 关掉,就能让它来真的了。
 
+## 不休眠开关(仅 Windows)
+
+设置页里有一个 **「运行期间不让这台电脑自动休眠」** 开关,默认关闭。打开之后,
+只要本程序在跑,电脑就不会自动进入睡眠 —— 因为抢课可能发生在深夜或凌晨,机器睡着了
+就什么都做不了。
+
+它的边界(界面上也会写清楚):
+
+- **只防休眠,不防关屏。** 显示器仍会照常关闭省电;不休眠 ≠ 不关屏。
+- **笔记本只在接着电源时生效。** 用电池时会自动放行休眠,保护你的续航;插上电源后
+  会自动恢复(程序每 60 秒检查一次电源状态)。
+- **台式机**开关打开期间全程生效。
+- **关掉开关或退出本程序后,电源行为立即恢复。** 实现方式是由一个后台 PowerShell 子进程
+  持有 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`;子进程一退出
+  这个请求就失效。**本程序不会修改你的电源计划**(不使用 `powercfg /change`)。
+- 非 Windows 系统上这个开关整块不显示。
+
 ## 工作原理
 
 - **判断**:根据 `cap/act/rem` 和 `wlcap/wlact/wlrem` → REGISTER(有空位)、
@@ -178,7 +195,11 @@ npm run lint
 npm run typecheck
 npm run test          # Vitest(node 与 web/jsdom 两个 project)
 npm run build:web     # 生产环境 web 构建(由服务器托管)
+npm run keep-awake:smoke -w @autoregister/server   # 仅 Windows:真跑一次不休眠 keeper 并验证进程被清理
 ```
+
+> 单元测试**不会**真的启动 PowerShell（注入假的 spawn / 电源状态读取）；
+> 需要验证真机行为时跑上面那条 `keep-awake:smoke`。
 
 Node + TypeScript 的 monorepo(npm workspaces):`packages/{shared,server,web}` ——
 Playwright(浏览器自动化)、Fastify + WebSocket(API)、React + Vite + Tailwind

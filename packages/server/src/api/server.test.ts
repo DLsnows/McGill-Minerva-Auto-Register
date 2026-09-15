@@ -481,3 +481,143 @@ describe('API', () => {
     }
   });
 });
+
+describe('API — power / keep-awake', () => {
+  /** Records what the API asked the controller to do; never spawns anything. */
+  function fakeKeepAwake(supported = true) {
+    let enabled = false;
+    let active = false;
+    const status = () => ({
+      supported,
+      settingEnabled: enabled,
+      active,
+      powerSource: 'ac' as const,
+      reason: active
+        ? ('active' as const)
+        : enabled
+          ? ('unavailable' as const)
+          : ('disabled' as const),
+    });
+    return {
+      applied: [] as boolean[],
+      status: vi.fn(status),
+      apply: vi.fn((s: { keepAwake?: boolean }) => {
+        enabled = s.keepAwake === true;
+        active = supported && enabled;
+        return status();
+      }),
+      stop: vi.fn(() => {
+        enabled = false;
+        active = false;
+        return status();
+      }),
+    };
+  }
+
+  function buildWithPower(keepAwake: ReturnType<typeof fakeKeepAwake>) {
+    const store = new Store(dir);
+    return buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => undefined,
+        isRunning: () => false,
+      },
+      keepAwake,
+    });
+  }
+
+  let powered: FastifyInstance;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'autoreg-power-'));
+  });
+  afterEach(async () => {
+    await powered?.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('GET /api/power reports the controller status', async () => {
+    const keepAwake = fakeKeepAwake();
+    powered = buildWithPower(keepAwake);
+    const r = await powered.inject({ method: 'GET', url: '/api/power' });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({
+      supported: true,
+      enabled: false,
+      active: false,
+      powerSource: 'ac',
+      reason: 'disabled',
+    });
+  });
+
+  it('GET /api/power reports supported:false when the controller is absent', async () => {
+    const store = new Store(dir);
+    powered = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => undefined,
+        isRunning: () => false,
+      },
+    });
+    const r = await powered.inject({ method: 'GET', url: '/api/power' });
+    expect(r.json()).toEqual({
+      supported: false,
+      enabled: false,
+      active: false,
+      powerSource: 'unknown',
+      reason: 'unsupported',
+    });
+  });
+
+  it('PUT /api/settings persists keepAwake and applies it immediately', async () => {
+    const keepAwake = fakeKeepAwake();
+    powered = buildWithPower(keepAwake);
+
+    const on = await powered.inject({ method: 'PUT', url: '/api/settings', payload: { keepAwake: true } });
+    expect(on.statusCode).toBe(200);
+    expect(on.json().keepAwake).toBe(true);
+    expect(keepAwake.apply).toHaveBeenLastCalledWith(expect.objectContaining({ keepAwake: true }));
+
+    // The applied state is observable through /api/power without another save.
+    expect((await powered.inject({ method: 'GET', url: '/api/power' })).json()).toMatchObject({
+      enabled: true,
+      active: true,
+      reason: 'active',
+    });
+
+    const off = await powered.inject({ method: 'PUT', url: '/api/settings', payload: { keepAwake: false } });
+    expect(off.json().keepAwake).toBe(false);
+    expect((await powered.inject({ method: 'GET', url: '/api/power' })).json()).toMatchObject({
+      enabled: false,
+      active: false,
+      reason: 'disabled',
+    });
+  });
+
+  it('rejects a non-boolean keepAwake with 400', async () => {
+    powered = buildWithPower(fakeKeepAwake());
+    const r = await powered.inject({ method: 'PUT', url: '/api/settings', payload: { keepAwake: 'yes' } });
+    expect(r.statusCode).toBe(400);
+  });
+
+  it('defaults keepAwake to false so it is opt-in', async () => {
+    powered = buildWithPower(fakeKeepAwake());
+    const r = await powered.inject({ method: 'GET', url: '/api/settings' });
+    expect(r.json().keepAwake).toBe(false);
+  });
+});

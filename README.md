@@ -173,6 +173,27 @@ and decides — but where it would register/waitlist it instead logs
 `DRY-RUN: would REGISTER <CRN>` and leaves the course watching. Watch the console
 to confirm it behaves as expected, then turn dry-run off to let it act for real.
 
+## Keep-awake switch (Windows only)
+
+Settings has a **"Keep this PC awake while AutoRegister runs"** switch, off by
+default. Turn it on and the machine will not go to sleep while the app is
+running — registrations can open at 3 a.m., and a sleeping PC cannot act.
+
+Its boundaries (stated in the UI too):
+
+- **No sleep, but the screen still turns off.** The display keeps its normal
+  power-off behaviour; blocking sleep is not blocking the screen.
+- **On a laptop it only applies on AC power.** On battery the PC sleeps as
+  usual to protect your runtime, and the hold resumes automatically once the
+  charger is connected (the power source is re-checked every 60 s).
+- **On a desktop** it stays in effect the whole time the switch is on.
+- **Turning the switch off, or quitting the app, restores normal power
+  behaviour immediately.** The hold lives in a background PowerShell child
+  process calling `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`;
+  when that process exits the request is gone. The app **never modifies your
+  power plan** (no `powercfg /change`).
+- The whole block is hidden on non-Windows systems.
+
 ## How it works
 
 - **Decision**: from `cap/act/rem` and `wlcap/wlact/wlrem` → REGISTER (open seat),
@@ -204,7 +225,11 @@ npm run lint
 npm run typecheck
 npm run test          # Vitest (node + web/jsdom projects)
 npm run build:web     # production web build (served by the server)
+npm run keep-awake:smoke -w @autoregister/server   # Windows only: drive the real keeper and prove it is cleaned up
 ```
+
+> Unit tests never launch PowerShell (they inject a fake spawn / power provider).
+> Run `keep-awake:smoke` when you need to verify the real thing.
 
 Node + TypeScript monorepo (npm workspaces): `packages/{shared,server,web}` —
 Playwright (browser automation), Fastify + WebSocket (API), React + Vite + Tailwind

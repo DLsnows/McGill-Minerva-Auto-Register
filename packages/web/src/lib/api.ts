@@ -9,6 +9,25 @@ export interface SchedulerState {
   running: boolean;
 }
 
+/** Windows-only keep-awake state (see `GET /api/power`). */
+export type PowerSource = 'ac' | 'battery' | 'desktop' | 'unknown';
+export type KeepAwakeReason =
+  | 'active'
+  | 'battery'
+  | 'disabled'
+  | 'unsupported'
+  | 'unavailable'
+  | 'pending';
+export interface PowerStatus {
+  supported: boolean;
+  /** The persisted setting. */
+  enabled: boolean;
+  /** A keeper is actually holding sleep off right now. */
+  active: boolean;
+  powerSource: PowerSource;
+  reason: KeepAwakeReason;
+}
+
 type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'targetCrn' | 'mode'> &
   Partial<Pick<WatchTarget, 'faculty' | 'label'>>;
 
@@ -65,4 +84,6 @@ export const api = {
   getEvents: (limit = 200) => req<LogEvent[]>(`/api/events?limit=${limit}`),
   clearEvents: () => req<{ ok: true }>('/api/events', { method: 'DELETE' }),
   getBudget: () => req<BudgetSnapshot>('/api/budget'),
+
+  getPower: () => req<PowerStatus>('/api/power'),
 };
