@@ -501,7 +501,7 @@ describe('API — power / keep-awake', () => {
     return {
       applied: [] as boolean[],
       status: vi.fn(status),
-      apply: vi.fn((s: { keepAwake?: boolean }) => {
+      apply: vi.fn(async (s: { keepAwake?: boolean }) => {
         enabled = s.keepAwake === true;
         active = supported && enabled;
         return status();

@@ -45,7 +45,7 @@ function harness(): Harness {
 function makeManager(
   h: Harness,
   platform: NodeJS.Platform = 'win32',
-  source: () => PowerSource = () => 'ac',
+  source: () => PowerSource | Promise<PowerSource> = () => 'ac',
 ) {
   return createKeepAwake({
     platform,
@@ -61,7 +61,7 @@ afterEach(() => {
 
 describe('keep-awake', () => {
   describe('platform support', () => {
-    it('is supported on win32 only', () => {
+    it('is supported on win32 only', async () => {
       const h = harness();
       expect(makeManager(h, 'win32').isSupported()).toBe(true);
       for (const platform of ['linux', 'darwin', 'freebsd'] as NodeJS.Platform[]) {
@@ -69,10 +69,10 @@ describe('keep-awake', () => {
       }
     });
 
-    it('is a no-op off Windows: nothing is spawned and status says unsupported', () => {
+    it('is a no-op off Windows: nothing is spawned and status says unsupported', async () => {
       const h = harness();
       const manager = makeManager(h, 'linux', () => 'ac');
-      const status = manager.start();
+      const status = await manager.start();
       expect(h.spawn).not.toHaveBeenCalled();
       expect(manager.stop());
       expect(h.spawn).not.toHaveBeenCalled();
@@ -82,7 +82,7 @@ describe('keep-awake', () => {
   });
 
   describe('power-source gating', () => {
-    it('holds on AC and on a desktop, never on battery', () => {
+    it('holds on AC and on a desktop, never on battery', async () => {
       expect(shouldHold('ac', true)).toBe(true);
       expect(shouldHold('desktop', true)).toBe(true);
       expect(shouldHold('battery', true)).toBe(false);
@@ -92,53 +92,60 @@ describe('keep-awake', () => {
       expect(shouldHold('desktop', false)).toBe(false);
     });
 
-    it('does NOT start a keeper while on battery', () => {
+    it('does NOT start a keeper while on battery', async () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'battery');
-      const status = manager.start();
+      const status = await manager.start();
       expect(h.spawn).not.toHaveBeenCalled();
       expect(status).toMatchObject({ active: false, settingEnabled: true, reason: 'battery' });
     });
 
-    it('starts a keeper on AC and stops it again when switching to battery', () => {
+    it('starts a keeper on AC and stops it again when switching to battery', async () => {
       vi.useFakeTimers();
       const h = harness();
       let source: PowerSource = 'battery';
       const manager = makeManager(h, 'win32', () => source);
 
-      expect(manager.start()).toMatchObject({ active: false, reason: 'battery' });
+      expect(await manager.start()).toMatchObject({ active: false, reason: 'battery' });
 
       // Plug the charger in: the 60s watchdog picks the change up.
       source = 'ac';
-      vi.advanceTimersByTime(POWER_POLL_MS);
+      await vi.advanceTimersByTimeAsync(POWER_POLL_MS);
       expect(h.spawn).toHaveBeenCalledTimes(1);
       expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
       const child = h.children[0];
 
       // Unplug: the hold is released (stdin closed, then killed after the grace period).
       source = 'battery';
-      vi.advanceTimersByTime(POWER_POLL_MS);
+      await vi.advanceTimersByTimeAsync(POWER_POLL_MS);
       expect(child.stdin.end).toHaveBeenCalled();
       expect(manager.status()).toMatchObject({ active: false, reason: 'battery' });
 
       manager.stop();
     });
 
-    it('reports "unavailable" when the probe cannot establish the power source', () => {
+    it('reports "unavailable" when the probe cannot establish the power source', async () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'unknown');
-      expect(manager.start()).toMatchObject({ active: false, reason: 'unavailable' });
+      expect(await manager.start()).toMatchObject({ active: false, reason: 'unavailable' });
       expect(h.spawn).not.toHaveBeenCalled();
       manager.stop();
     });
 
-    it('probes the power source on a status() read so the UI can say "on battery" before the switch is on', () => {
+    it('probes the power source on a status() read so the UI can say "on battery" before the switch is on', async () => {
       const h = harness();
-      const probe = vi.fn((): PowerSource => 'battery');
+      const probe = vi.fn((): Promise<PowerSource> => Promise.resolve('battery'));
       const manager = makeManager(h, 'win32', probe);
-      const status = manager.status();
+
+      // status() must stay non-blocking: it kicks the probe off and reports the
+      // cached value. The fresh reading appears on the next poll. (Doing this
+      // synchronously used to stall the whole event loop behind PowerShell.)
+      const first = manager.status();
+      expect(first.powerSource).toBe('unknown');
+      await vi.waitFor(() => expect(manager.status().powerSource).toBe('battery'));
+
       expect(probe).toHaveBeenCalledTimes(1);
-      expect(status).toMatchObject({ settingEnabled: false, powerSource: 'battery' });
+      expect(manager.status()).toMatchObject({ settingEnabled: false, powerSource: 'battery' });
       // A second read uses the cached value (no extra PowerShell call)…
       manager.status();
       expect(probe).toHaveBeenCalledTimes(1);
@@ -147,7 +154,7 @@ describe('keep-awake', () => {
       expect(probe).toHaveBeenCalledTimes(1);
     });
 
-    it('swallows a throwing probe instead of crashing the server', () => {
+    it('swallows a throwing probe instead of crashing the server', async () => {
       const h = harness();
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       const manager = makeManager(h, 'win32', () => {
@@ -161,10 +168,10 @@ describe('keep-awake', () => {
   });
 
   describe('spawned keeper', () => {
-    it('spawns PowerShell with the documented ES_* flags and no ES_DISPLAY_REQUIRED', () => {
+    it('spawns PowerShell with the documented ES_* flags and no ES_DISPLAY_REQUIRED', async () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
-      manager.start();
+      await manager.start();
 
       expect(h.spawn).toHaveBeenCalledTimes(1);
       const [command, args, options] = h.spawn.mock.calls[0] as [
@@ -194,21 +201,21 @@ describe('keep-awake', () => {
       manager.stop();
     });
 
-    it('does not re-spawn while a keeper is already holding the request', () => {
+    it('does not re-spawn while a keeper is already holding the request', async () => {
       vi.useFakeTimers();
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
-      manager.start();
-      manager.start();
-      vi.advanceTimersByTime(POWER_POLL_MS * 3);
+      await manager.start();
+      await manager.start();
+      await vi.advanceTimersByTimeAsync(POWER_POLL_MS * 3);
       expect(h.spawn).toHaveBeenCalledTimes(1);
       manager.stop();
     });
 
-    it('stop() terminates the keeper child (cooperative EOF + force kill)', () => {
+    it('stop() terminates the keeper child (cooperative EOF + force kill)', async () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
-      manager.start();
+      await manager.start();
       const child = h.children[0];
 
       const status = manager.stop();
@@ -217,28 +224,28 @@ describe('keep-awake', () => {
       expect(status).toMatchObject({ active: false, settingEnabled: false, reason: 'disabled' });
     });
 
-    it('stop() is idempotent and does not throw without a child', () => {
+    it('stop() is idempotent and does not throw without a child', async () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
       expect(() => {
         manager.stop();
         manager.stop();
       }).not.toThrow();
-      manager.start();
+      await manager.start();
       manager.stop();
       expect(() => manager.stop()).not.toThrow();
     });
 
-    it('clears the power watchdog so nothing keeps ticking after stop()', () => {
+    it('clears the power watchdog so nothing keeps ticking after stop()', async () => {
       vi.useFakeTimers();
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
-      manager.start();
+      await manager.start();
       manager.stop();
       expect(vi.getTimerCount()).toBe(0);
     });
 
-    it('a failed spawn degrades to unavailable instead of throwing', () => {
+    it('a failed spawn degrades to unavailable instead of throwing', async () => {
       const spawn = vi.fn(() => {
         throw new Error('spawn powershell.exe ENOENT');
       });
@@ -246,28 +253,32 @@ describe('keep-awake', () => {
       const manager = createKeepAwake({
         platform: 'win32',
         spawn: spawn as never,
-        getPowerSource: () => 'ac',
+        getPowerSource: (): Promise<PowerSource> => Promise.resolve('ac'),
       });
-      expect(() => manager.start()).not.toThrow();
-      expect(manager.status()).toMatchObject({ active: false, reason: 'unavailable' });
+      // The spawn happens inside the async first tick, so a rejection must surface as a
+      // resolved status rather than bubbling out of start().
+      await expect(manager.start()).resolves.toMatchObject({
+        active: false,
+        reason: 'unavailable',
+      });
       expect(errorSpy).toHaveBeenCalled();
       manager.stop();
     });
 
-    it('a keeper that exits on its own is forgotten (no stale "active")', () => {
+    it('a keeper that exits on its own is forgotten (no stale "active")', async () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
-      manager.start();
+      await manager.start();
       expect(manager.status().active).toBe(true);
       h.children[0].emit('exit', 0, null);
       expect(manager.status().active).toBe(false);
       manager.stop();
     });
 
-    it('killChildSync() force-kills the child (the process "exit" sweep)', () => {
+    it('killChildSync() force-kills the child (the process "exit" sweep)', async () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
-      manager.start();
+      await manager.start();
       const child = h.children[0];
       manager.killChildSync();
       expect(child.stdin.destroy).toHaveBeenCalled();
@@ -278,29 +289,29 @@ describe('keep-awake', () => {
   });
 
   describe('apply()', () => {
-    it('start()s when the setting is on and stop()s when it is off', () => {
+    it('start()s when the setting is on and stop()s when it is off', async () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
 
-      expect(manager.apply({ keepAwake: true })).toMatchObject({
+      expect(await manager.apply({ keepAwake: true })).toMatchObject({
         active: true,
         settingEnabled: true,
       });
       expect(h.spawn).toHaveBeenCalledTimes(1);
 
-      expect(manager.apply({ keepAwake: false })).toMatchObject({
+      expect(await manager.apply({ keepAwake: false })).toMatchObject({
         active: false,
         reason: 'disabled',
       });
 
       // An absent field counts as "off" — the default is opt-in.
-      manager.apply({ keepAwake: true });
-      expect(manager.apply({})).toMatchObject({ active: false });
+      await manager.apply({ keepAwake: true });
+      expect(await manager.apply({})).toMatchObject({ active: false });
     });
   });
 
   describe('detectPowerSource parsing', () => {
-    it('parses the PowerShell probe output', () => {
+    it('parses the PowerShell probe output', async () => {
       expect(parsePowerSourceOutput('desktop')).toBe('desktop');
       expect(parsePowerSourceOutput('ac')).toBe('ac');
       expect(parsePowerSourceOutput('battery')).toBe('battery');
@@ -312,7 +323,7 @@ describe('keep-awake', () => {
       expect(parsePowerSourceOutput('something else')).toBe('unknown');
     });
 
-    it('power queries never throw (PowerShell missing ⇒ unknown)', () => {
+    it('power queries never throw (PowerShell missing ⇒ unknown)', async () => {
       // The real detector shells out to powershell.exe; wherever it cannot run
       // the answer must be `unknown`, never an exception.
       expect(['ac', 'battery', 'desktop', 'unknown']).toContain(detectPowerSource());

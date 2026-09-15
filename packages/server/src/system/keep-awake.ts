@@ -1,4 +1,4 @@
-import { execFileSync, spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { execFile, execFileSync, spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 
 /**
  * Windows "keep awake" switch.
@@ -31,18 +31,21 @@ export interface KeepAwakeStatus {
 
 export interface KeepAwake {
   isSupported(): boolean;
-  /** Reads the current power source (cheap: one CIM query, ~200 ms). */
+  /** Last known power source. Cheap and synchronous — it reads the cache, never the
+   * machine. Use `refreshPowerSource()` to actually probe. */
   getPowerSource(): PowerSource;
+  /** Await a fresh probe. Off every request path by design. */
+  refreshPowerSource(): Promise<PowerSource>;
   /** Pid of the live keeper child process, or `undefined` when none is running.
    * Used by the manual smoke test to prove the child is really gone. */
   readonly keeperPid: number | undefined;
-  start(intervalMs?: number): KeepAwakeStatus;
+  start(intervalMs?: number): Promise<KeepAwakeStatus>;
   stop(): KeepAwakeStatus;
-  /** Current state. Probes the power source when it has not been read yet;
-   * pass `false` for a pure read of the cached value. */
+  /** Current state. Non-blocking: the first call kicks off a probe in the background
+   * and the reading shows up on a later call. Pass `false` to skip even that. */
   status(probeIfStale?: boolean): KeepAwakeStatus;
   /** Apply a persisted setting: `start()` when on, `stop()` when off. */
-  apply(settings: { keepAwake?: boolean }): KeepAwakeStatus;
+  apply(settings: { keepAwake?: boolean }): Promise<KeepAwakeStatus>;
 }
 
 export type SpawnFn = (
@@ -55,8 +58,9 @@ export interface KeepAwakeDeps {
   /** Overridable for tests (never call the real `process.platform` there). */
   platform?: NodeJS.Platform;
   spawn?: SpawnFn;
-  /** Overridable for tests: the real one shells out to PowerShell. */
-  getPowerSource?: () => PowerSource;
+  /** Overridable for tests: the real one shells out to PowerShell. May be async —
+   * the manager awaits it, so a slow probe never blocks the event loop. */
+  getPowerSource?: () => PowerSource | Promise<PowerSource>;
   onEvent?: (message: string, level: 'info' | 'warn') => void;
 }
 
@@ -146,6 +150,37 @@ function runPowerShell(script: string): string | undefined {
   }
 }
 
+/**
+ * Async twin of `runPowerShell`.
+ *
+ * The synchronous version blocks the whole event loop for as long as PowerShell takes
+ * (up to `QUERY_TIMEOUT_MS`). That is unacceptable here: this server drives a
+ * registration scheduler and a WebSocket stream, and the settings page polls
+ * `GET /api/power` every 30s — on a machine where PowerShell is slow or broken (the
+ * exact case this feature promises to degrade gracefully for) each poll would freeze
+ * the scheduler and the UI for up to 15s, repeatedly.
+ */
+function runPowerShellAsync(script: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    execFile(
+      PS_EXE,
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+      { encoding: 'utf8', timeout: QUERY_TIMEOUT_MS, windowsHide: true },
+      (err, stdout) => {
+        if (err) {
+          console.error(
+            '[keep-awake] PowerShell query failed:',
+            err instanceof Error ? err.message : String(err),
+          );
+          resolve(undefined);
+          return;
+        }
+        resolve(stdout.trim());
+      },
+    );
+  });
+}
+
 /** Map the probe's stdout to a `PowerSource`. Anything unexpected (PowerShell
  * missing, non-zero exit, garbage output) is `unknown` — never a guess. */
 export function parsePowerSourceOutput(out: string | undefined): PowerSource {
@@ -154,9 +189,15 @@ export function parsePowerSourceOutput(out: string | undefined): PowerSource {
   return 'unknown';
 }
 
-/** Detect the power source via `Win32_Battery` (no admin rights needed). */
+/** Synchronous probe. Kept for one-shot/cold-start use and for the tests, which inject
+ * their own source. Prefer `detectPowerSourceAsync()` anywhere on a request path. */
 export function detectPowerSource(): PowerSource {
   return parsePowerSourceOutput(runPowerShell(POWER_QUERY_SCRIPT));
+}
+
+/** Non-blocking probe used everywhere on a live server path. */
+export async function detectPowerSourceAsync(): Promise<PowerSource> {
+  return parsePowerSourceOutput(await runPowerShellAsync(POWER_QUERY_SCRIPT));
 }
 
 /** Pure decision: should a keeper hold the wake request right now? */
@@ -170,19 +211,25 @@ function reasonFor(
   powerSource: PowerSource,
   settingEnabled: boolean,
   active: boolean,
+  probeSettled: boolean,
 ): KeepAwakeReason {
   if (active) return 'active';
   if (!settingEnabled) return 'disabled';
   if (powerSource === 'battery') return 'battery';
-  // Enabled but not holding: the platform/power state cannot be established
-  // (PowerShell missing, probe failed, ...).
+  // Enabled, no keeper yet, and no reading has landed yet: the first probe is still in
+  // flight (it is async now, so the switch can be on for a moment before the first
+  // reading arrives). 'pending' rather than 'unavailable' so the UI does not briefly
+  // claim the platform cannot be used.
+  if (powerSource === 'unknown' && !probeSettled) return 'pending';
+  // Enabled but not holding, and the reading is settled — so the hold was refused for
+  // another reason (PowerShell missing, the probe failed, a spawn failure, ...).
   return 'unavailable';
 }
 
 class KeepAwakeManager implements KeepAwake {
   private readonly platform: NodeJS.Platform;
   private readonly spawnChild: SpawnFn;
-  private readonly probe: () => PowerSource;
+  private readonly probe: () => PowerSource | Promise<PowerSource>;
   private readonly onEvent: (message: string, level: 'info' | 'warn') => void;
 
   private child?: ChildProcess;
@@ -190,6 +237,11 @@ class KeepAwakeManager implements KeepAwake {
   private powerSource: PowerSource = 'unknown';
   private settingEnabled = false;
   private intervalMs = POWER_POLL_MS;
+  /** In-flight cold-start probe, so concurrent `/api/power` polls share one spawn. */
+  private probeInFlight?: Promise<void>;
+  /** Whether a probe has ever completed (successfully or not). Distinguishes an
+   * in-flight first probe from a settled "we could not read it" outcome. */
+  private probeSettled = false;
 
   constructor(deps: KeepAwakeDeps = {}) {
     this.platform = deps.platform ?? process.platform;
@@ -207,29 +259,70 @@ class KeepAwakeManager implements KeepAwake {
   }
 
   getPowerSource(): PowerSource {
-    if (!this.isSupported()) return 'unknown';
+    return this.powerSource;
+  }
+
+  /**
+   * Refresh the cached power source if it has never been established.
+   *
+   * Deliberately does NOT probe on every call. `status()` sits behind `GET /api/power`,
+   * which the settings page polls every 30s, so probing there meant a PowerShell spawn
+   * per poll — and, with the old synchronous probe, a repeated event-loop stall.
+   * The 60s watchdog is what keeps the reading current once the switch is on; this only
+   * covers the cold-start case so the UI can say "waiting for AC" before the first tick.
+   *
+   * Concurrent callers share one in-flight probe instead of stacking spawns.
+   */
+  refreshPowerSourceIfUnknown(): void {
+    if (!this.isSupported() || this.powerSource !== 'unknown' || this.probeInFlight) return;
+    this.probeInFlight = this.probePowerSource().finally(() => {
+      this.probeInFlight = undefined;
+    });
+  }
+
+  /**
+   * Await a fresh power-source reading. Not on any request path — `status()` deliberately
+   * stays non-blocking — but useful for startup/warm-up and for the smoke script, which
+   * needs the real value rather than the empty cache.
+   */
+  async refreshPowerSource(): Promise<PowerSource> {
+    if (this.isSupported()) await this.probePowerSource();
+    return this.powerSource;
+  }
+
+  private async probePowerSource(): Promise<void> {
     try {
-      this.powerSource = this.probe();
+      this.powerSource = await this.probe();
     } catch (err) {
       console.error(
         '[keep-awake] power probe failed:',
         err instanceof Error ? err.message : String(err),
       );
       this.powerSource = 'unknown';
+    } finally {
+      // Either way the reading is settled now, so 'pending' no longer applies.
+      this.probeSettled = true;
     }
-    return this.powerSource;
   }
 
-  start(intervalMs = POWER_POLL_MS): KeepAwakeStatus {
+  /**
+   * Turn the switch on.
+   *
+   * Async because the first tick has to await the power-source probe: the probe shells
+   * out to PowerShell, and running it synchronously froze the whole event loop (see
+   * `runPowerShellAsync`). Awaiting here also means the returned status is the *fresh*
+   * one rather than the pre-probe snapshot.
+   */
+  async start(intervalMs = POWER_POLL_MS): Promise<KeepAwakeStatus> {
     this.settingEnabled = true;
     if (!this.isSupported()) {
       // Nothing to do off Windows — never spawn anything.
       return this.status();
     }
     this.intervalMs = intervalMs;
-    this.tick();
+    await this.tick();
     if (!this.timer) {
-      this.timer = setInterval(() => this.tick(), this.intervalMs);
+      this.timer = setInterval(() => void this.tick(), this.intervalMs);
       // Never let the watchdog alone keep the process alive.
       if (typeof this.timer.unref === 'function') this.timer.unref();
     }
@@ -248,20 +341,24 @@ class KeepAwakeManager implements KeepAwake {
 
   status(probeIfStale = true): KeepAwakeStatus {
     const supported = this.isSupported();
-    // Without a probe the UI would show "disabled" with an unknown power source
-    // and could not say "waiting for AC" before the switch is ever turned on.
-    if (probeIfStale && supported && this.powerSource === 'unknown') this.getPowerSource();
+    // Kick off a one-off probe the first time (so the UI can say "waiting for AC"
+    // before the switch is ever turned on) but never wait for it here: this method is
+    // on a 30s-polled request path and must stay non-blocking. The result lands in the
+    // cache and is visible on the next poll.
+    if (probeIfStale) this.refreshPowerSourceIfUnknown();
     const active = this.child !== undefined;
     return {
       supported,
       settingEnabled: this.settingEnabled,
       active,
       powerSource: this.powerSource,
-      reason: supported ? reasonFor(this.powerSource, this.settingEnabled, active) : 'unsupported',
+      reason: supported
+        ? reasonFor(this.powerSource, this.settingEnabled, active, this.probeSettled)
+        : 'unsupported',
     };
   }
 
-  apply(settings: { keepAwake?: boolean }): KeepAwakeStatus {
+  async apply(settings: { keepAwake?: boolean }): Promise<KeepAwakeStatus> {
     return settings.keepAwake === true ? this.start(this.intervalMs) : this.stop();
   }
 
@@ -278,10 +375,10 @@ class KeepAwakeManager implements KeepAwake {
     }
   }
 
-  private tick(): void {
+  private async tick(): Promise<void> {
     if (!this.isSupported()) return;
-    const source = this.getPowerSource();
-    const hold = shouldHold(source, this.settingEnabled);
+    await this.probePowerSource();
+    const hold = shouldHold(this.powerSource, this.settingEnabled);
     if (hold && !this.child) {
       this.spawnKeeper();
     } else if (!hold && this.child) {
@@ -364,18 +461,4 @@ export interface KeepAwakeManagerHandle extends KeepAwake {
 
 export function createKeepAwake(deps: KeepAwakeDeps = {}): KeepAwakeManagerHandle {
   return new KeepAwakeManager(deps);
-}
-
-const singleton = createKeepAwake();
-
-/**
- * The process-wide keeper.
- *
- * NOTE: the running server does NOT use this instance — `createRuntime()` builds
- * its own so it can wire `onEvent` into the store. This singleton exists purely
- * as the synchronous last-resort cleanup target for `process.on('exit')`, which
- * cannot reach into the runtime.
- */
-export function killKeepAwakeSync(): void {
-  singleton.killChildSync();
 }

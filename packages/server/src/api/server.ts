@@ -35,7 +35,7 @@ export interface ApiScheduler {
  * doubles can omit it entirely. */
 export interface ApiKeepAwake {
   status(): KeepAwakeStatus;
-  apply(settings: { keepAwake?: boolean }): KeepAwakeStatus;
+  apply(settings: { keepAwake?: boolean }): Promise<KeepAwakeStatus>;
   stop(): KeepAwakeStatus;
 }
 export interface ApiDeps {
@@ -165,7 +165,7 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
 
   // --- settings ---
   app.get('/api/settings', () => deps.store.getSettings());
-  app.put('/api/settings', (req, reply) => {
+  app.put('/api/settings', async (req, reply) => {
     const parsed = settingsSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     // Compare against the current values first: the UI saves the whole settings
@@ -192,7 +192,9 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     if (cadenceChanged) deps.scheduler.rescheduleWatching?.();
     // Keep-awake: flip the keeper immediately on save. Applied on every save
     // (not just on change) so the caller's response reports the real state.
-    if (deps.keepAwake) deps.keepAwake.apply(updated);
+    // Awaited because the first tick probes the power source asynchronously — doing
+    // this synchronously used to stall the event loop for the whole server.
+    if (deps.keepAwake) await deps.keepAwake.apply(updated);
     return updated;
   });
 

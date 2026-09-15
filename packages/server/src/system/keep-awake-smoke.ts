@@ -57,6 +57,9 @@ async function main(): Promise<number> {
 
   console.log('\n2. real power-source probe (Get-CimInstance Win32_Battery)');
   const t0 = Date.now();
+  // The probe is async now (it used to block the whole event loop); awaiting it here is
+  // what makes this a real measurement rather than a read of the empty cache.
+  await manager.refreshPowerSource();
   line('getPowerSource()', `${manager.getPowerSource()} (${Date.now() - t0} ms)`);
   line('status()', JSON.stringify(manager.status()));
   line('isSupported()', manager.isSupported());
@@ -68,7 +71,7 @@ async function main(): Promise<number> {
 
   console.log('\n3. start() → keeper child process');
   line('keeperPid before start()', String(manager.keeperPid));
-  const started = manager.start();
+  const started = await manager.start();
   const keeperPid = manager.keeperPid;
   line('status() after start()', JSON.stringify(started));
   line('keeperPid', String(keeperPid));
@@ -84,13 +87,13 @@ async function main(): Promise<number> {
 
   console.log('\n5. battery gating (injected "battery" source)');
   const laptop = createKeepAwake({ getPowerSource: () => 'battery' });
-  line('start() on battery', JSON.stringify(laptop.start()));
+  line('start() on battery', JSON.stringify(await laptop.start()));
   line('keeperPid while on battery', String(laptop.keeperPid));
   laptop.stop();
 
   console.log('\n6. non-Windows platform (injected) never spawns');
   const other = createKeepAwake({ platform: 'linux' });
-  line('start() on linux', JSON.stringify(other.start()));
+  line('start() on linux', JSON.stringify(await other.start()));
   line('keeperPid on linux', String(other.keeperPid));
   other.stop();
 
