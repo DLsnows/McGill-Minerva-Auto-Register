@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import websocketPlugin from '@fastify/websocket';
+import { NUMERIC_BOUNDS, defaultSettings } from './fake-settings.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -38,19 +39,6 @@ function argValue(flag) {
 const PORT = Number(argValue('--port') ?? process.env.E2E_PORT ?? 4575);
 const WEB_DIST =
   argValue('--web-dist') ?? process.env.E2E_WEB_DIST ?? `${REPO_ROOT}packages/web/dist`;
-
-/** Factory defaults, mirrored from packages/shared/src/store-types.ts DEFAULT_SETTINGS
- * (kept inline so this fake stays dependency-free and never imports product code). */
-function defaultSettings() {
-  return {
-    pollIntervalMinutes: 30,
-    jitterMinutes: 3,
-    queryBudget: 100,
-    registerBudget: 20,
-    notify: { desktop: true, sound: true, email: false },
-    dryRun: false,
-  };
-}
 
 const state = {
   settings: defaultSettings(),
@@ -321,8 +309,15 @@ app.get('/api/settings', () => state.settings);
 
 app.put('/api/settings', (req, reply) => {
   const patch = req.body ?? {};
-  const numeric = ['pollIntervalMinutes', 'jitterMinutes', 'queryBudget', 'registerBudget'];
-  for (const key of numeric) {
+  // Every key is derived from `NUMERIC_BOUNDS`, not from a hand-written list.
+  //
+  // The list used to be four names long while the real schema bounded eight
+  // fields, so a body the real server rejects could be stored here — and the
+  // fake, unlike the real server, *keeps* the bad value, so a later GET would
+  // return it and every assertion about the saved settings would be measuring a
+  // state the product cannot actually reach. Deriving the keys means a new
+  // bounded setting is validated the moment it is added to the contract module.
+  for (const key of Object.keys(NUMERIC_BOUNDS)) {
     if (key in patch && (typeof patch[key] !== 'number' || Number.isNaN(patch[key]))) {
       return reply.code(400).send({ error: `${key} must be a number` });
     }
@@ -332,15 +327,11 @@ app.put('/api/settings', (req, reply) => {
   // otherwise flow straight into `budgetCount()` and render `0 / -5` -- a ticker the
   // real server cannot produce, which would quietly invalidate the e2e assertions
   // that exist to pin that very contract.
-  const bounds = {
-    pollIntervalMinutes: 1,
-    jitterMinutes: 0,
-    queryBudget: 1,
-    registerBudget: 0,
-  };
-  for (const [key, min] of Object.entries(bounds)) {
-    if (key in patch && patch[key] < min) {
-      return reply.code(400).send({ error: `${key} must be >= ${min}` });
+  for (const [key, { min, max }] of Object.entries(NUMERIC_BOUNDS)) {
+    if (!(key in patch) || typeof patch[key] !== 'number' || Number.isNaN(patch[key])) continue;
+    if (patch[key] < min) return reply.code(400).send({ error: `${key} must be >= ${min}` });
+    if (max !== undefined && patch[key] > max) {
+      return reply.code(400).send({ error: `${key} must be <= ${max}` });
     }
   }
   state.settings = { ...state.settings, ...patch };

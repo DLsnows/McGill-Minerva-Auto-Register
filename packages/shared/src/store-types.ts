@@ -39,6 +39,13 @@ export interface Settings {
   pollIntervalMinutes: number;
   /** +/- jitter in minutes applied to each poll (default 3). */
   jitterMinutes: number;
+  /** Base pause between two browser operations *inside* one poll cycle, in
+   * milliseconds (default 3000). Distinct from `pollIntervalMinutes`, which
+   * decides *how often* a cycle runs — this one decides how fast each click /
+   * navigation of a single cycle happens. */
+  opPauseMs: number;
+  /** Uniform +/- jitter in milliseconds applied to `opPauseMs` (default 1000). */
+  opJitterMs: number;
   /** Max queries per day (default 100). */
   queryBudget: number;
   /** Max registration submits per day (default 20). */
@@ -102,8 +109,21 @@ export interface BudgetSnapshot {
 export const DEFAULT_SETTINGS: Settings = {
   pollIntervalMinutes: 30,
   jitterMinutes: 3,
+  opPauseMs: 3000,
+  opJitterMs: 1000,
   queryBudget: 100,
   registerBudget: 20,
   notify: { desktop: true, sound: true, email: false },
   dryRun: false,
 };
+
+/**
+ * Hard floor for the pause between browser operations, in milliseconds.
+ *
+ * Anti-detection / respectful-pacing requirement: even a user setting of 0 can
+ * never make the automation click flat-out. Enforced twice — rejected by the
+ * API schema, and clamped again where the pause is actually applied.
+ */
+export const MIN_OP_PAUSE_MS = 250;
+/** Upper bound accepted for the operation-pause settings, in milliseconds. */
+export const MAX_OP_PAUSE_MS = 60_000;
