@@ -218,7 +218,14 @@ export default function Dashboard() {
         } else if (res.reason === 'cooldown') {
           // The notice itself is derived from the cooldown in CourseCard so it
           // counts down and disappears when the window ends.
-          markCooling(res.retryAfterMs ?? 0);
+          //
+          // The fallback is `-Infinity`, not `0`: a server that reported a cooldown
+          // without a duration tells us nothing, and `Date.now()` there would render
+          // as a spurious "1s left" against a stale `now` (the same
+          // stale-tick-versus-fresh-`Date.now()` trap as the in-flight seed). An
+          // expired estimate keeps the local estimate authoritative — so the server
+          // fallback stays suppressed — while showing no countdown.
+          markCooling(res.retryAfterMs ?? -Infinity);
           clearNotice();
         } else {
           // Unknown reason (a status change, or a future value such as 'queued'):
