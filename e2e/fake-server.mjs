@@ -14,6 +14,10 @@
  *   GET    /api/budget
  *   WS     /api/stream
  *
+ * Test-support only (not part of the app contract):
+ *   GET    /api/__requests       — per-route request ledger for the runner
+ *   POST   /api/__test/session-event — flip the session status and emit the log line
+ *
  * It also serves the built SPA (packages/web/dist) with an index.html fallback, i.e. the
  * same one-process topology as the real server, so `/courses`, `/settings`, ... resolve
  * on a hard navigation.
@@ -102,8 +106,8 @@ const REQUIRED_TARGET_FIELDS = ['term', 'subject', 'courseNumber', 'targetCrn', 
  * count is reported separately as `probeCalls`.
  */
 
-/** The two paths that exist for the test harness, not for the app. */
-const HARNESS_PATHS = new Set(['/api/__requests', '/api/health']);
+/** The paths that exist for the test harness, not for the app. */
+const HARNESS_PATHS = new Set(['/api/__requests', '/api/health', '/api/__test/session-event']);
 const requestLedger = new Map();
 let harnessCalls = 0;
 
@@ -330,11 +334,42 @@ app.put('/api/settings', (req, reply) => {
   return state.settings;
 });
 
-// --- session (never authenticates: the fake backend has no Minerva behind it) ---
+// --- session (never authenticates on its own: the fake backend has no Minerva behind it) ---
 app.get('/api/session', () => ({ status: state.sessionStatus }));
 app.post('/api/session/login', () => {
   state.sessionStatus = 'logged-out';
   return { started: true };
+});
+
+/**
+ * Test-support endpoint: drive a session transition plus the log line that
+ * accompanies it, exactly the way the real server does (see `SessionTruth` /
+ * `Scheduler` — the scheduler logs a warn the moment a cycle finds the session
+ * unusable, and the API status follows it).
+ *
+ * This is what lets the suite prove the *client* reacts: nothing polls
+ * `GET /api/session`, so a session cell that updates after this call can only
+ * have been refreshed because a warn event arrived. Same reasoning as
+ * `/api/__requests`: it exists for the harness, not for the app, so it is kept out
+ * of the request ledger.
+ */
+const SESSION_STATUSES = ['unknown', 'authenticated', 'logged-out', 'logging-in'];
+const EVENT_LEVELS = ['info', 'ok', 'warn', 'error', 'action'];
+
+app.post('/api/__test/session-event', (req, reply) => {
+  const body = req.body ?? {};
+  if (body.sessionStatus !== undefined && !SESSION_STATUSES.includes(body.sessionStatus)) {
+    return reply
+      .code(400)
+      .send({ error: `sessionStatus must be one of ${SESSION_STATUSES.join(', ')}` });
+  }
+  const level = body.level ?? 'warn';
+  if (!EVENT_LEVELS.includes(level)) {
+    return reply.code(400).send({ error: `level must be one of ${EVENT_LEVELS.join(', ')}` });
+  }
+  if (body.sessionStatus !== undefined) state.sessionStatus = body.sessionStatus;
+  const event = logEvent(level, body.message ?? `Session status changed (${state.sessionStatus}).`);
+  return { sessionStatus: state.sessionStatus, event };
 });
 
 // --- scheduler ---

@@ -32,6 +32,12 @@ export interface SchedulerDeps {
   random?: () => number;
   /** Relay each persisted log event (for desktop/sound/email/WS in P5b/P6). */
   onEvent?: (e: LogEvent) => void;
+  /** Called the moment a cycle finds the session unusable (the `isLoggedIn`
+   * check returned false or threw). This is the earliest reliable observation
+   * that the session is gone — the API uses it to correct what `GET /api/session`
+   * reports, so the UI can't keep showing "Active" over an engine that has
+   * stopped polling. */
+  onSessionLost?: (reason: string) => void;
 }
 
 function errMsg(e: unknown): string {
@@ -62,10 +68,24 @@ export class Scheduler {
   private readonly inFlight = new Set<string>();
   /** Per-target count of consecutive failed cycles (any error kind). */
   private readonly failureStreak = new Map<string, number>();
+  /** Set after construction by the API process (see `setSessionLostHandler`). */
+  private sessionLostHandler: ((reason: string) => void) | undefined;
 
   constructor(private readonly deps: SchedulerDeps) {
     this.now = deps.now ?? Date.now;
     this.random = deps.random ?? Math.random;
+    this.sessionLostHandler = deps.onSessionLost;
+  }
+
+  /** Register (or replace) the "the session is gone" callback after construction.
+   * `createRuntime` builds the scheduler long before the HTTP layer exists, so the
+   * API process wires this up once it has something to notify. */
+  setSessionLostHandler(handler: (reason: string) => void): void {
+    this.sessionLostHandler = handler;
+  }
+
+  private reportSessionLost(reason: string): void {
+    this.sessionLostHandler?.(reason);
   }
 
   private log(level: LogLevel, message: string, targetId?: string, data?: unknown): void {
@@ -102,9 +122,27 @@ export class Scheduler {
       return;
     }
 
-    if (!(await this.deps.session.isLoggedIn())) {
+    // A throwing session probe counts as "cannot poll" (the same pause path as a
+    // false answer) — but it must not silently look like a deliberate logout, so
+    // the reason carries the error. This is also where the API learns the session
+    // is gone, before any UI ever asks.
+    let loggedIn = false;
+    let sessionError: string | undefined;
+    try {
+      loggedIn = await this.deps.session.isLoggedIn();
+    } catch (e) {
+      sessionError = errMsg(e);
+    }
+    if (!loggedIn) {
+      this.reportSessionLost(sessionError ?? 'session check returned not-logged-in');
       store.updateTarget(targetId, { status: 'paused' });
-      this.log('warn', 'Session not active (logged out / evicted) — paused; please re-login', targetId);
+      this.log(
+        'warn',
+        sessionError
+          ? `Session check failed (${sessionError}) — paused; please re-login`
+          : 'Session not active (logged out / evicted) — paused; please re-login',
+        targetId,
+      );
       return;
     }
 

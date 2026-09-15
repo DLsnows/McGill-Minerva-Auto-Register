@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api } from './api';
+import { api, errorMessage, isSessionNotReady, type ApiError } from './api';
 
 function mockFetch(body: unknown, ok = true, status = 200) {
   return vi.fn().mockResolvedValue({
@@ -65,7 +65,28 @@ describe('api', () => {
   it('throws on non-ok response', async () => {
     const f = mockFetch({ error: 'bad' }, false, 400);
     vi.stubGlobal('fetch', f);
-    await expect(api.getBudget()).rejects.toThrow(/400/);
+    // The API's own error shape carries a human-readable reason; surfacing it
+    // verbatim is what lets a refusal read as a reason in the UI.
+    await expect(api.getBudget()).rejects.toThrow('bad');
+  });
+
+  it('surfaces the server error code and reported session status', async () => {
+    const f = mockFetch(
+      { error: 'Not logged in — open the Session tab.', code: 'session-not-ready', status: 'logged-out' },
+      false,
+      409,
+    );
+    vi.stubGlobal('fetch', f);
+    const err = await api.startAll().catch((e: unknown) => e);
+    expect(isSessionNotReady(err)).toBe(true);
+    expect((err as ApiError).sessionStatus).toBe('logged-out');
+    expect(errorMessage(err)).toBe('Not logged in — open the Session tab.');
+  });
+
+  it('falls back to status + raw body when the error response is not JSON', async () => {
+    const f = mockFetch('<html>502 Bad Gateway</html>', false, 502);
+    vi.stubGlobal('fetch', f);
+    await expect(api.getTargets()).rejects.toThrow(/502.*502 Bad Gateway/s);
   });
 
   it('getBudget returns the atomic used/limit/remaining snapshot, not a bare remaining count', async () => {
