@@ -172,26 +172,29 @@ function validateDependabotGateAgreement(dependabotDoc, branchGateDoc) {
   // reported; adding "must allow dependabot/*" here would point at the wrong cause.
   if (!branchGateDoc) return;
 
-  // Every ecosystem entry is considered, not just `updates[0]`: adding a `github-actions`
-  // block ahead of the npm one must not silently disable this guard.
-  const npmEntries = (dependabotDoc?.updates ?? []).filter(
-    (e) => e?.['package-ecosystem'] === 'npm',
-  );
+  // Every ecosystem entry is checked, not just the npm one. The invariant is
+  // ecosystem-agnostic: Dependabot names its branches `dependabot/*` whatever it is
+  // updating, so a future `github-actions` or `docker` entry with a wrong or missing
+  // `target-branch` would open PRs that are born red exactly like the npm case this guard
+  // exists to prevent. (An earlier version filtered to npm and claimed otherwise in the
+  // comment above — the comment was stronger than the code.)
+  const entries = dependabotDoc?.updates ?? [];
 
   // The *value* is asserted, not mere presence. A truthy-but-wrong target (`staging`,
   // `prod`) would otherwise pass, and the `dependabot/*` reconciliation below would then be
   // skipped — validating clean while re-introducing exactly the failure this guard exists to
   // prevent: the branch gate only admits `dependabot/*` into `dev`, so dependency PRs opened
   // against any other branch are born red.
-  let allTargetDev = npmEntries.length > 0;
-  for (const [i, entry] of npmEntries.entries()) {
-    const target = entry['target-branch'];
+  let allTargetDev = entries.length > 0;
+  for (const [i, entry] of entries.entries()) {
+    const ecosystem = entry?.['package-ecosystem'] ?? 'unknown';
+    const target = entry?.['target-branch'];
     const ok = target === 'dev';
     allTargetDev &&= ok;
     check(
       ok,
-      `${label} (npm entry #${i + 1})`,
-      `the npm update entry must pin \`target-branch: dev\` (got ${target === undefined ? 'nothing — Dependabot would use the default branch `prod`' : `\`${target}\``}); the branch gate only admits \`dependabot/*\` into \`dev\`, so PRs opened against any other branch are guaranteed to fail it`,
+      `${label} (${ecosystem} entry #${i + 1})`,
+      `every Dependabot update entry must pin \`target-branch: dev\` (got ${target === undefined ? 'nothing — Dependabot would use the default branch `prod`' : `\`${target}\``}); the branch gate only admits \`dependabot/*\` into \`dev\`, so PRs opened against any other branch are guaranteed to fail it`,
     );
   }
 

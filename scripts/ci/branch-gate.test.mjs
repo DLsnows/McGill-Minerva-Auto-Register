@@ -102,9 +102,18 @@ function gateScript(step) {
   return script;
 }
 
+/**
+ * Runs the extracted step the way GitHub Actions does.
+ *
+ * `-e` matters: Actions executes a `run:` step with `bash -e`, so a failing command aborts
+ * the step. With a plain `bash -c`, a future edit that inserts a failing command before a
+ * guard would exit 1 in CI while this test stayed green (the trailing success `echo` would
+ * still run and return 0) — the test would stop representing CI exactly when it started to
+ * matter.
+ */
 function runGate(script, base, head, headRepo = THIS_REPO) {
   try {
-    const stdout = execFileSync(bash, ['-c', script], {
+    const stdout = execFileSync(bash, ['-e', '-c', script], {
       encoding: 'utf8',
       env: { ...process.env, BASE: base, HEAD: head, HEAD_REPO: headRepo, THIS_REPO },
       stdio: ['ignore', 'pipe', 'pipe'],

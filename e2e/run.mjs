@@ -594,12 +594,16 @@ async function main() {
     await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
     const page = await context.newPage();
     const errors = watchConsole(page);
-    // Snapshot the cumulative ledger before the case runs so its coverage assertions can be
-    // scoped to this case's own traffic (see assertEndpoints). At this point the page is
-    // still `about:blank`, so the snapshot cannot include this case's traffic.
-    const ledgerBefore = await fetchLedger();
     const result = { name: testCase.name, title: testCase.title, status: 'passed', durationMs: 0 };
     try {
+      // Snapshot the cumulative ledger before the case runs so its coverage assertions can
+      // be scoped to this case's own traffic (see assertEndpoints). At this point the page is
+      // still `about:blank`, so the snapshot cannot include this case's traffic.
+      //
+      // Inside the try on purpose: if the fake backend died between cases, `fetchLedger()`
+      // throws, and this becomes a normal per-case failure with a screenshot and a written
+      // summary — instead of aborting the whole run before any artifact exists.
+      const ledgerBefore = await fetchLedger();
       await testCase.run({ page, context, errors });
       // Runs after the case's own assertions so the ledger has seen every call the case
       // makes — including the ones triggered by a page reload.
