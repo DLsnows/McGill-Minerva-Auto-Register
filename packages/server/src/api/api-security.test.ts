@@ -17,7 +17,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:net';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { FastifyInstance } from 'fastify';
@@ -35,15 +34,21 @@ interface Res {
   body: string;
 }
 
-function getFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.on('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address() as AddressInfo;
-      srv.close(() => resolve(port));
-    });
-  });
+/**
+ * Bind an ephemeral port and report the one the OS actually handed out.
+ *
+ * Do NOT replace this with a "find a free port, close it, then listen on it"
+ * helper: that is a TOCTOU race (another process or a parallel vitest worker can
+ * take the port between the probe and the real `listen`), and `EADDRINUSE` from it
+ * is exactly the flake class that already bit the e2e suite once. Letting the
+ * kernel choose the port and keeping the same listener means the port is never
+ * unowned, and it also avoids hard-coding 4575 (a real dev server may hold it).
+ */
+async function listenOnEphemeralPort(instance: FastifyInstance): Promise<number> {
+  await instance.listen({ host: '127.0.0.1', port: 0 });
+  const address = instance.server.address() as AddressInfo | null;
+  if (!address) throw new Error('server.listen() resolved without a bound address');
+  return address.port;
 }
 
 /** A real HTTP round trip with full control over `Host`, `Origin` and `Content-Type`. */
@@ -152,8 +157,7 @@ async function boot(): Promise<void> {
     },
   };
   app = buildServer(deps);
-  port = await getFreePort();
-  await app.listen({ host: '127.0.0.1', port });
+  port = await listenOnEphemeralPort(app);
 }
 
 beforeEach(boot);
@@ -526,8 +530,7 @@ describe('Q5 — guard is not satisfied by rejecting everything', () => {
         isRunning: () => false,
       },
     });
-    const localPort = await getFreePort();
-    await local.listen({ host: '127.0.0.1', port: localPort });
+    const localPort = await listenOnEphemeralPort(local);
     try {
       for (const path of ['/', '/courses', '/settings']) {
         const r = await send(localPort, { path, headers: { host: `127.0.0.1:${localPort}` } });
