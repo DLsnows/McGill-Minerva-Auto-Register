@@ -33,20 +33,22 @@ export interface ApiScheduler {
   tickSoon?(): void;
   /** Drop one target's consecutive-failure streak when it enters `watching`. */
   clearFailures?(id: string): void;
-  /** Drop every target's failure streak ("Start all" revives error targets). */
-  clearAllFailures?(): void;
 }
 
-/** Targets entering `watching` get a first poll this far in the future. Kept
- * well under the scheduler's 30s tick so "Start" produces console output within
- * ~a second, while the small spread stops every restored course from hitting the
- * Minerva server in the same instant. */
-const FIRST_POLL_JITTER_MS = 3000;
-
-/** First-poll timestamp for a target that just entered `watching`: "now", spread
- * over a small jitter window. See FIRST_POLL_JITTER_MS. */
-function firstPollAt(now: number): number {
-  return now + Math.round(Math.random() * FIRST_POLL_JITTER_MS);
+/** First-poll timestamp for a target that just entered `watching`: *due now*.
+ *
+ * Deliberately not "now + a little jitter". `Scheduler.tick()` only runs targets
+ * with `(nextPollAt ?? 0) <= now`, and `start()`/`tickSoon()` tick at essentially
+ * the same `now` — so a timestamp even a few milliseconds in the future makes the
+ * freshly armed target miss that immediate tick and wait a whole 30s interval,
+ * which is exactly the "I clicked Start and nothing happened" bug this change
+ * exists to fix. (The first cut of this PR did jitter by 0-3s and had that bug.)
+ *
+ * Jitter would also buy nothing: `tick()` dispatches sequentially
+ * (`for (const t of due) await this.runOnce(t.id)`), so several targets armed at
+ * the same instant still hit Minerva one after another, never concurrently. */
+function armForImmediatePoll(now: number): number {
+  return now;
 }
 
 export interface ApiDeps {
@@ -54,6 +56,12 @@ export interface ApiDeps {
   budget: Budget;
   session: ApiSession;
   scheduler: ApiScheduler;
+  /** Injectable clock. Defaults to `Date.now`, and mirrors the scheduler's own `now`
+   * hook so a test can drive both from one source. Asserting "the route armed it due
+   * now" against `Date.now()` instead is fragile: another test in the same file may
+   * have fake timers installed, in which case `Date.now()` and the scheduler's clock
+   * disagree by however far the fake clock was advanced. */
+  now?: () => number;
 }
 
 const targetSchema = z.object({
@@ -99,6 +107,9 @@ const targetPatchSchema = targetSchema
  * WS client set (also used by the event broadcaster). */
 export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()): FastifyInstance {
   const app = Fastify({ logger: false });
+  // One clock for every "arm it now" decision. Injectable so tests can drive it from
+  // the same source as the scheduler (see ApiDeps.now).
+  const now = deps.now ?? Date.now;
   let sessionStatus: 'unknown' | 'authenticated' | 'logged-out' | 'logging-in' = 'unknown';
 
   // `.after()` (not `.catch()`) — surfacing a plugin load failure without
@@ -118,7 +129,7 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     // poll time right away: without it `nextPollAt` stays undefined and the
     // target is only picked up by the next tick, and there is no `watching`
     // transition afterwards that would set it.
-    return deps.store.addTarget({ ...parsed.data, nextPollAt: firstPollAt(Date.now()) });
+    return deps.store.addTarget({ ...parsed.data, nextPollAt: armForImmediatePoll(now()) });
   });
   app.patch('/api/targets/:id', (req, reply) => {
     const parsed = targetPatchSchema.safeParse(req.body);
@@ -130,7 +141,7 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     // un-terminal from stopped) must poll immediately rather than wait a full
     // tick, and must not carry an old failure streak into the new run.
     if (parsed.data.status === 'watching') {
-      const fresh = deps.store.updateTarget(id, { nextPollAt: firstPollAt(Date.now()) });
+      const fresh = deps.store.updateTarget(id, { nextPollAt: armForImmediatePoll(now()) });
       deps.scheduler.clearFailures?.(id);
       deps.scheduler.tickSoon?.();
       return fresh;
@@ -242,22 +253,28 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   // 'paused', so the only way out was deleting and re-creating the course.
   // The completed states (registered / waitlisted / stopped) stay untouched.
   //
-  // Every revived target also gets an immediate first poll time: that is the fix
-  // for "the first Start does not actually start polling" — previously the flip
-  // to 'watching' carried no `nextPollAt`, so the first real poll waited a whole
-  // 30s tick and looked like a no-op.
+  // Every revived target is also armed as *due now*, so the immediate tick that
+  // `scheduler.start()` fires polls it right away: that is the fix for "the first
+  // Start does not actually start polling" — previously the flip to 'watching'
+  // carried no `nextPollAt`, so the first real poll waited a whole 30s tick and
+  // looked like a no-op.
   app.post('/api/scheduler/start-all', () => {
     const all = deps.store.listTargets();
     const resumable = all.filter((t) => t.status === 'paused' || t.status === 'error');
-    const now = Date.now();
+    // One timestamp for the whole batch, read from the injectable clock so it matches
+    // the instant the immediate tick below will compare against.
+    const armedAt = now();
     let recovered = 0;
     for (const t of resumable) {
       if (t.status === 'error') recovered += 1;
-      deps.store.updateTarget(t.id, { status: 'watching', nextPollAt: firstPollAt(now) });
+      deps.store.updateTarget(t.id, { status: 'watching', nextPollAt: armForImmediatePoll(armedAt) });
+      // A revived target starts with a clean failure streak, otherwise its very
+      // next failure would immediately re-trip the breaker. Scoped to the targets
+      // actually being revived — a watching course that is simply continuing must
+      // keep its streak (clearing it would silently give a flaky course three more
+      // tries for free).
+      deps.scheduler.clearFailures?.(t.id);
     }
-    // A revived target starts with a clean failure streak, otherwise its very
-    // next failure would immediately re-trip the breaker.
-    deps.scheduler.clearAllFailures?.();
     deps.scheduler.start();
     const isDone = (s: string) => s === 'registered' || s === 'waitlisted' || s === 'stopped';
     return {
@@ -280,13 +297,17 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   // "Resume watching" for one target: the per-course escape hatch out of 'error'
   // (a hard target that tripped the breaker). PATCH /api/targets/:id with status
   // 'watching' does the same, but this route gives the course card one
-  // unambiguous action and starts the engine when it is not already running.
+  // unambiguous action and makes sure a tick happens now: `start()` is a no-op
+  // when the engine is ALREADY running (other courses still being watched), so
+  // without `tickSoon()` the resumed course would wait out the rest of the 30s
+  // interval — the very gap that made "Resume" look broken.
   app.post('/api/targets/:id/resume', (req, reply) => {
     const { id } = req.params as { id: string };
     if (!deps.store.getTarget(id)) return reply.code(404).send({ error: 'not found' });
-    deps.store.updateTarget(id, { status: 'watching', nextPollAt: firstPollAt(Date.now()) });
+    deps.store.updateTarget(id, { status: 'watching', nextPollAt: armForImmediatePoll(now()) });
     deps.scheduler.clearFailures?.(id);
     deps.scheduler.start();
+    deps.scheduler.tickSoon?.();
     return { running: true, status: 'watching' as const };
   });
 

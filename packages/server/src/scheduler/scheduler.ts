@@ -226,12 +226,6 @@ export class Scheduler {
     this.failureStreak.delete(targetId);
   }
 
-  /** Forget every accumulated failure streak — used by "Start all" so a revived
-   * set of targets is not immediately re-tripped by stale counters. */
-  clearAllFailures(): void {
-    this.failureStreak.clear();
-  }
-
   /** Trigger an immediate forced run for one target (one-click "Register now").
    * Fire-and-forget; results surface via the event stream like a normal tick. */
   runTarget(id: string): void {
