@@ -7,7 +7,12 @@ import { api } from '../lib/api';
 import { ZERO_BUDGET } from '../lib/budget-fixture';
 
 const LOADED_SETTINGS = {
-  pollIntervalMinutes: 30, jitterMinutes: 3, opPauseMs: 3000, opJitterMs: 1000, queryBudget: 100, registerBudget: 20,
+  pollIntervalMinutes: 30,
+  jitterMinutes: 3,
+  opPauseMs: 3000,
+  opJitterMs: 1000,
+  queryBudget: 100,
+  registerBudget: 20,
   notify: { desktop: true, sound: true, email: false },
 };
 
@@ -32,15 +37,24 @@ describe('Settings', () => {
   it('prefills and saves general settings', async () => {
     mockAll();
     const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
-      pollIntervalMinutes: 45, jitterMinutes: 3, opPauseMs: 3000, opJitterMs: 1000, queryBudget: 100, registerBudget: 20,
+      pollIntervalMinutes: 45,
+      jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
+      queryBudget: 100,
+      registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
     });
     renderSettings();
-    await waitFor(() => expect((screen.getByLabelText('Poll interval (min)') as HTMLInputElement).value).toBe('30'));
+    await waitFor(() =>
+      expect((screen.getByLabelText('Poll interval (min)') as HTMLInputElement).value).toBe('30'),
+    );
     await userEvent.clear(screen.getByLabelText('Poll interval (min)'));
     await userEvent.type(screen.getByLabelText('Poll interval (min)'), '45');
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
-    await waitFor(() => expect(put).toHaveBeenCalledWith(expect.objectContaining({ pollIntervalMinutes: 45 })));
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(expect.objectContaining({ pollIntervalMinutes: 45 })),
+    );
   });
 
   it('still lets a min-0 field be cleared to 0 (the empty->NaN rule is scoped to pacing)', async () => {
@@ -60,7 +74,47 @@ describe('Settings', () => {
     );
   });
 
-  it('has no email / SMTP UI at all (feature temporarily sunset)', async () => {    mockAll();
+  it('saves an unrelated change when the server never sent the pacing fields', async () => {
+    // Claude review on #36, non-blocking note: `isPacingValid(form)` gated the
+    // *entire* save, so a `settings.data` without `opPauseMs`/`opJitterMs` (a
+    // server older than this feature, or a cached body from one) made the page
+    // refuse every change -- including an unrelated toggle -- behind a
+    // misleading "operation speed must be a number".
+    //
+    // This is not hypothetical: it is the same shape as the real defect this
+    // branch fixes, where the e2e fake backend omitted the two fields and the
+    // page rendered them as blanks that `NumField` coerced to 0. A field the
+    // server never sent is a field the page must not write.
+    mockAll();
+    const staleSettings: Record<string, unknown> = { ...LOADED_SETTINGS };
+    delete staleSettings.opPauseMs;
+    delete staleSettings.opJitterMs;
+    vi.spyOn(api, 'getSettings').mockResolvedValue(staleSettings as never);
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue(staleSettings as never);
+
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+
+    // The section is hidden rather than rendered as two blank, un-saveable inputs.
+    expect(screen.queryByLabelText('Pause between operations (ms)')).not.toBeInTheDocument();
+
+    await userEvent.clear(screen.getByLabelText('Poll interval (min)'));
+    await userEvent.type(screen.getByLabelText('Poll interval (min)'), '45');
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const body = put.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.pollIntervalMinutes, 'the real edit must reach the server').toBe(45);
+    // Crucially: no `opPauseMs: 0`, which the real schema rejects with a raw 400
+    // (`min(250)`) and which would overwrite the persisted value with a blank.
+    expect(body).not.toHaveProperty('opPauseMs');
+    expect(body).not.toHaveProperty('opJitterMs');
+    // And the misleading pacing error is not what the user is shown.
+    expect(screen.queryByText(/operation speed must be a number/i)).not.toBeInTheDocument();
+  });
+
+  it('has no email / SMTP UI at all (feature temporarily sunset)', async () => {
+    mockAll();
     renderSettings();
     await waitFor(() => screen.getByLabelText('Poll interval (min)'));
     // The toggle, the section heading and every SMTP input are gone.
@@ -78,7 +132,12 @@ describe('Settings', () => {
   it('saves the notify channels with email forced off', async () => {
     mockAll();
     const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
-      pollIntervalMinutes: 30, jitterMinutes: 3, opPauseMs: 3000, opJitterMs: 1000, queryBudget: 100, registerBudget: 20,
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
+      queryBudget: 100,
+      registerBudget: 20,
       notify: { desktop: false, sound: true, email: false },
     });
     renderSettings();
@@ -104,20 +163,33 @@ describe('Settings', () => {
   it('saves the dry-run toggle', async () => {
     mockAll();
     const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
-      pollIntervalMinutes: 30, jitterMinutes: 3, opPauseMs: 3000, opJitterMs: 1000, queryBudget: 100, registerBudget: 20,
-      notify: { desktop: true, sound: true, email: false }, dryRun: true,
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
+      queryBudget: 100,
+      registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+      dryRun: true,
     });
     renderSettings();
     await waitFor(() => screen.getByLabelText('Dry-run mode'));
     await userEvent.click(screen.getByLabelText('Dry-run mode'));
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
-    await waitFor(() => expect(put).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true })));
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true })),
+    );
   });
   it('refreshes the budget snapshot too after a save (the stale-remaining bug)', async () => {
     mockAll();
     const getBudget = vi.spyOn(api, 'getBudget');
     vi.spyOn(api, 'putSettings').mockResolvedValue({
-      pollIntervalMinutes: 30, jitterMinutes: 3, opPauseMs: 3000, opJitterMs: 1000, queryBudget: 10000, registerBudget: 20,
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
+      queryBudget: 10000,
+      registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
     });
     renderSettings();
@@ -139,7 +211,9 @@ describe('Settings', () => {
     const boom = () => Promise.reject(new Error('refresh boom'));
     const budgetCalls = { n: 0 };
     const settingsCalls = { n: 0 };
-    vi.spyOn(api, 'getBudget').mockImplementation(() => (budgetCalls.n++ === 0 ? Promise.resolve(ZERO_BUDGET) : boom()));
+    vi.spyOn(api, 'getBudget').mockImplementation(() =>
+      budgetCalls.n++ === 0 ? Promise.resolve(ZERO_BUDGET) : boom(),
+    );
     vi.spyOn(api, 'getSettings').mockImplementation(() =>
       settingsCalls.n++ === 0 ? Promise.resolve(LOADED_SETTINGS) : boom(),
     );
@@ -174,7 +248,9 @@ describe('Settings', () => {
     await userEvent.type(jitter, '400');
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
     await waitFor(() =>
-      expect(put).toHaveBeenCalledWith(expect.objectContaining({ opPauseMs: 1500, opJitterMs: 400 })),
+      expect(put).toHaveBeenCalledWith(
+        expect.objectContaining({ opPauseMs: 1500, opJitterMs: 400 }),
+      ),
     );
   });
 
