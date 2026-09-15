@@ -200,6 +200,10 @@ describe('Dashboard', () => {
       ).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Scheduler toggle failed/)).toBeNull();
+    // The refusal proved the session snapshot was stale, so this path must re-read
+    // it too (reported in review: only the master-toggle path did).
+    await waitFor(() => expect(getSession.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(screen.getByText(/Session is not active/i)).toBeInTheDocument());
   });
 
   it('re-reads the session when the server refuses a start, so the banner appears', async () => {

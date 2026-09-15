@@ -49,14 +49,6 @@ export function lastSessionRelevantEventId(events: LogEvent[]): string | undefin
   return undefined;
 }
 
-/** id → sortable sequence number. The ids are opaque strings (`e12`, `evt-3`, a
- * uuid…), so only the numeric tail is usable — and only as a lower bound: when
- * nothing is extractable the watermark stays put rather than jumping ahead. */
-export function eventSeq(id: string): number | undefined {
-  const n = Number(/(\d+)\s*$/.exec(id)?.[1]);
-  return Number.isFinite(n) ? n : undefined;
-}
-
 /**
  * Event-driven refresh of the session resource.
  *
@@ -70,10 +62,14 @@ export function eventSeq(id: string): number | undefined {
  * schedule.
  *
  * `snapshotTick` increments every time the server replays its history (`recent`)
- * on (re)connect. Those lines are old — a warn from an hour ago says nothing
- * about the session now — so the highest id among them becomes a watermark and
- * only events past it count. Without that, merely opening the app after any past
- * failure would fire a real navigation to Minerva for no reason.
+ * on (re)connect. A replay is handled by *identity*, not by trust: an event whose
+ * id this client has already received is history and is ignored (otherwise merely
+ * opening the console after any past failure would fire a real navigation to
+ * Minerva), but a relevant event that arrives in a replay **while the app is
+ * running** happened during a disconnect and is genuinely news — the session may
+ * have died while the socket was down, and no live line is coming for it. Those
+ * trigger exactly one refresh, and the freshness throttle is reset so the refresh
+ * cannot be swallowed by an unrelated event fired just before the drop.
  */
 export function useSessionRefreshFromEvents(
   events: LogEvent[],
@@ -83,7 +79,8 @@ export function useSessionRefreshFromEvents(
   const lastRelevantId = lastSessionRelevantEventId(events);
   const lastRefreshedId = useRef<string | undefined>(undefined);
   const lastRefreshedAt = useRef(0);
-  const seenUpTo = useRef(-1);
+  /** Relevant event ids already delivered to this client. */
+  const seenRelevant = useRef(new Set<string>());
   const lastSnapshotTick = useRef(snapshotTick);
   // Read the latest refetch through a ref so a new event never needs the (fresh
   // object every render) resource as an effect dependency.
@@ -92,31 +89,40 @@ export function useSessionRefreshFromEvents(
     refetchRef.current = session.refetch;
   });
 
-  // A (re)connect replays the server's history — record how far it got (see the
-  // hook doc comment).
-  useEffect(() => {
-    if (snapshotTick === lastSnapshotTick.current) return;
-    lastSnapshotTick.current = snapshotTick;
-    for (const e of events) {
-      const seq = eventSeq(e.id);
-      if (seq !== undefined && seq > seenUpTo.current) seenUpTo.current = seq;
-    }
-  }, [snapshotTick, events]);
-
   useEffect(() => {
     if (lastRelevantId === undefined) return;
     // Same event seen again (re-render, reconnect) — nothing new to react to.
     if (lastRelevantId === lastRefreshedId.current) return;
-    const seq = eventSeq(lastRelevantId);
-    if (seq !== undefined && seq <= seenUpTo.current) return; // replayed history
     const now = Date.now();
     if (now - lastRefreshedAt.current < SESSION_REFRESH_THROTTLE_MS) return;
     lastRefreshedId.current = lastRelevantId;
     lastRefreshedAt.current = now;
     void refetchRef.current();
   }, [lastRelevantId]);
-}
 
+  // Every event the app has already been handed, relevant or not — the basis for
+  // deciding, on a reconnect, whether the replay carries anything new.
+  useEffect(() => {
+    for (const e of events) seenRelevant.current.add(e.id);
+  }, [events]);
+
+  // A (re)connect replays the server's history — decide what in it is news.
+  useEffect(() => {
+    if (snapshotTick === lastSnapshotTick.current) return;
+    lastSnapshotTick.current = snapshotTick;
+    const hasUnseen = events.some(
+      (e) => SESSION_RELEVANT_LEVELS.has(e.level) && !seenRelevant.current.has(e.id),
+    );
+    if (!hasUnseen) return;
+    // The replayed lines have already been delivered (they are in `seenRelevant`
+    // by the time the next render runs), so only a *later* live event should count
+    // as new again. Resetting the freshness clock is deliberate: without it an
+    // event that fired just before the drop would throttle this refresh away.
+    lastRefreshedId.current = lastRelevantId;
+    lastRefreshedAt.current = Date.now();
+    void refetchRef.current();
+  }, [snapshotTick, events, lastRelevantId]);
+}
 const DataContext = createContext<DataContextValue | null>(null);
 
 /** Loads the shared app resources once and shares them with every page. */

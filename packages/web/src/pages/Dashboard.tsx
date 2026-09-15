@@ -71,16 +71,25 @@ export default function Dashboard() {
       // No resuming/starting a task while logged out (the button is disabled too).
       if (next === 'watching' && sessionRef.current.data?.status !== 'authenticated') return;
       setSchedErr(undefined);
+      let sessionRefused = false;
       try {
         await api.updateTarget(id, { status: next });
         if (next === 'watching') await api.startScheduler();
       } catch (e) {
         // The server refuses to start the engine without a usable session; show
         // that reason (localized) rather than a generic toggle failure.
-        setSchedErr(isSessionNotReady(e) ? tr('dashboard.loginToStart') : errorMessage(e));
+        sessionRefused = isSessionNotReady(e);
+        setSchedErr(sessionRefused ? tr('dashboard.loginToStart') : errorMessage(e));
       } finally {
-        // Always reconcile the UI with the server's real state.
-        await Promise.all([targetsRef.current.refetch(), schedulerRef.current.refetch()]);
+        // Always reconcile the UI with the server's real state. A refusal means
+        // the session resource is the thing that is wrong, so re-read it too —
+        // otherwise this path keeps a green "Active" up after the server has
+        // explicitly said it cannot poll.
+        await Promise.all([
+          targetsRef.current.refetch(),
+          schedulerRef.current.refetch(),
+          sessionRefused ? sessionRef.current.refetch() : Promise.resolve(),
+        ]);
       }
     },
     [tr],

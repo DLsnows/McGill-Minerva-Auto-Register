@@ -35,9 +35,11 @@ function mockResources() {
 }
 
 let eventSeq = 0;
+let lastEvent: LogEvent | undefined;
 function event(level: LogEvent['level'], message = 'x'): LogEvent {
   eventSeq += 1;
-  return { id: `e${eventSeq}`, ts: eventSeq, level, message };
+  lastEvent = { id: `e${eventSeq}`, ts: eventSeq, level, message };
+  return lastEvent;
 }
 
 /** Deliver a live event frame to the socket DataProvider opened. */
@@ -167,9 +169,9 @@ describe('DataProvider session truth (Q7)', () => {
     await waitFor(() => expect(getSession).toHaveBeenCalledTimes(3));
   });
 
-  it('ignores the reconnect snapshot but still acts on events after it', async () => {
+  it('ignores a reconnect snapshot that only replays events it already saw', async () => {
     mockResources();
-    const getSession = vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'logged-out' });
+    const getSession = vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
 
     render(
       <DataProvider>
@@ -178,22 +180,61 @@ describe('DataProvider session truth (Q7)', () => {
     );
     await waitFor(() => expect(getSession).toHaveBeenCalledTimes(1));
 
-    // `recent` is what the server replays on every (re)connect — it can contain
-    // hours-old warn lines that say nothing about the session right now.
-    act(() =>
-      lastFakeSocket()?.emit({
-        type: 'recent',
-        events: [event('warn', 'stale warning from a previous session'), event('error', 'stale error')],
-      }),
+    // A live warn is delivered, then the same line comes back in a reconnect
+    // replay. Acting on the replay would be a pointless real navigation.
+    streamEvent(event('warn', 'first'));
+    await waitFor(() => expect(getSession).toHaveBeenCalledTimes(2));
+    const delivered = lastEvent;
+    act(() => lastFakeSocket()?.emit({ type: 'recent', events: [delivered] }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getSession).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * Reported in review: the socket can drop exactly while the session dies. The
+   * warn that announces it then arrives in the reconnect replay, and a naive
+   * "replayed history is never news" watermark swallows it — leaving the ticker
+   * claiming Active over a stopped engine, i.e. the Q7 lie again.
+   *
+   * The counts are pinned exactly, on purpose. A weaker `toBeGreaterThan(1)` would
+   * pass even when the replay itself is ignored, because the live-event effect
+   * happens to see the same warn line and fetches anyway — the two effects overlap.
+   * The window here is constructed so only the replay can supply the news: the
+   * mount snapshot carries no warn, and the last live line the client saw is an
+   * `info`.
+   */
+  it('refreshes when a reconnect replay carries a warn the client never saw', async () => {
+    mockResources();
+    const getSession = vi
+      .spyOn(api, 'getSession')
+      .mockResolvedValueOnce({ status: 'authenticated' })
+      .mockResolvedValue({ status: 'logged-out' });
+
+    render(
+      <DataProvider>
+        <Probe />
+      </DataProvider>,
     );
+    await waitFor(() => expect(screen.getByText('session:authenticated')).toBeInTheDocument());
+    expect(getSession).toHaveBeenCalledTimes(1); // mount
+
+    // While connected, only routine lines arrive — nothing to refresh for.
+    streamEvent(event('info', 'No opening — full'));
     await act(async () => {
       await Promise.resolve();
     });
     expect(getSession).toHaveBeenCalledTimes(1);
 
-    // A *new* line after the snapshot is live news and must still refresh.
-    streamEvent(event('warn', 'Session not active (logged out / evicted)'));
-    await waitFor(() => expect(getSession.mock.calls.length).toBeGreaterThanOrEqual(2));
+    // The connection drops, the session dies server-side, and the reconnect
+    // replays history containing the warn line this client never received.
+    const unseenWarn = event('warn', 'Session not active (logged out / evicted)');
+    act(() => lastFakeSocket()?.emit({ type: 'recent', events: [unseenWarn] }));
+
+    await waitFor(() => expect(screen.getByText('session:logged-out')).toBeInTheDocument());
+    // Exactly one refresh — from the replay, not from the live path.
+    await waitFor(() => expect(getSession).toHaveBeenCalledTimes(2));
   });
 
   it('lastSessionRelevantEventId picks the newest warn/error line only', () => {
