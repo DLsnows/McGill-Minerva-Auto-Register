@@ -217,8 +217,9 @@ export function buildServer(
 
   // `.after()` (not `.catch()`) — surfacing a plugin load failure without
   // prematurely triggering `ready()`, which would reject later route registration.
-  // `maxPayload` replaces the plugin default of 0 (unlimited): `/api/stream` is a
-  // one-way broadcast and the UI never sends a frame, so this only bounds abuse.
+  // `maxPayload` replaces the `ws@8` `WebSocketServer` default of 100 MiB (not 0 /
+  // unlimited — see `MAX_WS_PAYLOAD_BYTES`): `/api/stream` is a one-way broadcast and
+  // the UI never sends a frame, so this only bounds abuse.
   app.register(websocketPlugin, { options: { maxPayload: MAX_WS_PAYLOAD_BYTES } }).after((err) => {
     if (err) console.error('[api] WebSocket plugin failed to load:', err);
   });
@@ -285,8 +286,14 @@ export function buildServer(
      * reflection oracle. */
     const refuse = (code: number, error: string) => {
       console.warn(`[api] ${req.method} ${req.url} refused (${code}): ${error}`);
+      // `reply.send()` alone is Fastify's documented early-response pattern from a
+      // hook. Calling `done()` *as well* let the request continue into
+      // `preParsing`/`preValidation` after it had already been answered: the result
+      // was still correct only because `reply.sent` short-circuits those stages, so
+      // every refused request paid for body parsing and schema validation it could
+      // not use, and the correctness leaned on that internal guard.
       void reply.code(code).send({ error });
-      return done();
+      return;
     };
 
     // Rule 1 checks the Host *name* only, deliberately: the bound port is not known

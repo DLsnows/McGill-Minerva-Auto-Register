@@ -174,6 +174,28 @@ check(
   `status=${legitStop.status} body=${JSON.stringify(legitBody)}`,
 );
 
+// `/api/scheduler/start` is gated on session readiness, and `requireSession()` reads
+// the status the *server* holds rather than what this script's session double reports
+// — so a cold server answers 409 no matter what the double says. Log in through the
+// real route first, exactly as the browser does, and then assert the gate itself:
+// an unauthenticated caller must be refused (this is the state the server boots in).
+const unauthStart = await fetch(`${BASE}/api/scheduler/start`, {
+  method: 'POST',
+  headers: { origin: ORIGIN },
+});
+check(
+  'POST /api/scheduler/start without a session -> 409, engine untouched',
+  unauthStart.status === 409 && started === 0,
+  `status=${unauthStart.status} started=${started}`,
+);
+
+const login = await fetch(`${BASE}/api/session/login`, {
+  method: 'POST',
+  headers: { origin: ORIGIN },
+});
+// The login route kicks off an async flow; the session double resolves immediately.
+await new Promise((r) => setTimeout(r, 20));
+
 const legitStart = await fetch(`${BASE}/api/scheduler/start`, {
   method: 'POST',
   headers: { origin: ORIGIN },
@@ -181,6 +203,7 @@ const legitStart = await fetch(`${BASE}/api/scheduler/start`, {
 check(
   'same-origin body-less POST /api/scheduler/start -> 200',
   legitStart.status === 200 && started === 1,
+  `login=${login.status} status=${legitStart.status} started=${started}`,
 );
 
 // ── 5. websocket over real TCP: hostile Origin refused, own origin accepted ────
