@@ -178,6 +178,23 @@ describe('CourseCard', () => {
     }
   });
 
+  // Review finding (8th round): after an accepted run that ends in a terminal
+  // state (the course registered within the window) the card kept offering "you
+  // can try again in Ns" next to a REGISTERED badge and a disabled button —
+  // the same stale-claim-next-to-a-terminal-badge contradiction that bounds the
+  // dropped notice.
+  it('does not show a cooldown notice on a course that is no longer watched', () => {
+    render(
+      <CourseCard
+        target={{ ...target, status: 'registered', lastForcedRunAt: Date.now() }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
+
   // The server records the window on the target when it accepts a run, so a
   // reload (or another tab) sees the cooldown without ever hitting a rejection.
   it('derives the cooldown from the target’s lastForcedRunAt (server truth)', () => {

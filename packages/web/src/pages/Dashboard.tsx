@@ -89,6 +89,33 @@ export default function Dashboard() {
     });
   }, [targets.data]);
 
+  // Retire a *local* cooldown estimate once it has elapsed.
+  //
+  // `cooldownRemainingMs` prefers the local estimate whenever it exists — that is
+  // what keeps the countdown off the server's clock (see the precedence rule in
+  // lib/api.ts) — but an estimate that never goes away would mean the server's
+  // `lastForcedRunAt` fallback can never take over again for this target, so a run
+  // started elsewhere (another tab, a reload of that page) would not render as a
+  // cooldown here. Dropping the elapsed estimate restores the fallback without
+  // reintroducing the skew: an expired local window must never be extended by a
+  // server epoch, and an unexpired one still wins.
+  //
+  // Doubles as the display's cleanup pass, so it runs on each refetch (a newer
+  // server window always arrives through one) rather than on a timer.
+  useEffect(() => {
+    if (!targets.data) return;
+    const now = Date.now();
+    setCoolingUntil((s) => {
+      const next: Record<string, number> = {};
+      let changed = false;
+      for (const [id, until] of Object.entries(s)) {
+        if (until <= now) changed = true;
+        else next[id] = until;
+      }
+      return changed ? next : s;
+    });
+  }, [targets.data]);
+
   const onToggleMode = useCallback(async (id: string, next: WatchMode) => {
     await api.updateTarget(id, { mode: next });
     await targetsRef.current.refetch();

@@ -334,7 +334,13 @@ describe('Dashboard', () => {
     const scheduled = { ...watching[0], lastPolledAt: Date.now() - 5_000, nextPollAt: Date.now() + 60_000 };
     mockApi([scheduled], 'authenticated');
     vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'in progress' });
-    const getTargets = vi.spyOn(api, 'getTargets').mockResolvedValue([scheduled]);
+    // `mockResolvedValueOnce` for the mount fetch, so the refreshed targets below
+    // are actually what the assertion sees (a mock that keeps returning the old
+    // list would let the test pass without the retirement ever running).
+    const getTargets = vi
+      .spyOn(api, 'getTargets')
+      .mockResolvedValueOnce([scheduled])
+      .mockResolvedValue([scheduled]);
     renderDashboard();
     await waitFor(() => screen.getByRole('button', { name: /register now/i }));
     await userEvent.click(screen.getByRole('button', { name: /register now/i }));
@@ -346,6 +352,7 @@ describe('Dashboard', () => {
     getTargets.mockResolvedValue([{ ...scheduled, status: 'registered' as const }]);
     streamEvent('Registered COMP 551! 🎉');
     await waitFor(() => expect(screen.queryByTestId('run-notice')).toBeNull());
+    expect(screen.getByText('REGISTERED')).toBeInTheDocument();
   });
 
   it('expires the "already running" notice on its own when no status change arrives', async () => {
@@ -370,6 +377,49 @@ describe('Dashboard', () => {
         await vi.advanceTimersByTimeAsync(31_000);
       });
       expect(screen.queryByTestId('run-notice')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review finding (8th round): an elapsed local estimate must not block the
+  // server's `lastForcedRunAt` fallback forever. It is retired on the next
+  // refetch, so a window started elsewhere (another tab) still renders here.
+  it('lets a newer server-reported window take over once the local estimate has elapsed', async () => {
+    vi.useFakeTimers();
+    try {
+      mockApi(watching, 'authenticated');
+      vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'cooldown', retryAfterMs: 5_000 });
+      const getTargets = vi.spyOn(api, 'getTargets').mockResolvedValue(watching);
+      renderDashboard();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.click(screen.getByRole('button', { name: /register now/i }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+
+      // The 5s window elapses locally: with no server window anywhere, the button
+      // must come back rather than staying stuck on a spent estimate.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6_000);
+      });
+      expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled();
+
+      // A refetch then reports a window that started just now (a manual run from
+      // another tab). The retired estimate must not shadow it: the cooldown is
+      // visible again straight away instead of only after a rejected click.
+      // (`act` flushes the refetch promise; `waitFor` cannot be used here because
+      // it polls with timers that fake time never advances.)
+      getTargets.mockResolvedValue([{ ...watching[0], lastForcedRunAt: Date.now() }]);
+      await act(async () => {
+        streamEvent('Immediate cycle started elsewhere');
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 60s/i);
     } finally {
       vi.useRealTimers();
     }

@@ -69,8 +69,14 @@ export function CourseCard({
   // the notice disappears the moment the window really ends (review finding —
   // a frozen "Try again in 45s" outlived the cooldown and sat next to an
   // enabled button).
+  //
+  // Only meaningful while the course is actually being watched: once the target
+  // leaves `watching` (the accepted run registered the course, the session was
+  // lost, failures hit the limit) there is nothing left to retry, so "you can try
+  // again in Ns" would be the same stale-claim-next-to-a-terminal-badge
+  // contradiction the dropped notice is bounded to avoid (review finding).
   const cooldownSecs = Math.ceil(cooldownRemainingMs(target.lastForcedRunAt, coolingUntil, now) / 1000);
-  const cooling = cooldownSecs > 0;
+  const cooling = canRun && cooldownSecs > 0;
   // Same reasoning for the dropped-run verdict: it is shown for a bounded time and
   // then clears itself, so it cannot be left stranded next to a card that has moved
   // on (see NOTICE_TTL_MS in Dashboard.tsx).
