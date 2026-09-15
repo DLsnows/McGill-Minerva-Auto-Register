@@ -21,9 +21,12 @@ const testStats = (): SectionStats => ({
 
 let dir: string;
 let app: FastifyInstance;
+/** The store that backs `app`, so a test can seed targets directly (deps are private). */
+let seededStore: Store;
 
 function makeDeps(): ApiDeps {
   const store = new Store(dir);
+  seededStore = store;
   return {
     store,
     budget: new Budget(store),
@@ -548,6 +551,41 @@ describe('API', () => {
   it('POST /api/targets/:id/resume returns 404 for a missing target', async () => {
     const r = await app.inject({ method: 'POST', url: '/api/targets/nope/resume' });
     expect(r.statusCode).toBe(404);
+  });
+
+  it('POST /api/targets/:id/resume refuses terminal targets (no duplicate registration)', async () => {
+    // 'registered' / 'waitlisted' are terminal by design: `start-all` filters them out
+    // and the card UI never offers Resume for them. The route itself used to accept
+    // *any* id, which would put a course that already has a seat back into the polling
+    // loop — burning the query budget every cycle and, if `decide()` saw an opening,
+    // reaching `actor.act()` for a duplicate submit.
+    for (const status of ['registered', 'waitlisted'] as const) {
+      const t = seededStore.addTarget({ ...validTarget, targetCrn: '4242' });
+      seededStore.updateTarget(t.id, { status });
+
+      const r = await app.inject({ method: 'POST', url: `/api/targets/${t.id}/resume` });
+
+      expect(r.statusCode).toBe(409);
+      expect(seededStore.getTarget(t.id)!.status).toBe(status);
+      seededStore.removeTarget(t.id);
+    }
+  });
+
+  it('PATCH cannot flip a registered/waitlisted target back to watching', async () => {
+    // Same hazard on the PATCH path, which additionally arms an immediate poll and
+    // clears the failure streak — so a stray `{ status: 'watching' }` used to both
+    // restart polling and hand the course a fresh set of retries.
+    const t = seededStore.addTarget({ ...validTarget, targetCrn: '5150' });
+    seededStore.updateTarget(t.id, { status: 'registered' });
+
+    const r = await app.inject({
+      method: 'PATCH',
+      url: `/api/targets/${t.id}`,
+      payload: { status: 'watching' },
+    });
+
+    expect(r.statusCode).toBe(409);
+    expect(seededStore.getTarget(t.id)!.status).toBe('registered');
   });
 
   it('REGRESSION: start-all arms revived targets as due-now and polls them in the same request', async () => {

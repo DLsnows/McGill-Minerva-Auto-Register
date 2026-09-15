@@ -135,6 +135,21 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     const parsed = targetPatchSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const { id } = req.params as { id: string };
+    // Guard the one transition this branch makes eager. A PATCH that flips a course back
+    // to 'watching' now both arms an immediate poll AND clears the failure streak, so a
+    // stray `{ status: 'watching' }` aimed at a course that already has a seat would
+    // restart polling on it (burning the query budget every cycle) and could reach
+    // `actor.act()` for a duplicate registration. Terminal states stay terminal; the
+    // other routes already honour that, and `/resume` returns 409 for them too.
+    if (parsed.data.status === 'watching') {
+      const existing = deps.store.getTarget(id);
+      if (!existing) return reply.code(404).send({ error: 'not found' });
+      if (existing.status === 'registered' || existing.status === 'waitlisted') {
+        return reply
+          .code(409)
+          .send({ error: `cannot resume a target in status "${existing.status}"`, status: existing.status });
+      }
+    }
     const updated = deps.store.updateTarget(id, parsed.data);
     if (!updated) return reply.code(404).send({ error: 'not found' });
     // A target (re-)entering 'watching' (resume from pause, revive from error,
@@ -276,6 +291,12 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
       deps.scheduler.clearFailures?.(t.id);
     }
     deps.scheduler.start();
+    // `start()` is a no-op when the engine is already running (a second, stale tab, or
+    // simply another course still being watched), so without this the targets revived
+    // above would wait up to a full 30s interval for the first poll — reopening the very
+    // "I clicked Start and nothing happened" gap this route exists to close. `/resume`
+    // calls this for the same reason.
+    deps.scheduler.tickSoon?.();
     const isDone = (s: string) => s === 'registered' || s === 'waitlisted' || s === 'stopped';
     return {
       running: true,
@@ -303,7 +324,19 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   // interval — the very gap that made "Resume" look broken.
   app.post('/api/targets/:id/resume', (req, reply) => {
     const { id } = req.params as { id: string };
-    if (!deps.store.getTarget(id)) return reply.code(404).send({ error: 'not found' });
+    const target = deps.store.getTarget(id);
+    if (!target) return reply.code(404).send({ error: 'not found' });
+    // Only 'paused' and 'error' are revivable. 'registered' / 'waitlisted' are terminal
+    // by design — `start-all` deliberately never touches them (see the `isDone` filter
+    // above) — and 'stopped' is a deliberate user decision. Without this guard the route
+    // would put a course that already has a seat back into the polling loop: it would
+    // burn the daily query budget every cycle and, if `decide()` saw an opening for the
+    // target CRN, reach `actor.act()` and submit a *duplicate* registration attempt.
+    if (target.status !== 'paused' && target.status !== 'error') {
+      return reply
+        .code(409)
+        .send({ error: `cannot resume a target in status "${target.status}"`, status: target.status });
+    }
     deps.store.updateTarget(id, { status: 'watching', nextPollAt: armForImmediatePoll(now()) });
     deps.scheduler.clearFailures?.(id);
     deps.scheduler.start();
