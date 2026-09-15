@@ -5,6 +5,7 @@ import { Notifier } from '../notifier/notifier';
 import { SessionManager } from '../session/session-manager';
 import { Budget } from '../budget/budget';
 import { Store } from '../store/store';
+import { applyPacingSettings } from '../util/pacing';
 import { Scheduler } from './scheduler';
 
 export interface Runtime {
@@ -37,7 +38,8 @@ export function enforceEmailSunset(store: Store): boolean {
 
 /**
  * Wire the full scheduler runtime with real Minerva adapters + the notifier.
- * Normalizes the sunset email channel on the way in (see `enforceEmailSunset`).
+ * Normalizes the sunset email channel (see `enforceEmailSunset`) and applies the
+ * persisted operation speed on the way in.
  * The caller (P6 API) does `session.launch()` + `ensureLoggedIn()` before
  * `scheduler.start()`.
  */
@@ -45,6 +47,9 @@ export function createRuntime(onEvent?: (e: LogEvent) => void): Runtime {
   const session = new SessionManager();
   const store = new Store();
   enforceEmailSunset(store);
+  // Apply the persisted operation speed before anything can poll: `humanPause()`
+  // reads this module-level config on every call. Later settings saves re-apply it.
+  applyPacingSettings(store.getSettings());
   const budget = new Budget(store);
   const notifier = new Notifier(() => store.getSettings());
   const scheduler = new Scheduler({

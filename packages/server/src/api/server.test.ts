@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { Store } from '../store/store';
 import { Budget } from '../budget/budget';
+import { getPacing, humanPause, resetPacing } from '../util/pacing';
 import { buildServer, type ApiDeps } from './server';
 
 let dir: string;
@@ -31,6 +32,9 @@ beforeEach(() => {
 afterEach(async () => {
   await app.close();
   rmSync(dir, { recursive: true, force: true });
+  // The pacing config is module-level: a settings PUT would otherwise leak into
+  // the next test.
+  resetPacing();
 });
 
 const validTarget = {
@@ -108,6 +112,81 @@ describe('API', () => {
     expect(put.statusCode).toBe(200);
     const get = await app.inject({ method: 'GET', url: '/api/settings' });
     expect(get.json().dryRun).toBe(true);
+  });
+
+  it('accepts and persists the operation-speed settings', async () => {
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { opPauseMs: 1500, opJitterMs: 200 },
+    });
+    expect(put.statusCode).toBe(200);
+    const get = await app.inject({ method: 'GET', url: '/api/settings' });
+    expect(get.json().opPauseMs).toBe(1500);
+    expect(get.json().opJitterMs).toBe(200);
+  });
+
+  it('rejects out-of-range operation-speed values with 400 (server-side bound)', async () => {
+    const cases = [
+      { opPauseMs: 0 }, // below the 250ms anti-detection floor
+      { opPauseMs: 249 },
+      { opPauseMs: 60_001 },
+      { opJitterMs: -1 },
+      { opJitterMs: 60_001 },
+      { opPauseMs: Number.NaN }, // serialized as null
+    ];
+    for (const payload of cases) {
+      const r = await app.inject({ method: 'PUT', url: '/api/settings', payload });
+      expect(r.statusCode, JSON.stringify(payload)).toBe(400);
+    }
+    // Nothing was written by the rejected requests.
+    const get = await app.inject({ method: 'GET', url: '/api/settings' });
+    expect(get.json().opPauseMs).toBe(3000);
+    expect(get.json().opJitterMs).toBe(1000);
+  });
+
+  it('accepts the boundary operation-speed values', async () => {
+    const low = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { opPauseMs: 250, opJitterMs: 0 },
+    });
+    expect(low.statusCode).toBe(200);
+    const high = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { opPauseMs: 60_000, opJitterMs: 60_000 },
+    });
+    expect(high.statusCode).toBe(200);
+  });
+
+  it('re-applies a saved operation speed to subsequent humanPause calls', async () => {
+    const r = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { opPauseMs: 1500, opJitterMs: 100 },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(getPacing()).toEqual({ baseMs: 1500, jitterMs: 100 });
+    // The next browser operation waits within the new range.
+    vi.useFakeTimers();
+    try {
+      const spy = vi.spyOn(globalThis, 'setTimeout');
+      void humanPause();
+      const delay = Number(spy.mock.calls.at(-1)?.[1]);
+      expect(delay).toBeGreaterThanOrEqual(1400);
+      expect(delay).toBeLessThanOrEqual(1600);
+      spy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('merges a partial operation-speed save with the stored values', async () => {
+    await app.inject({ method: 'PUT', url: '/api/settings', payload: { opJitterMs: 250 } });
+    expect(getPacing()).toEqual({ baseMs: 3000, jitterMs: 250 });
+    await app.inject({ method: 'PUT', url: '/api/settings', payload: { opPauseMs: 2000 } });
+    expect(getPacing()).toEqual({ baseMs: 2000, jitterMs: 250 });
   });
 
   it('returns a self-consistent budget snapshot', async () => {
