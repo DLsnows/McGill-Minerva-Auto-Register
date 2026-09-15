@@ -40,6 +40,17 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.DEEPSEEK_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Without this the action refuses every bot-authored PR before it reads a line
+          # of the diff:
+          #   "Action failed with error: Workflow initiated by non-human actor: dependabot
+          #    (type: Bot). Add bot to allowed_bots list or use '*' to allow all bots."
+          # That made the `review` check red on all nine historical Dependabot PRs, so the
+          # one reviewer that *did* run on them always reported failure.
+          #
+          # Deliberately NOT '*': this repository is public, and the action's own docs warn
+          # that '*' lets external Apps invoke it with attacker-controlled prompts. Only
+          # the dependency bot is allowlisted.
+          allowed_bots: 'dependabot[bot]'
           prompt: |
             Review pull request #${{ github.event.pull_request.number }}.
 
