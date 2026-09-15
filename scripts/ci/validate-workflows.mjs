@@ -72,7 +72,60 @@ function validateWorkflow(file) {
     }
   }
 
+  validateForkGuard(label, jobs);
+
   console.log(`  ✓ ${label} (jobs: ${Object.keys(jobs).join(', ')})`);
+}
+
+/**
+ * Jobs that execute repository code MUST be gated behind the `guard` job, otherwise a fork
+ * PR runs its own `package.json` scripts (preinstall hooks, test/build) on our runner —
+ * `branch-gate.yml` refusing it later is too late, because both workflows start together.
+ *
+ * Exemptions:
+ *   - `guard` itself (it is the gate, and runs no repo code);
+ *   - workflows that never check out or install anything (`WORKFLOWS_WITHOUT_GUARD`).
+ */
+const WORKFLOWS_WITHOUT_GUARD = new Set(['branch-gate.yml']);
+const CODE_RUNNING_STEP = /npm (ci|install|test|run)|node |npx |vitest|tsc /;
+const GUARDED_JOB = /needs\.guard\.outputs\.same_repo\s*==\s*'true'/;
+
+function validateForkGuard(label, jobs) {
+  const file = label.replace('.github/workflows/', '');
+  if (WORKFLOWS_WITHOUT_GUARD.has(file)) return;
+  if (!('guard' in jobs)) return; // a workflow that runs no repo code needs no guard
+
+  check(
+    Array.isArray(jobs.guard?.steps),
+    label,
+    'job `guard` must declare steps that publish `same_repo`',
+  );
+  check(
+    Boolean(jobs.guard?.outputs?.same_repo),
+    label,
+    'job `guard` must expose the `same_repo` output',
+  );
+
+  for (const [jobId, job] of Object.entries(jobs)) {
+    if (jobId === 'guard') continue;
+    const runsCode = (job?.steps ?? []).some((step) => {
+      if (typeof step?.run === 'string' && CODE_RUNNING_STEP.test(step.run)) return true;
+      // Any third-party action runs code from the (untrusted) PR checkout in the common case.
+      return typeof step?.uses === 'string';
+    });
+    if (!runsCode) continue;
+    check(
+      String(job?.if ?? '').includes(`needs.guard.outputs.same_repo == 'true'`) ||
+        GUARDED_JOB.test(String(job?.if ?? '')),
+      label,
+      `job \`${jobId}\` runs repository code but is not gated on \`needs.guard.outputs.same_repo == 'true'\` (fork PRs would execute untrusted code)`,
+    );
+    check(
+      String(job?.needs ?? '').includes('guard'),
+      label,
+      `job \`${jobId}\` must declare \`needs: guard\` so it is skipped for forks`,
+    );
+  }
 }
 
 function validateDependabot() {
