@@ -14,12 +14,18 @@ vi.mock('../lib/useEventStream', () => ({
   }),
 }));
 
-function mockApi(targets: Awaited<ReturnType<typeof api.getTargets>>, sessionStatus: 'authenticated' | 'logged-out') {
+function mockApi(
+  targets: Awaited<ReturnType<typeof api.getTargets>>,
+  sessionStatus: 'authenticated' | 'logged-out',
+) {
   vi.spyOn(api, 'getTargets').mockResolvedValue(targets);
   vi.spyOn(api, 'getSession').mockResolvedValue({ status: sessionStatus });
   vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
   vi.spyOn(api, 'getSettings').mockResolvedValue({
-    pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
+    pollIntervalMinutes: 30,
+    jitterMinutes: 3,
+    queryBudget: 100,
+    registerBudget: 20,
     notify: { desktop: true, sound: true, email: false },
   });
   vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
@@ -37,7 +43,19 @@ afterEach(() => vi.restoreAllMocks());
 describe('Dashboard', () => {
   it('loads targets and renders a card + console', async () => {
     mockApi(
-      [{ id: 't1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 }],
+      [
+        {
+          id: 't1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'watching',
+          createdAt: 0,
+        },
+      ],
       'authenticated',
     );
     renderDashboard();
@@ -54,21 +72,49 @@ describe('Dashboard', () => {
 
   it('master toggle reads "Start all" when every course is paused/terminal', async () => {
     mockApi(
-      [{ id: 'p1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'paused', createdAt: 0 }],
+      [
+        {
+          id: 'p1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'paused',
+          createdAt: 0,
+        },
+      ],
       'authenticated',
     );
     renderDashboard();
-    await waitFor(() => expect(screen.getByRole('button', { name: /start all/i })).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /start all/i })).toBeInTheDocument(),
+    );
     expect(screen.queryByRole('button', { name: /stop all/i })).toBeNull();
   });
 
   it('master toggle reads "Stop all" when a course is watching', async () => {
     mockApi(
-      [{ id: 'w1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 }],
+      [
+        {
+          id: 'w1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'watching',
+          createdAt: 0,
+        },
+      ],
       'authenticated',
     );
     renderDashboard();
-    await waitFor(() => expect(screen.getByRole('button', { name: /stop all/i })).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /stop all/i })).toBeInTheDocument(),
+    );
   });
 
   it('clears the console from the Clear button', async () => {
@@ -91,7 +137,19 @@ describe('Dashboard', () => {
 
   it('pauses a single course from its card', async () => {
     mockApi(
-      [{ id: 'w1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 }],
+      [
+        {
+          id: 'w1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'watching',
+          createdAt: 0,
+        },
+      ],
       'authenticated',
     );
     const update = vi.spyOn(api, 'updateTarget').mockResolvedValue({} as never);
@@ -103,7 +161,19 @@ describe('Dashboard', () => {
 
   it('disables "Start all" when not logged in', async () => {
     mockApi(
-      [{ id: 'p1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'paused', createdAt: 0 }],
+      [
+        {
+          id: 'p1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'paused',
+          createdAt: 0,
+        },
+      ],
       'logged-out',
     );
     renderDashboard();
@@ -112,7 +182,9 @@ describe('Dashboard', () => {
 
   it('starts all from the Dashboard master toggle', async () => {
     mockApi([], 'authenticated');
-    const startAll = vi.spyOn(api, 'startAll').mockResolvedValue({ running: true, resumed: 0 });
+    const startAll = vi
+      .spyOn(api, 'startAll')
+      .mockResolvedValue({ running: true, resumed: 0, skipped: 0, errored: 0 });
     renderDashboard();
     await waitFor(() => screen.getByRole('button', { name: /start all/i }));
     await userEvent.click(screen.getByRole('button', { name: /start all/i }));
@@ -124,7 +196,10 @@ describe('Dashboard', () => {
     const getBudget = vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
     vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
     vi.spyOn(api, 'getSettings').mockResolvedValue({
-      pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      queryBudget: 100,
+      registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
     });
     vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
@@ -144,5 +219,98 @@ describe('Dashboard', () => {
     await waitFor(() => screen.getByRole('button', { name: /start all/i }));
     await userEvent.click(screen.getByRole('button', { name: /start all/i }));
     await waitFor(() => expect(screen.getByText(/sched boom/i)).toBeInTheDocument());
+  });
+
+  // --- Q3/Q20: recovering from the `error` state -----------------------------
+
+  it('resumes an errored course through the dedicated resume route, not a raw PATCH', async () => {
+    const errored = {
+      id: 'e1',
+      label: 'COMP 551',
+      term: '202701',
+      subject: 'COMP',
+      courseNumber: '551',
+      targetCrn: '2347',
+      mode: 'auto' as const,
+      status: 'error' as const,
+      createdAt: 0,
+    };
+    mockApi([errored], 'authenticated');
+    const resume = vi
+      .spyOn(api, 'resumeTarget')
+      .mockResolvedValue({ resumed: true, status: 'watching' });
+    const patch = vi.spyOn(api, 'updateTarget').mockResolvedValue({} as never);
+    const startScheduler = vi.spyOn(api, 'startScheduler').mockResolvedValue({ running: true });
+    renderDashboard();
+
+    const btn = await screen.findByRole('button', { name: /resume watching/i });
+    await userEvent.click(btn);
+
+    // A plain status PATCH would leave the failure streak intact, so the target
+    // would trip straight back into 'error' on the next blip.
+    expect(resume).toHaveBeenCalledWith('e1');
+    expect(patch).not.toHaveBeenCalled();
+    expect(startScheduler).toHaveBeenCalled(); // and something is actually polling it
+  });
+
+  it('tells the user how many courses "Start all" skipped, and why', async () => {
+    mockApi(
+      [
+        {
+          id: 'e1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'error',
+          createdAt: 0,
+        },
+      ],
+      'authenticated',
+    );
+    vi.spyOn(api, 'startAll').mockResolvedValue({
+      running: true,
+      resumed: 0,
+      skipped: 1,
+      errored: 1,
+    });
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /start all/i }));
+    await userEvent.click(screen.getByRole('button', { name: /start all/i }));
+
+    // Before: the response was discarded, so the click looked like a no-op.
+    await waitFor(() => expect(screen.getByText(/skipped 1/i)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /resume watching/i })).toBeInTheDocument();
+  });
+
+  it('reports a resumption count when Start all restores paused courses', async () => {
+    mockApi(
+      [
+        {
+          id: 'p1',
+          label: 'COMP 551',
+          term: '202701',
+          subject: 'COMP',
+          courseNumber: '551',
+          targetCrn: '2347',
+          mode: 'auto',
+          status: 'paused',
+          createdAt: 0,
+        },
+      ],
+      'authenticated',
+    );
+    vi.spyOn(api, 'startAll').mockResolvedValue({
+      running: true,
+      resumed: 2,
+      skipped: 0,
+      errored: 0,
+    });
+    renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /start all/i }));
+    await userEvent.click(screen.getByRole('button', { name: /start all/i }));
+    await waitFor(() => expect(screen.getByText(/resumed 2 course/i)).toBeInTheDocument());
   });
 });

@@ -16,19 +16,31 @@ interface Props {
   loggedIn?: boolean;
 }
 
-// Only an actively-watching course can be paused, and only a paused course can
-// be resumed. 'error' and the completed states (registered / waitlisted) are
-// terminal — they cannot be resumed from here.
+// Only an actively-watching course can be paused. A paused course can be resumed,
+// and so can one the failure breaker stopped ('error'): without that, `error` was
+// a one-way door — the card offered no action, "Register now" is disabled for
+// non-watching targets, and Start all deliberately skips them, so the corrected
+// CRN the error message asks for could never actually be retried (Q3/Q20).
+// The completed states (registered / waitlisted) stay terminal: you already have
+// the seat, and silently re-watching it would only burn budget.
 const PAUSABLE: WatchStatus[] = ['watching'];
-const RESUMABLE: WatchStatus[] = ['paused'];
+const RESUMABLE: WatchStatus[] = ['paused', 'error'];
 
-export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, running, loggedIn = true }: Props) {
+export function CourseCard({
+  target,
+  onToggleMode,
+  onRun,
+  onTogglePolling,
+  running,
+  loggedIn = true,
+}: Props) {
   const { t } = useTranslation();
   const now = useNow(30_000); // ticks so "last poll Nm ago" stays current
   const title = target.label ?? `${target.subject} ${target.courseNumber}`;
   const canRun = target.status === 'watching';
   const canPause = PAUSABLE.includes(target.status);
   const canResume = RESUMABLE.includes(target.status);
+  const errored = canResume && target.status === 'error';
   return (
     <div className="card glass">
       <div className="row1">
@@ -54,7 +66,7 @@ export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, runni
               title={canResume && !loggedIn ? t('scheduler.loginFirst') : undefined}
               onClick={() => onTogglePolling(target.id, canPause ? 'paused' : 'watching')}
             >
-              {canPause ? t('card.pause') : t('card.resume')}
+              {canPause ? t('card.pause') : errored ? t('card.resumeWatching') : t('card.resume')}
             </button>
           )}
           <button
@@ -70,7 +82,9 @@ export function CourseCard({ target, onToggleMode, onRun, onTogglePolling, runni
       </div>
 
       <div className="meta">
-        {target.lastPolledAt ? t('card.lastPoll', { rel: fmtRelative(target.lastPolledAt, now) }) : t('card.notPolled')}
+        {target.lastPolledAt
+          ? t('card.lastPoll', { rel: fmtRelative(target.lastPolledAt, now) })
+          : t('card.notPolled')}
       </div>
     </div>
   );

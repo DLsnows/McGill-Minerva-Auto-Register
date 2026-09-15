@@ -10,12 +10,15 @@ export default function Courses() {
   const { targets } = useData();
   const [editing, setEditing] = useState<string | null>(null);
   const [err, setErr] = useState<string>();
+  /** Non-fatal notice: the save itself succeeded but a follow-up step didn't (Q3). */
+  const [warn, setWarn] = useState<string>();
   const [addKey, setAddKey] = useState(0); // bumped to remount (reset) the add form
   const list = targets.data ?? [];
 
   // Run a mutation, surface any failure, refresh the list; returns success.
   const run = async (op: () => Promise<unknown>) => {
     setErr(undefined);
+    setWarn(undefined);
     try {
       await op();
       await targets.refetch();
@@ -29,8 +32,13 @@ export default function Courses() {
   const add = async (v: CourseFormValues) => {
     const ok = await run(() =>
       api.addTarget({
-        term: v.term, subject: v.subject, courseNumber: v.courseNumber, targetCrn: v.targetCrn,
-        faculty: v.faculty || undefined, label: v.label || undefined, mode: v.mode,
+        term: v.term,
+        subject: v.subject,
+        courseNumber: v.courseNumber,
+        targetCrn: v.targetCrn,
+        faculty: v.faculty || undefined,
+        label: v.label || undefined,
+        mode: v.mode,
       }),
     );
     if (ok) setAddKey((k) => k + 1); // clear the form so the next course starts fresh
@@ -39,9 +47,28 @@ export default function Courses() {
   const saveEdit = (id: string, v: CourseFormValues) =>
     run(async () => {
       await api.updateTarget(id, {
-        term: v.term, subject: v.subject, courseNumber: v.courseNumber, targetCrn: v.targetCrn,
-        faculty: v.faculty || undefined, label: v.label || undefined, mode: v.mode,
+        term: v.term,
+        subject: v.subject,
+        courseNumber: v.courseNumber,
+        targetCrn: v.targetCrn,
+        faculty: v.faculty || undefined,
+        label: v.label || undefined,
+        mode: v.mode,
       });
+      // A course the failure breaker stopped is revived by the server on a query-field
+      // edit (Q3) — the error message tells the user to fix exactly these fields, so
+      // saving them has to actually restart the watch. Make sure the engine is up,
+      // otherwise the target flips back to 'watching' with nothing polling it.
+      const wasErrored = (targets.data ?? []).find((t) => t.id === id)?.status === 'error';
+      if (wasErrored) {
+        try {
+          await api.startScheduler();
+        } catch {
+          // Non-fatal: the save landed and the target is watching again. Say so
+          // instead of letting a broken engine look like a successful restart.
+          setWarn(tr('courses.editRestartFailed'));
+        }
+      }
       setEditing(null);
     });
 
@@ -54,6 +81,7 @@ export default function Courses() {
       </div>
       <CourseForm key={addKey} submitLabel={tr('courses.addCourse')} onSubmit={add} />
       {err && <div className="errbar">{err}</div>}
+      {warn && !err && <div className="banner">{warn}</div>}
 
       <div className="col-h" style={{ marginTop: 22 }}>
         <h2 className="serif">{tr('courses.managed')}</h2>
@@ -68,8 +96,13 @@ export default function Courses() {
                 key={t.id}
                 submitLabel={tr('courses.save')}
                 initial={{
-                  term: t.term, subject: t.subject, courseNumber: t.courseNumber, targetCrn: t.targetCrn,
-                  faculty: t.faculty ?? '', label: t.label ?? '', mode: t.mode,
+                  term: t.term,
+                  subject: t.subject,
+                  courseNumber: t.courseNumber,
+                  targetCrn: t.targetCrn,
+                  faculty: t.faculty ?? '',
+                  label: t.label ?? '',
+                  mode: t.mode,
                 }}
                 onSubmit={(v) => saveEdit(t.id, v)}
                 onCancel={() => {

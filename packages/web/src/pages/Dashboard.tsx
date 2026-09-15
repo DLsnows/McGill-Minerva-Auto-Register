@@ -14,6 +14,8 @@ export default function Dashboard() {
   const { events, connected, clear } = useEventStream();
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [schedErr, setSchedErr] = useState<string>();
+  /** Transient "what Start all actually did" note (Q20). */
+  const [schedNote, setSchedNote] = useState<string>();
   const [clearErr, setClearErr] = useState<string>();
   const [schedBusy, setSchedBusy] = useState(false);
 
@@ -50,29 +52,31 @@ export default function Dashboard() {
   // Clear the console: wipe the server-side log (so a reconnect won't re-seed the
   // old lines), then the locally-held events. Only clear locally once the server
   // call succeeds — otherwise surface the error and leave the log intact to retry.
-  const onClearConsole = useCallback(
-    async () => {
-      // Own error state — must not touch (or be clobbered by) scheduler errors.
-      setClearErr(undefined);
-      try {
-        await api.clearEvents();
-        clear();
-      } catch (e) {
-        setClearErr(e instanceof Error ? e.message : tr('console.clearFailed'));
-      }
-    },
-    [clear, tr],
-  );
+  const onClearConsole = useCallback(async () => {
+    // Own error state — must not touch (or be clobbered by) scheduler errors.
+    setClearErr(undefined);
+    try {
+      await api.clearEvents();
+      clear();
+    } catch (e) {
+      setClearErr(e instanceof Error ? e.message : tr('console.clearFailed'));
+    }
+  }, [clear, tr]);
 
   // Per-course pause/resume. Resuming a single course also makes sure the engine
   // is running, otherwise flipping it to 'watching' alone wouldn't poll anything.
+  // An `error` target goes through the dedicated resume route, which also clears
+  // its failure streak and makes it due immediately — resurrecting it via a plain
+  // status PATCH would leave it erroring out again on the next blip (Q3).
   const onTogglePolling = useCallback(
     async (id: string, next: WatchStatus) => {
       // No resuming/starting a task while logged out (the button is disabled too).
       if (next === 'watching' && sessionRef.current.data?.status !== 'authenticated') return;
       setSchedErr(undefined);
       try {
-        await api.updateTarget(id, { status: next });
+        const current = (targetsRef.current.data ?? []).find((t) => t.id === id);
+        if (next === 'watching' && current?.status === 'error') await api.resumeTarget(id);
+        else await api.updateTarget(id, { status: next });
         if (next === 'watching') await api.startScheduler();
       } catch (e) {
         setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
@@ -109,10 +113,29 @@ export default function Dashboard() {
     schedBusyRef.current = true;
     setSchedBusy(true);
     setSchedErr(undefined);
+    setSchedNote(undefined);
     const sch = schedulerRef.current;
     try {
-      if (anyWatching) await api.stopAll();
-      else await api.startAll();
+      if (anyWatching) {
+        await api.stopAll();
+      } else {
+        // Report what the bulk action actually did. "Start all" skips courses the
+        // breaker stopped and any already-completed ones, and that count used to
+        // be thrown away — so a user with only errored courses clicked it, saw
+        // absolutely nothing change, and had no way to learn why (Q20). The
+        // log line alone isn't enough: it's off to the side in the console.
+        const res = await api.startAll();
+        if (res.skipped > 0) {
+          setSchedNote(
+            tr('dashboard.startAllSkipped', { resumed: res.resumed, skipped: res.skipped }) +
+              (res.errored > 0
+                ? ` ${tr('dashboard.startAllErrored', { count: res.errored })}`
+                : ''),
+          );
+        } else if (res.resumed > 0) {
+          setSchedNote(tr('dashboard.startAllResumed', { resumed: res.resumed }));
+        }
+      }
       await Promise.all([sch.refetch(), targetsRef.current.refetch()]);
     } catch (e) {
       setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
@@ -145,6 +168,7 @@ export default function Dashboard() {
             />
           </div>
           {schedErr && <div className="errbar">{schedErr}</div>}
+          {schedNote && !schedErr && <div className="banner">{schedNote}</div>}
           {list.length === 0 ? (
             <div className="empty glass">{tr('dashboard.empty')}</div>
           ) : (

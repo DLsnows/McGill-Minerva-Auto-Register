@@ -38,6 +38,18 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/**
+ * Why an in-flight cycle refused to continue. `paused` covers both Stop-all and a
+ * single card's Pause (both flip the status); `scheduler-stopped` is `stop()` —
+ * used by the master toggle and the standalone Stop button.
+ */
+type CancelReason = 'paused' | 'scheduler-stopped';
+
+/** Passed down a cycle so it can ask "was I cancelled while I was awaiting?". */
+interface CycleGuard {
+  generation: number;
+}
+
 /** Consecutive failed cycles a target may have before we stop watching it. Any
  * error counts: a query/parse exception, the CRN missing from the results, a
  * registration exception, or a registration error outcome. After this many
@@ -62,36 +74,111 @@ export class Scheduler {
   private readonly inFlight = new Set<string>();
   /** Per-target count of consecutive failed cycles (any error kind). */
   private readonly failureStreak = new Map<string, number>();
+  /**
+   * Bumped by `stop()`. A cycle captures the value when it starts and aborts as
+   * soon as it changes, so "Stop all"/Stop cancels *in-flight* work instead of
+   * only clearing the interval (Q9/Q14). Without this, a cycle that had already
+   * passed the status check would keep going for up to a minute — past several
+   * `humanPause()`s and a real Minerva navigation — and still submit a
+   * registration the user had just cancelled.
+   */
+  private generation = 0;
 
   constructor(private readonly deps: SchedulerDeps) {
     this.now = deps.now ?? Date.now;
     this.random = deps.random ?? Math.random;
   }
 
+  /** Append a log event AND surface it. Never throws: the scheduler's whole job
+   * is to keep running, and a store that cannot persist (disk full, AV lock —
+   * see `Store.save`) must not take the process down with it. Falling back to
+   * stderr keeps the event visible even when the event log itself is broken. */
   private log(level: LogLevel, message: string, targetId?: string, data?: unknown): void {
-    const ev = this.deps.store.appendEvent({ level, message, targetId, data });
-    this.deps.onEvent?.(ev);
+    let ev: LogEvent;
+    try {
+      ev = this.deps.store.appendEvent({ level, message, targetId, data });
+    } catch (e) {
+      console.error(`[scheduler] ${level}: ${message} (event log unavailable: ${errMsg(e)})`);
+      return;
+    }
+    try {
+      this.deps.onEvent?.(ev);
+    } catch (e) {
+      console.error(`[scheduler] event relay failed: ${errMsg(e)}`);
+    }
+  }
+
+  /** True once this cycle's generation is stale (i.e. `stop()` ran). */
+  private isCanceled(guard: CycleGuard): boolean {
+    return guard.generation !== this.generation;
+  }
+
+  /** Say why a cycle stopped short, and drop its pending poll time so a later
+   * Resume doesn't inherit a schedule from the run that was just cancelled. */
+  private abortCycle(target: WatchTarget, reason: CancelReason): void {
+    this.deps.store.updateTarget(target.id, { nextPollAt: undefined });
+    if (reason === 'paused') {
+      this.log(
+        'info',
+        `Cycle cancelled in flight — target is no longer 'watching' (paused / stopped from the UI). No registration was submitted.`,
+        target.id,
+      );
+    } else {
+      this.log(
+        'warn',
+        `Cycle cancelled in flight — the scheduler was stopped. No registration was submitted.`,
+        target.id,
+      );
+    }
+  }
+
+  /** Forget a target's consecutive-failure streak. Called when the user supplies
+   * new input (resume after `error`, editing the query fields), so the first
+   * genuine blip after an explicit retry doesn't trip the breaker immediately. */
+  clearFailures(targetId: string): void {
+    this.failureStreak.delete(targetId);
+  }
+
+  /** Make a target due on the very next tick, instead of waiting for whatever
+   * `nextPollAt` a previous cycle wrote (which can be hours away after a budget
+   * back-off). Used by the resume / edit-recovery paths so "Resume" actually
+   * means "poll again soon" rather than "poll at some point". */
+  scheduleNow(targetId: string): void {
+    if (this.deps.store.getTarget(targetId)) {
+      this.deps.store.updateTarget(targetId, { nextPollAt: this.now() });
+    }
   }
 
   /** Run a single cycle for one target. With `{ force: true }` the auto/notify
    * mode gate is bypassed (notify-mode courses still act on an opening) — used
    * by the one-click "Register now" path. Budgets + session checks still apply.
-   * A per-target in-flight guard prevents concurrent runs of the same target. */
+   * A per-target in-flight guard prevents concurrent runs of the same target.
+   * Rejects only for errors the caller should surface (a watcher/actor exception
+   * is handled inside the cycle); `tick()` wraps each call so one target's
+   * failure can never starve the rest of the round. */
   async runOnce(targetId: string, opts: { force?: boolean } = {}): Promise<void> {
     if (this.inFlight.has(targetId)) {
-      this.log('info', 'Run already in progress for this target — skipping concurrent run', targetId);
+      this.log(
+        'info',
+        'Run already in progress for this target — skipping concurrent run',
+        targetId,
+      );
       return;
     }
     this.inFlight.add(targetId);
     try {
-      await this.runCycle(targetId, opts);
+      await this.runCycle(targetId, { ...opts, guard: { generation: this.generation } });
     } finally {
       this.inFlight.delete(targetId);
     }
   }
 
-  private async runCycle(targetId: string, opts: { force?: boolean }): Promise<void> {
+  private async runCycle(
+    targetId: string,
+    opts: { force?: boolean; guard: CycleGuard },
+  ): Promise<void> {
     const { store, budget } = this.deps;
+    const guard = opts.guard;
     const target = store.getTarget(targetId);
     if (!target || target.status !== 'watching') return;
     const now = this.now();
@@ -102,11 +189,30 @@ export class Scheduler {
       return;
     }
 
-    if (!(await this.deps.session.isLoggedIn())) {
+    // Session probe. This is the *only* awaited call before the query that had
+    // no protection, and the real-world trigger is mundane: the user closes the
+    // automation's Chromium window, `getPage()` then throws
+    // ("SessionManager not launched", or Target-closed while it is closing).
+    // Treat any throw as "session unavailable" — the same outcome as a `false`
+    // return — instead of letting it escape and kill the whole process.
+    let loggedIn: boolean;
+    try {
+      loggedIn = await this.deps.session.isLoggedIn();
+    } catch (e) {
       store.updateTarget(targetId, { status: 'paused' });
-      this.log('warn', 'Session not active (logged out / evicted) — paused; please re-login', targetId);
+      this.log('warn', `Session check failed (${errMsg(e)}) — paused; please re-login`, targetId);
       return;
     }
+    if (!loggedIn) {
+      store.updateTarget(targetId, { status: 'paused' });
+      this.log(
+        'warn',
+        'Session not active (logged out / evicted) — paused; please re-login',
+        targetId,
+      );
+      return;
+    }
+    if (this.isCanceled(guard)) return this.abortCycle(target, 'scheduler-stopped');
 
     const query: CourseQuery = {
       term: target.term,
@@ -126,6 +232,7 @@ export class Scheduler {
       return;
     }
     budget.recordQuery(now);
+    if (this.isCanceled(guard)) return this.abortCycle(target, 'scheduler-stopped');
 
     if (!check) {
       // The query ran but the target CRN isn't among this course's sections.
@@ -178,6 +285,15 @@ export class Scheduler {
       return;
     }
 
+    // Last gate before the irreversible step. The query + decision above took
+    // tens of seconds (9 humanPause()s and several navigations), which is ample
+    // time for the user to have hit Pause / Stop all. Re-read the status here and
+    // honour the cancel token: a submission that the user has already cancelled
+    // would otherwise still land — and overwrite their 'paused' back to
+    // 'registered', leaving them to drop the course by hand (Q9/Q14).
+    const cancelReason = this.cancelReason(targetId, guard);
+    if (cancelReason) return this.abortCycle(target, cancelReason);
+
     let outcome: RegisterOutcome;
     try {
       outcome = await this.deps.actor.act(target.term, target.targetCrn, action);
@@ -188,8 +304,20 @@ export class Scheduler {
       return;
     }
     budget.recordRegister(now);
+    if (this.isCanceled(guard)) return this.abortCycle(target, 'scheduler-stopped');
 
     this.applyOutcome(target, outcome);
+  }
+
+  /** Why the current cycle must not continue, or undefined if it may. Reads the
+   * target's status fresh: the status captured at cycle start is stale by now,
+   * because the query/decision phase above takes tens of seconds during which
+   * the user can pause this course (Q9). `stop()` bumps the generation, which
+   * covers the master "Stop all"/Stop path (Q14). */
+  private cancelReason(targetId: string, guard: CycleGuard): CancelReason | undefined {
+    if (guard.generation !== this.generation) return 'scheduler-stopped';
+    if (this.deps.store.getTarget(targetId)?.status !== 'watching') return 'paused';
+    return undefined;
   }
 
   /** Record a failed cycle for one target and log `message` at error level (with
@@ -201,11 +329,21 @@ export class Scheduler {
     if (streak >= FAILURE_LIMIT) {
       this.failureStreak.delete(target.id);
       this.deps.store.updateTarget(target.id, { status: 'error' });
-      this.log('error', `${message} — stopped watching after ${streak} consecutive failures.`, target.id, data);
+      this.log(
+        'error',
+        `${message} — stopped watching after ${streak} consecutive failures.`,
+        target.id,
+        data,
+      );
       return true;
     }
     this.failureStreak.set(target.id, streak);
-    this.log('error', `${message} (failure ${streak}/${FAILURE_LIMIT}) — will retry.`, target.id, data);
+    this.log(
+      'error',
+      `${message} (failure ${streak}/${FAILURE_LIMIT}) — will retry.`,
+      target.id,
+      data,
+    );
     return false;
   }
 
@@ -221,7 +359,6 @@ export class Scheduler {
       this.log('error', `Forced run failed: ${errMsg(e)}`, id),
     );
   }
-
   private applyOutcome(target: WatchTarget, outcome: RegisterOutcome): void {
     const label = target.label ?? target.targetCrn;
     switch (outcome.kind) {
@@ -244,12 +381,20 @@ export class Scheduler {
         return;
       case 'waitlist-available':
         this.noteSuccess(target.id);
-        this.log('warn', 'Open-space reserved for waitlist; will reassess next cycle', target.id, outcome);
+        this.log(
+          'warn',
+          'Open-space reserved for waitlist; will reassess next cycle',
+          target.id,
+          outcome,
+        );
         this.scheduleNext(target);
         return;
       case 'error':
       default:
-        if (this.noteFailure(target, `Registration error: ${outcome.message ?? 'unknown'}`, outcome)) return;
+        if (
+          this.noteFailure(target, `Registration error: ${outcome.message ?? 'unknown'}`, outcome)
+        )
+          return;
         this.scheduleNext(target);
         return;
     }
@@ -311,29 +456,52 @@ export class Scheduler {
     this.timer = setInterval(() => {
       if (this.ticking) return; // skip if the previous tick is still running
       this.ticking = true;
-      void this.tick().finally(() => {
-        this.ticking = false;
-      });
+      void this.tick()
+        // `.finally()` alone does not consume a rejection — the derived promise
+        // stayed unhandled, and Node ≥22 turns an unhandled rejection into a
+        // process exit (exit code 1). One target erroring used to take the API,
+        // the WebSocket and all polling down together, with the UI stuck on
+        // "reconnecting…". `tick()` already isolates each target; this is the
+        // last-resort net so nothing can escape the timer callback.
+        .catch((e) => {
+          this.log('error', `Scheduler tick failed: ${errMsg(e)}`);
+        })
+        .finally(() => {
+          this.ticking = false;
+        });
     }, tickMs);
   }
 
+  /** Stop the loop AND cancel every in-flight cycle (Q9/Q14). `clearInterval`
+   * alone left a cycle that had already started running for up to a minute —
+   * through several humanPause()s and a real Minerva navigation — so it could
+   * still submit a registration after the user pressed "Stop all". */
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.generation++;
   }
 
   isRunning(): boolean {
     return this.timer !== null;
   }
 
-  /** Run a cycle for every watching target whose nextPollAt is due. Sequential. */
+  /** Run a cycle for every watching target whose nextPollAt is due. Sequential,
+   * and each target is isolated: an unexpected throw from one target's cycle is
+   * logged and the round continues. Without that, a single bad target would
+   * starve every later target in the same round — and, before the `.catch()`
+   * above, would have rejected `tick()` itself. */
   async tick(): Promise<void> {
     const now = this.now();
     const due = this.deps.store
       .listTargets()
       .filter((t) => t.status === 'watching' && (t.nextPollAt ?? 0) <= now);
     for (const t of due) {
-      await this.runOnce(t.id);
+      try {
+        await this.runOnce(t.id);
+      } catch (e) {
+        this.log('error', `Cycle failed for this target: ${errMsg(e)}`, t.id);
+      }
     }
   }
 }

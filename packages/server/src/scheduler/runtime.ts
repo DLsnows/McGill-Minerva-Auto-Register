@@ -13,6 +13,10 @@ export interface Runtime {
   session: SessionManager;
   notifier: Notifier;
   scheduler: Scheduler;
+  /** The event relay this runtime was built with (WS broadcast in production).
+   * Kept so process-level fault reporting can reach the live console too instead
+   * of only the server's stdout. */
+  onEvent?: (e: LogEvent) => void;
 }
 
 /**
@@ -58,5 +62,5 @@ export function createRuntime(onEvent?: (e: LogEvent) => void): Runtime {
       onEvent?.(e);
     },
   });
-  return { store, budget, session, notifier, scheduler };
+  return { store, budget, session, notifier, scheduler, onEvent };
 }

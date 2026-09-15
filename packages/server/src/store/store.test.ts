@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from './store';
@@ -135,5 +135,47 @@ describe('Store', () => {
     // re-open: day1 data still persists
     const s2 = new Store(dir);
     expect(s2.getDailyOps(day1).queryCount).toBe(1);
+  });
+
+  // Q1: `save()` runs from inside the scheduler's timer callback, so a throw here
+  // used to escape as an unhandled rejection and kill the whole process.
+  //
+  // The failure is injected through the filesystem rather than by stubbing
+  // `node:fs`: ESM namespace exports are not configurable in Vitest, and a real
+  // unwritable temp path exercises the exact `writeFileSync` behaviour (a thrown
+  // EBUSY/EISDIR/ENOSPC) that the hardening exists for.
+  describe('write-failure hardening (Q1)', () => {
+    it('surfaces the failure to stderr (so it is traceable) and still throws — no silent data loss', () => {
+      const s = new Store(dir);
+      const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // `save()` writes `<store.json>.tmp`. Occupying that path with a *directory*
+      // makes writeFileSync throw EISDIR, and the retry hits the same wall.
+      mkdirSync(join(dir, 'store.json.tmp'));
+      try {
+        // Pretending the write landed would silently drop the user's courses; what
+        // has been made non-fatal instead is the *caller* — `Scheduler.log` falls
+        // back to stderr and the process-level guard records the event.
+        expect(() => s.addTarget(sampleTarget)).toThrow(/EISDIR|EACCES|EPERM|EEXIST/);
+        expect(stderr).toHaveBeenCalledWith(expect.stringContaining('retrying once'));
+      } finally {
+        stderr.mockRestore();
+        rmSync(join(dir, 'store.json.tmp'), { recursive: true, force: true });
+      }
+    });
+
+    it('recovers on its own once the blocking condition clears (the retry is a real second attempt)', () => {
+      const s = new Store(dir);
+      const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mkdirSync(join(dir, 'store.json.tmp'));
+      try {
+        expect(() => s.addTarget({ ...sampleTarget, targetCrn: '1111' })).toThrow();
+        // Clear the obstruction — the next save must succeed without a restart.
+        rmSync(join(dir, 'store.json.tmp'), { recursive: true, force: true });
+        const t = s.addTarget({ ...sampleTarget, targetCrn: '2222' });
+        expect(new Store(dir).getTarget(t.id)!.targetCrn).toBe('2222');
+      } finally {
+        stderr.mockRestore();
+      }
+    });
   });
 });

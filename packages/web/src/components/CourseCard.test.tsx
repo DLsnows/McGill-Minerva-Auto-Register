@@ -29,7 +29,14 @@ describe('CourseCard', () => {
 
   it('fires onToggleMode with the flipped mode', async () => {
     const onToggleMode = vi.fn();
-    render(<CourseCard target={target} onToggleMode={onToggleMode} onRun={noop} onTogglePolling={noop} />);
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={onToggleMode}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
     await userEvent.click(screen.getByRole('button', { name: /toggle mode/i }));
     expect(onToggleMode).toHaveBeenCalledWith('t1', 'auto');
   });
@@ -43,7 +50,14 @@ describe('CourseCard', () => {
 
   it('pauses a watching course (onTogglePolling → paused)', async () => {
     const onTogglePolling = vi.fn();
-    render(<CourseCard target={target} onToggleMode={noop} onRun={noop} onTogglePolling={onTogglePolling} />);
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={onTogglePolling}
+      />,
+    );
     await userEvent.click(screen.getByRole('button', { name: /pause/i }));
     expect(onTogglePolling).toHaveBeenCalledWith('t1', 'paused');
   });
@@ -51,7 +65,12 @@ describe('CourseCard', () => {
   it('resumes a paused course (onTogglePolling → watching)', async () => {
     const onTogglePolling = vi.fn();
     render(
-      <CourseCard target={{ ...target, status: 'paused' }} onToggleMode={noop} onRun={noop} onTogglePolling={onTogglePolling} />,
+      <CourseCard
+        target={{ ...target, status: 'paused' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={onTogglePolling}
+      />,
     );
     await userEvent.click(screen.getByRole('button', { name: /resume/i }));
     expect(onTogglePolling).toHaveBeenCalledWith('t1', 'watching');
@@ -59,23 +78,81 @@ describe('CourseCard', () => {
 
   it('disables Resume and Register now when not logged in (Pause stays enabled)', () => {
     const { rerender } = render(
-      <CourseCard target={{ ...target, status: 'paused' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} loggedIn={false} />,
+      <CourseCard
+        target={{ ...target, status: 'paused' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        loggedIn={false}
+      />,
     );
     expect(screen.getByRole('button', { name: /resume/i })).toBeDisabled();
 
-    rerender(<CourseCard target={target} onToggleMode={noop} onRun={noop} onTogglePolling={noop} loggedIn={false} />);
+    rerender(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        loggedIn={false}
+      />,
+    );
     expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /pause/i })).toBeEnabled();
   });
 
-  it('does NOT offer Pause/Resume for terminal states (error, registered)', () => {
+  it('does NOT offer Pause/Resume for the completed states (registered, waitlisted)', () => {
     const { rerender } = render(
-      <CourseCard target={{ ...target, status: 'error' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />,
+      <CourseCard
+        target={{ ...target, status: 'registered' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
     );
     expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
-    rerender(<CourseCard target={{ ...target, status: 'registered' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />);
+    rerender(
+      <CourseCard
+        target={{ ...target, status: 'waitlisted' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
     expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
+  });
+
+  // Q3/Q20: `error` used to be a one-way door — no Pause/Resume was rendered and
+  // "Register now" is disabled for non-watching targets, so the corrected CRN the
+  // error message asks for could never be retried.
+  it('offers an explicit "Resume watching" action for a breaker-stopped (error) course', async () => {
+    const onTogglePolling = vi.fn();
+    render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={onTogglePolling}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: /resume watching/i });
+    expect(btn).toBeEnabled();
+    await userEvent.click(btn);
+    expect(onTogglePolling).toHaveBeenCalledWith('t1', 'watching'); // back to watching
+  });
+
+  it('disables "Resume watching" while logged out (like the paused Resume)', () => {
+    render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        loggedIn={false}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /resume watching/i })).toBeDisabled();
   });
 });

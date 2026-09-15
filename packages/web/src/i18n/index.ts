@@ -15,7 +15,7 @@ const en = {
   mode: { notify: 'Notify', auto: 'Auto', toggleAria: 'toggle mode' },
   scheduler: { running: 'Watching · running', stopped: 'Watching · stopped', start: '▶ Start all', stop: '■ Stop all', loginFirst: 'Log in first' },
   status: { watching: 'WATCHING', waitlisted: 'WAITLISTED', registered: 'REGISTERED', paused: 'PAUSED', stopped: 'STOPPED', error: 'ERROR' },
-  card: { registerNow: '⚡ Register now', running: '… running', lastPoll: 'last poll {{rel}}', notPolled: 'not polled yet', pause: '⏸ Pause', resume: '▶ Resume' },
+  card: { registerNow: '⚡ Register now', running: '… running', lastPoll: 'last poll {{rel}}', notPolled: 'not polled yet', pause: '⏸ Pause', resume: '▶ Resume', resumeWatching: '⟳ Resume watching' },
   console: { liveStream: 'live stream', reconnecting: 'reconnecting…', clear: 'Clear', clearFailed: 'Failed to clear the console.' },
   form: {
     term: 'Term', subject: 'Subject', courseNumber: 'Course #', targetCrn: 'Target CRN',
@@ -42,10 +42,14 @@ const en = {
     empty: 'No courses watched yet. Add one from the Courses tab.',
     sessionBanner: 'Session is not active — open the Session tab to log in so polling can run.',
     schedToggleFailed: 'Scheduler toggle failed.',
+    startAllResumed: 'Start all: resumed {{resumed}} course(s).',
+    startAllSkipped: 'Start all: resumed {{resumed}} course(s), skipped {{skipped}}.',
+    startAllErrored: '{{count}} of them stopped after repeated errors — use “⟳ Resume watching” on the card to retry them.',
   },
   courses: {
     addACourse: 'Add a course', addCourse: 'Add course', managed: 'Managed courses',
     empty: 'No courses yet.', save: 'Save', edit: 'Edit', delete: 'Delete', opFailed: 'Operation failed.',
+    editRestartFailed: 'The course was saved and is watched again, but starting the scheduler failed — press “Start all” on the Dashboard.',
   },
   settings: {
     title: 'Settings', pollInterval: 'Poll interval (min)', jitter: 'Jitter (min)',
@@ -86,7 +90,7 @@ const zh: typeof en = {
   mode: { notify: '提醒', auto: '自动', toggleAria: '切换模式' },
   scheduler: { running: '监控 · 运行中', stopped: '监控 · 已停止', start: '▶ 全部启动', stop: '■ 全部停止', loginFirst: '请先登录' },
   status: { watching: '监控中', waitlisted: '候补中', registered: '已注册', paused: '已暂停', stopped: '已停止', error: '错误' },
-  card: { registerNow: '⚡ 立即执行', running: '… 执行中', lastPoll: '上次轮询 {{rel}}', notPolled: '尚未轮询', pause: '⏸ 暂停', resume: '▶ 恢复' },
+  card: { registerNow: '⚡ 立即执行', running: '… 执行中', lastPoll: '上次轮询 {{rel}}', notPolled: '尚未轮询', pause: '⏸ 暂停', resume: '▶ 恢复', resumeWatching: '⟳ 重新监控' },
   console: { liveStream: '实时', reconnecting: '重连中…', clear: '清空', clearFailed: '清空控制台失败。' },
   form: {
     term: '学期', subject: '科目', courseNumber: '课程号', targetCrn: '目标 CRN',
@@ -113,10 +117,14 @@ const zh: typeof en = {
     empty: '还没有监控任何课程。在「课程」页添加。',
     sessionBanner: '会话未激活 —— 打开「会话」页登录,轮询才能运行。',
     schedToggleFailed: '调度器开关失败。',
+    startAllResumed: '全部启动：已恢复 {{resumed}} 门课程。',
+    startAllSkipped: '全部启动：已恢复 {{resumed}} 门，跳过 {{skipped}} 门。',
+    startAllErrored: '其中 {{count}} 门因连续出错被停止 —— 请在课程卡上点「⟳ 重新监控」重试。',
   },
   courses: {
     addACourse: '添加课程', addCourse: '添加', managed: '已管理课程',
     empty: '暂无课程。', save: '保存', edit: '编辑', delete: '删除', opFailed: '操作失败。',
+    editRestartFailed: '课程已保存并重新进入监控，但调度器启动失败 —— 请在主控台点「全部启动」。',
   },
   settings: {
     title: '设置', pollInterval: '轮询间隔(分)', jitter: '抖动(分)',
@@ -157,7 +165,7 @@ const fr: typeof en = {
   mode: { notify: 'Notifier', auto: 'Auto', toggleAria: 'changer de mode' },
   scheduler: { running: 'Surveillance · active', stopped: 'Surveillance · arrêtée', start: '▶ Tout démarrer', stop: '■ Tout arrêter', loginFirst: "Connectez-vous d'abord" },
   status: { watching: 'EN SURVEILLANCE', waitlisted: "LISTE D'ATTENTE", registered: 'INSCRIT', paused: 'EN PAUSE', stopped: 'ARRÊTÉ', error: 'ERREUR' },
-  card: { registerNow: '⚡ Inscrire maintenant', running: '… en cours', lastPoll: 'dernier sondage {{rel}}', notPolled: 'pas encore sondé', pause: '⏸ Pause', resume: '▶ Reprendre' },
+  card: { registerNow: '⚡ Inscrire maintenant', running: '… en cours', lastPoll: 'dernier sondage {{rel}}', notPolled: 'pas encore sondé', pause: '⏸ Pause', resume: '▶ Reprendre', resumeWatching: '⟳ Reprendre la surveillance' },
   console: { liveStream: 'flux en direct', reconnecting: 'reconnexion…', clear: 'Effacer', clearFailed: "Échec de l'effacement de la console." },
   form: {
     term: 'Trimestre', subject: 'Matière', courseNumber: 'N° de cours', targetCrn: 'CRN cible',
@@ -184,10 +192,14 @@ const fr: typeof en = {
     empty: "Aucun cours surveillé. Ajoutez-en un dans l'onglet Cours.",
     sessionBanner: 'Session inactive — ouvrez l’onglet Session pour vous connecter et lancer le sondage.',
     schedToggleFailed: 'Échec du basculement du planificateur.',
+    startAllResumed: 'Tout démarrer : {{resumed}} cours repris.',
+    startAllSkipped: 'Tout démarrer : {{resumed}} cours repris, {{skipped}} ignoré(s).',
+    startAllErrored: '{{count}} d’entre eux ont été arrêtés après des erreurs répétées — utilisez « ⟳ Reprendre la surveillance » sur la carte pour réessayer.',
   },
   courses: {
     addACourse: 'Ajouter un cours', addCourse: 'Ajouter', managed: 'Cours gérés',
     empty: 'Aucun cours.', save: 'Enregistrer', edit: 'Modifier', delete: 'Supprimer', opFailed: "Échec de l'opération.",
+    editRestartFailed: 'Le cours est enregistré et de nouveau surveillé, mais le démarrage du planificateur a échoué — appuyez sur « Tout démarrer » dans le tableau de bord.',
   },
   settings: {
     title: 'Paramètres', pollInterval: 'Intervalle de sondage (min)', jitter: 'Gigue (min)',

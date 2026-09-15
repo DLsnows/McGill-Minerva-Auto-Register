@@ -8,6 +8,15 @@ export interface SessionInfo {
 export interface SchedulerState {
   running: boolean;
 }
+/** Result of "Start all". `skipped` counts the targets the bulk action left
+ * alone (terminal states + ones the failure breaker stopped), so the UI can say
+ * what happened instead of showing an indistinguishable "nothing" (Q20). */
+export interface StartAllResult {
+  running: boolean;
+  resumed: number;
+  skipped: number;
+  errored: number;
+}
 
 type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'targetCrn' | 'mode'> &
   Partial<Pick<WatchTarget, 'faculty' | 'label'>>;
@@ -17,7 +26,9 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     // Read the body as text — error responses may be HTML (e.g. a 502 page), not JSON.
     const detail = await res.text().catch(() => '');
-    throw new Error(`${init?.method ?? 'GET'} ${url} failed: ${res.status}${detail ? ` — ${detail}` : ''}`);
+    throw new Error(
+      `${init?.method ?? 'GET'} ${url} failed: ${res.status}${detail ? ` — ${detail}` : ''}`,
+    );
   }
   return (await res.json()) as T;
 }
@@ -44,6 +55,9 @@ export const api = {
     }),
   removeTarget: (id: string) => req<{ ok: true }>(`/api/targets/${id}`, { method: 'DELETE' }),
   runTarget: (id: string) => post<{ started: boolean }>(`/api/targets/${id}/run`),
+  /** Explicitly watch a paused (or breaker-stopped `error`) target again (Q3). */
+  resumeTarget: (id: string) =>
+    post<{ resumed: boolean; status: WatchTarget['status'] }>(`/api/targets/${id}/resume`),
 
   getSettings: () => req<Settings>('/api/settings'),
   putSettings: (patch: Partial<Settings>) =>
@@ -59,7 +73,7 @@ export const api = {
   getScheduler: () => req<SchedulerState>('/api/scheduler'),
   startScheduler: () => post<{ running: boolean }>('/api/scheduler/start'),
   stopScheduler: () => post<{ running: boolean }>('/api/scheduler/stop'),
-  startAll: () => post<{ running: boolean; resumed: number }>('/api/scheduler/start-all'),
+  startAll: () => post<StartAllResult>('/api/scheduler/start-all'),
   stopAll: () => post<{ running: boolean; paused: number }>('/api/scheduler/stop-all'),
 
   getEvents: (limit = 200) => req<LogEvent[]>(`/api/events?limit=${limit}`),

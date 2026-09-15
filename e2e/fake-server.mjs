@@ -7,7 +7,7 @@
  * Implemented (see packages/web/src/lib/api.ts + packages/server/src/api/server.ts):
  *   GET    /api/health
  *   GET    /api/targets          POST /api/targets      PATCH/DELETE /api/targets/:id
- *   POST   /api/targets/:id/run
+ *   POST   /api/targets/:id/run  POST /api/targets/:id/resume
  *   GET    /api/settings         PUT  /api/settings
  *   GET    /api/session
  *   GET    /api/scheduler        POST /api/scheduler/start|stop|start-all|stop-all
@@ -110,6 +110,7 @@ let harnessCalls = 0;
 /** Paths that carry an id — counted under their route template so counts stay meaningful. */
 const DYNAMIC_ROUTE_TEMPLATES = [
   [/^\/api\/targets\/[^/]+\/run$/, '/api/targets/:id/run'],
+  [/^\/api\/targets\/[^/]+\/resume$/, '/api/targets/:id/resume'],
   [/^\/api\/targets\/[^/]+$/, '/api/targets/:id'],
 ];
 
@@ -299,6 +300,23 @@ app.post('/api/targets/:id/run', (req, reply) => {
   return { started: true };
 });
 
+// Explicit recovery from 'paused' / 'error' (Q3). Mirrors the real route, including
+// the 409 for the genuinely terminal states.
+app.post('/api/targets/:id/resume', (req, reply) => {
+  const index = state.targets.findIndex((t) => t.id === req.params.id);
+  if (index < 0) return reply.code(404).send({ error: 'not found' });
+  const target = state.targets[index];
+  if (target.status !== 'error' && target.status !== 'paused') {
+    return reply.code(409).send({
+      error: `target is ${target.status} — only 'error' or 'paused' targets can be resumed`,
+    });
+  }
+  const was = target.status;
+  state.targets = state.targets.map((t, i) => (i === index ? { ...t, status: 'watching' } : t));
+  logEvent('ok', `Resumed watching (was '${was}') — polling again.`);
+  return { resumed: true, status: 'watching' };
+});
+
 // --- settings ---
 app.get('/api/settings', () => state.settings);
 
@@ -353,12 +371,17 @@ app.post('/api/scheduler/stop', () => {
 
 app.post('/api/scheduler/start-all', () => {
   const paused = state.targets.filter((t) => t.status === 'paused');
+  const errored = state.targets.filter((t) => t.status === 'error').length;
   state.targets = state.targets.map((t) =>
     t.status === 'paused' ? { ...t, status: 'watching' } : t,
   );
   state.schedulerRunning = true;
-  logEvent('ok', `Start all: resumed ${paused.length} course(s).`);
-  return { running: true, resumed: paused.length };
+  const skipped = state.targets.length - paused.length;
+  logEvent('ok', `Start all: resumed ${paused.length} course(s), skipped ${skipped}.`);
+  // Mirrors the real server's response shape (packages/server/src/api/server.ts):
+  // the web UI reads `skipped` / `errored` to explain what the bulk action left
+  // alone, so the fake must not hand it an undefined field.
+  return { running: true, resumed: paused.length, skipped, errored };
 });
 
 app.post('/api/scheduler/stop-all', () => {
