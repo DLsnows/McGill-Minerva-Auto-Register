@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { FastifyInstance } from 'fastify';
 import { Store } from '../store/store';
 import { Budget } from '../budget/budget';
 import { Scheduler } from '../scheduler/scheduler';
-import { buildServer, type ApiDeps } from './server';
+import { buildServer, SESSION_NOT_READY, type ApiDeps } from './server';
+
+type App = ReturnType<typeof buildServer>;
 
 /** ApiDeps for a test that drives the routes with a *real* Scheduler. */
 function makeSessionDeps(store: Store, scheduler: Scheduler): ApiDeps {
@@ -19,20 +20,35 @@ function makeSessionDeps(store: Store, scheduler: Scheduler): ApiDeps {
 }
 
 let dir: string;
-let app: FastifyInstance;
+let app: App;
+
+function makeSession() {
+  return {
+    launch: async () => undefined,
+    ensureLoggedIn: async () => undefined,
+    isLoggedIn: async () => true,
+  };
+}
 
 function makeDeps(): ApiDeps {
   const store = new Store(dir);
   return {
     store,
     budget: new Budget(store),
-    session: {
-      launch: async () => undefined,
-      ensureLoggedIn: async () => undefined,
-      isLoggedIn: async () => true,
-    },
+    session: makeSession(),
     scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
   };
+}
+
+/** A server whose session is 'authenticated' — the only state in which the
+ * engine may be started. Uses the real login route so nothing is faked beyond
+ * the session double itself. */
+async function loggedInApp(deps: ApiDeps, clients?: Parameters<typeof buildServer>[1]): Promise<App> {
+  const instance = buildServer(deps, clients);
+  await instance.inject({ method: 'POST', url: '/api/session/login' });
+  // Let the async login IIFE settle (the doubles resolve immediately).
+  await new Promise((r) => setTimeout(r, 10));
+  return instance;
 }
 
 beforeEach(() => {
@@ -171,12 +187,18 @@ describe('API', () => {
 
   it('reports session status and toggles the scheduler', async () => {
     expect((await app.inject({ method: 'GET', url: '/api/session' })).json()).toHaveProperty('status');
-    expect((await app.inject({ method: 'POST', url: '/api/scheduler/start' })).json()).toEqual({
-      running: true,
-    });
-    expect((await app.inject({ method: 'POST', url: '/api/scheduler/stop' })).json()).toEqual({
-      running: false,
-    });
+    // The engine may only be started from an authenticated session (Q12).
+    const active = await loggedInApp(makeDeps());
+    try {
+      expect((await active.inject({ method: 'POST', url: '/api/scheduler/start' })).json()).toEqual({
+        running: true,
+      });
+      expect((await active.inject({ method: 'POST', url: '/api/scheduler/stop' })).json()).toEqual({
+        running: false,
+      });
+    } finally {
+      await active.close();
+    }
   });
 
   it('rejects empty-string email fields with 400', async () => {
@@ -525,10 +547,10 @@ describe('API', () => {
     const b = store.addTarget({ ...validTarget, targetCrn: '2222' });
     store.updateTarget(a.id, { status: 'paused' });
     store.updateTarget(b.id, { status: 'error' });
-    const app2 = buildServer({
+    const app2 = await loggedInApp({
       store,
       budget: new Budget(store),
-      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      session: makeSession(),
       scheduler: { start, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
     });
     const r = await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' });
@@ -557,6 +579,280 @@ describe('API', () => {
     expect(store.getTarget(b.id)!.status).toBe('registered'); // terminal left untouched
     expect(stop).toHaveBeenCalled();
     await app2.close();
+  });
+
+  // --- Q12: an engine start that cannot work must be refused, not accepted ---
+  // Before the fix both routes answered `{running:true}` unconditionally with no
+  // session and no browser context: the user got a toggle that claimed the
+  // automation was running while the first tick's session check paused every
+  // target (and, per Q1, could take the process down with it).
+  describe('POST /api/scheduler/start* refuses a start with no usable session', () => {
+    it('answers 409 + a machine-readable code on both start routes', async () => {
+      const start = vi.fn();
+      const store = new Store(dir);
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: makeSession(),
+        scheduler: { start, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
+      });
+      try {
+        for (const url of ['/api/scheduler/start', '/api/scheduler/start-all']) {
+          const r = await app2.inject({ method: 'POST', url });
+          expect(r.statusCode).toBe(409);
+          const body = r.json() as { code: string; error: string; status: string };
+          expect(body.code).toBe(SESSION_NOT_READY);
+          expect(body.status).toBe('unknown');
+          // The message has to be actionable on its own (curl / non-UI clients).
+          expect(body.error.toLowerCase()).toContain('log in');
+        }
+        expect(start).not.toHaveBeenCalled();
+      } finally {
+        await app2.close();
+      }
+    });
+
+    it('names the actual state when the session is known to be logged out', async () => {
+      const store = new Store(dir);
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: makeSession(),
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
+      });
+      try {
+        // Make the server known-logged-out without going through a navigation.
+        expect(app2.sessions.markLoggedOut()).toBe(true);
+        const r = await app2.inject({ method: 'POST', url: '/api/scheduler/start' });
+        expect(r.statusCode).toBe(409);
+        expect((r.json() as { status: string; error: string }).status).toBe('logged-out');
+        expect((r.json() as { error: string }).error).toMatch(/not logged in/i);
+      } finally {
+        await app2.close();
+      }
+    });
+
+    it('leaves stored targets untouched when start-all is refused', async () => {
+      const store = new Store(dir);
+      const start = vi.fn();
+      const t = store.addTarget({ ...validTarget, targetCrn: '3333' });
+      store.updateTarget(t.id, { status: 'paused' });
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: makeSession(),
+        scheduler: { start, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
+      });
+      try {
+        const r = await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' });
+        expect(r.statusCode).toBe(409);
+        // The old code resumed the targets *before* touching the engine, so a
+        // refused start used to leave courses 'watching' with nothing polling.
+        expect(store.getTarget(t.id)!.status).toBe('paused');
+        expect(start).not.toHaveBeenCalled();
+      } finally {
+        await app2.close();
+      }
+    });
+
+    it('still accepts the start once the session is authenticated', async () => {
+      const store = new Store(dir);
+      const start = vi.fn();
+      const app2 = await loggedInApp({
+        store,
+        budget: new Budget(store),
+        session: makeSession(),
+        scheduler: { start, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
+      });
+      try {
+        const r = await app2.inject({ method: 'POST', url: '/api/scheduler/start' });
+        expect(r.statusCode).toBe(200);
+        expect(r.json()).toEqual({ running: true });
+        expect(start).toHaveBeenCalledTimes(1);
+      } finally {
+        await app2.close();
+      }
+    });
+
+    it('always allows stopping, even with no session', async () => {
+      const store = new Store(dir);
+      const stop = vi.fn();
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: makeSession(),
+        scheduler: { start: () => undefined, stop, runTarget: () => ({ started: true }), isRunning: () => true },
+      });
+      try {
+        const r = await app2.inject({ method: 'POST', url: '/api/scheduler/stop-all' });
+        expect(r.statusCode).toBe(200);
+        expect(stop).toHaveBeenCalled();
+      } finally {
+        await app2.close();
+      }
+    });
+
+    // The per-course "Resume" button PATCHes the target to 'watching' *before*
+    // starting the engine, so a stale client could flip a course back to watching
+    // and then have the start refused — leaving a course that claims to be polled
+    // with no engine behind it. The PATCH itself has to refuse.
+    it('refuses PATCH … status=watching without a usable session', async () => {
+      const store = new Store(dir);
+      const t = store.addTarget({ ...validTarget, targetCrn: '4444' });
+      store.updateTarget(t.id, { status: 'paused' });
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: makeSession(),
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
+      });
+      try {
+        const r = await app2.inject({
+          method: 'PATCH',
+          url: `/api/targets/${t.id}`,
+          payload: { status: 'watching' },
+        });
+        expect(r.statusCode).toBe(409);
+        expect((r.json() as { code: string }).code).toBe(SESSION_NOT_READY);
+        expect(store.getTarget(t.id)!.status).toBe('paused');
+      } finally {
+        await app2.close();
+      }
+    });
+
+    it('still allows pausing (and other edits) with no session', async () => {
+      const store = new Store(dir);
+      const t = store.addTarget({ ...validTarget, targetCrn: '5555' }); // watching
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: makeSession(),
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
+      });
+      try {
+        const paused = await app2.inject({
+          method: 'PATCH',
+          url: `/api/targets/${t.id}`,
+          payload: { status: 'paused' },
+        });
+        expect(paused.statusCode).toBe(200);
+        expect(store.getTarget(t.id)!.status).toBe('paused');
+        // A field edit that leaves the status alone is not gated either.
+        const relabel = await app2.inject({
+          method: 'PATCH',
+          url: `/api/targets/${t.id}`,
+          payload: { label: 'COMP 551 (renamed)' },
+        });
+        expect(relabel.statusCode).toBe(200);
+      } finally {
+        await app2.close();
+      }
+    });
+
+    it('accepts PATCH … status=watching once the session is authenticated', async () => {
+      const store = new Store(dir);
+      const t = store.addTarget({ ...validTarget, targetCrn: '6666' });
+      store.updateTarget(t.id, { status: 'paused' });
+      const app2 = await loggedInApp({
+        store,
+        budget: new Budget(store),
+        session: makeSession(),
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
+      });
+      try {
+        const r = await app2.inject({
+          method: 'PATCH',
+          url: `/api/targets/${t.id}`,
+          payload: { status: 'watching' },
+        });
+        expect(r.statusCode).toBe(200);
+        expect(store.getTarget(t.id)!.status).toBe('watching');
+      } finally {
+        await app2.close();
+      }
+    });
+  });
+
+  // --- Q7 (server half): the reported status must follow the scheduler ---
+  describe('session truth follows what the scheduler detected', () => {
+    it('reports logged-out after the scheduler reports the session lost', async () => {
+      const store = new Store(dir);
+      const session = makeSession();
+      const app2 = await loggedInApp({
+        store,
+        budget: new Budget(store),
+        // The browser probe keeps saying "logged in" — the point is that the
+        // scheduler's observation, not this probe, is what the API reports.
+        session,
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
+      });
+      try {
+        expect((await app2.inject({ method: 'GET', url: '/api/session' })).json().status).toBe('authenticated');
+        expect(app2.sessions.markLoggedOut()).toBe(true);
+        expect((await app2.inject({ method: 'GET', url: '/api/session' })).json().status).toBe('logged-out');
+      } finally {
+        await app2.close();
+      }
+    });
+
+    it('reports unknown when the session check throws', async () => {
+      const store = new Store(dir);
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: {
+          ...makeSession(),
+          isLoggedIn: async () => {
+            throw new Error('no browser context');
+          },
+        },
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
+      });
+      try {
+        // The status was authenticated (e.g. login succeeded, then the browser
+        // window died and the probe can no longer answer at all).
+        app2.sessions.set('authenticated');
+        const r = await app2.inject({ method: 'GET', url: '/api/session' });
+        expect(r.statusCode).toBe(200);
+        expect(r.json().status).toBe('unknown');
+      } finally {
+        await app2.close();
+      }
+    });
+
+    it('pushes a warn event when the status turns bad, so the UI needs no polling', async () => {
+      const store = new Store(dir);
+      const sent: string[] = [];
+      const clients = new Set([{ send: (frame: string) => sent.push(frame) }]);
+      const app2 = await loggedInApp(
+        {
+          store,
+          budget: new Budget(store),
+          session: makeSession(),
+          scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => ({ started: true }), isRunning: () => false },
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        clients as any,
+      );
+      try {
+        sent.length = 0; // drop anything the login sequence broadcast
+        app2.sessions.markLoggedOut();
+        const frames = sent.map(
+          (f) => JSON.parse(f) as { type: string; event: { level: string; message: string } },
+        );
+        expect(frames).toHaveLength(1);
+        expect(frames[0].type).toBe('event');
+        expect(frames[0].event.level).toBe('warn');
+        expect(frames[0].event.message).toMatch(/no longer active/i);
+        // A repeated observation must not spam the console.
+        sent.length = 0;
+        expect(app2.sessions.markLoggedOut()).toBe(false);
+        expect(sent).toHaveLength(0);
+        // No probe was needed to learn this: the session double was never asked.
+      } finally {
+        await app2.close();
+      }
+    });
   });
 
   // Guards the @fastify/websocket registration-timing bug: a route declared

@@ -49,6 +49,12 @@ class FakeSession implements SessionGuard {
   constructor(public loggedIn = true) {}
   isLoggedIn = async () => this.loggedIn;
 }
+/** A session probe that blows up — e.g. the browser context died mid-cycle. */
+class ExplodingSession implements SessionGuard {
+  isLoggedIn = async (): Promise<boolean> => {
+    throw new Error('no browser context');
+  };
+}
 
 function setup(opts: {
   mode?: WatchMode;
@@ -56,12 +62,14 @@ function setup(opts: {
   stats?: SectionStats;
   outcome?: RegisterOutcome;
   loggedIn?: boolean;
+  session?: SessionGuard;
+  onSessionLost?: (reason: string) => void;
 }) {
   const store = new Store(dir);
   const budget = new Budget(store);
   const watcher = new FakeWatcher({ stats: opts.stats ?? stats(), decision: opts.decision });
   const actor = new FakeActor(opts.outcome ?? { kind: 'registered', crn: '1814' });
-  const session = new FakeSession(opts.loggedIn ?? true);
+  const session = opts.session ?? new FakeSession(opts.loggedIn ?? true);
   const scheduler = new Scheduler({
     store,
     budget,
@@ -70,6 +78,7 @@ function setup(opts: {
     session,
     now: () => NOW,
     random: () => 0.5, // zero jitter
+    onSessionLost: opts.onSessionLost,
   });
   const target = store.addTarget({
     term: '202701',
@@ -152,6 +161,49 @@ describe('Scheduler.runOnce', () => {
     await scheduler.runOnce(target.id);
     expect(watcher.calls).toBe(0);
     expect(store.getTarget(target.id)!.status).toBe('paused');
+  });
+
+  // The API's reported session status is corrected from here: a cycle that finds
+  // no session is the earliest reliable evidence, and without reporting it
+  // `GET /api/session` kept answering 'authenticated' while every target sat
+  // paused — the UI then showed a green "Active" over a stopped engine (Q7/Q12).
+  it('reports the lost session so the API can stop claiming it is authenticated', async () => {
+    const reasons: string[] = [];
+    const { scheduler, target } = setup({
+      decision: { action: 'NOOP', reason: 'x' },
+      loggedIn: false,
+      onSessionLost: (r) => reasons.push(r),
+    });
+    await scheduler.runOnce(target.id);
+    expect(reasons).toEqual(['session check returned not-logged-in']);
+  });
+
+  it('reports a throwing session probe as a lost session instead of only logging it', async () => {
+    const reasons: string[] = [];
+    const { scheduler, store, target } = setup({
+      decision: { action: 'NOOP', reason: 'x' },
+      session: new ExplodingSession(),
+      onSessionLost: (r) => reasons.push(r),
+    });
+    await scheduler.runOnce(target.id);
+    expect(reasons).toEqual(['no browser context']);
+    expect(store.getTarget(target.id)!.status).toBe('paused');
+    expect(store.recentEvents().some((e) => e.level === 'warn' && /no browser context/.test(e.message))).toBe(
+      true,
+    );
+  });
+
+  it('accepts a handler registered after construction (the API wires it up later)', async () => {
+    const { scheduler, store, target } = setup({ decision: { action: 'NOOP', reason: 'x' }, loggedIn: false });
+    const reasons: string[] = [];
+    scheduler.setSessionLostHandler((r) => reasons.push(r));
+    await scheduler.runOnce(target.id);
+    expect(reasons).toHaveLength(1);
+    // The cycle paused the target; re-arm it to prove the late-registered
+    // handler keeps firing on later cycles, not just the first one.
+    store.updateTarget(target.id, { status: 'watching' });
+    await scheduler.runOnce(target.id);
+    expect(reasons).toHaveLength(2);
   });
 
   it('keeps watching and logs an error when registration errors', async () => {

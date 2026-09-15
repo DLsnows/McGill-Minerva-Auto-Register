@@ -8,6 +8,9 @@ export interface SessionInfo {
 export interface SchedulerState {
   running: boolean;
 }
+/** Error code the server attaches when it refuses to start the engine because the
+ * session cannot support polling (see `session-truth.ts`). */
+export const SESSION_NOT_READY = 'session-not-ready';
 
 /** Manual-run cooldown, mirrored from `MANUAL_RUN_COOLDOWN_MS` in
  * packages/server/src/scheduler/scheduler.ts. Used to place the end of the window
@@ -68,12 +71,64 @@ export function cooldownRemainingMs(
 type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'targetCrn' | 'mode'> &
   Partial<Pick<WatchTarget, 'faculty' | 'label'>>;
 
+/** A failed request, carrying the server's machine-readable `code` when it sent
+ * one — so the UI can localize the reason instead of printing raw prose. */
+export class ApiError extends Error {
+  readonly code: string | undefined;
+  readonly httpStatus: number | undefined;
+  /** The session state the server reported at the moment it refused. */
+  readonly sessionStatus: string | undefined;
+
+  constructor(
+    message: string,
+    opts: { code?: string; httpStatus?: number; sessionStatus?: string } = {},
+  ) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = opts.code;
+    this.httpStatus = opts.httpStatus;
+    this.sessionStatus = opts.sessionStatus;
+  }
+}
+
+/** True when the server refused because the session cannot drive polling. */
+export function isSessionNotReady(e: unknown): e is ApiError {
+  return e instanceof ApiError && e.code === SESSION_NOT_READY;
+}
+
+export function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) {
-    // Read the body as text — error responses may be HTML (e.g. a 502 page), not JSON.
+    // Read the body as text first — error responses may be HTML (e.g. a 502
+    // page), not JSON.
     const detail = await res.text().catch(() => '');
-    throw new Error(`${init?.method ?? 'GET'} ${url} failed: ${res.status}${detail ? ` — ${detail}` : ''}`);
+    const what = `${init?.method ?? 'GET'} ${url}`;
+    let body: unknown;
+    try {
+      body = JSON.parse(detail);
+    } catch {
+      body = undefined; // not JSON — fall back to reporting the raw text
+    }
+    if (body && typeof body === 'object') {
+      // The API's own error shape: `{ error, code?, status? }`, where `status`
+      // is the *session* status the refusal was based on (not the HTTP status).
+      // Prefer the server's message over the raw JSON body so a refusal reads as
+      // a reason ("Not logged in — ...") rather than as a serialized object.
+      const { error, code, status } = body as { error?: unknown; code?: unknown; status?: unknown };
+      const message = typeof error === 'string' && error ? error : `${what} failed: ${res.status}`;
+      throw new ApiError(message, {
+        code: typeof code === 'string' ? code : undefined,
+        httpStatus: res.status,
+        sessionStatus: typeof status === 'string' ? status : undefined,
+      });
+    }
+    throw new ApiError(`${what} failed: ${res.status}${detail ? ` — ${detail}` : ''}`, {
+      httpStatus: res.status,
+    });
   }
   return (await res.json()) as T;
 }

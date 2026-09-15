@@ -9,11 +9,19 @@ interface StreamState {
 }
 
 /** Subscribe to /api/stream: seed from the `recent` snapshot, append `event`
- * messages (capped at `max`), and auto-reconnect with backoff on close. */
-export function useEventStream(max = 500): StreamState {
+ * messages (capped at `max`), and auto-reconnect with backoff on close.
+ *
+ * `onSeed` fires every time the snapshot is (re)applied, i.e. on each (re)connect.
+ * Consumers that act on *live* events only (the session refresh in DataContext)
+ * need it to tell replayed history apart from news. */
+export function useEventStream(max = 500, onSeed?: () => void): StreamState {
   const [events, setEvents] = useState<LogEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const retryRef = useRef(0);
+  const onSeedRef = useRef(onSeed);
+  useEffect(() => {
+    onSeedRef.current = onSeed;
+  });
 
   useEffect(() => {
     let ws: WebSocket;
@@ -37,8 +45,11 @@ export function useEventStream(max = 500): StreamState {
           return; // ignore non-JSON frames (proxy errors, heartbeats) — keep the stream alive
         }
         // Guard the shape too — a malformed frame must not push undefined events.
-        if (msg.type === 'recent' && Array.isArray(msg.events)) setEvents(cap(msg.events));
-        else if (msg.type === 'event' && msg.event) setEvents((prev) => cap([...prev, msg.event]));
+        if (msg.type === 'recent' && Array.isArray(msg.events)) {
+          setEvents(cap(msg.events));
+          onSeedRef.current?.();
+        } else if (msg.type === 'event' && msg.event)
+          setEvents((prev) => cap([...prev, msg.event]));
       };
       ws.onerror = () => {
         // Some failures (e.g. CSP) may not fire onclose; force a close so reconnect runs.

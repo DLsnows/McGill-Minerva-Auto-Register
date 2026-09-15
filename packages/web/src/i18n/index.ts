@@ -49,6 +49,9 @@ const en = {
     empty: 'No courses watched yet. Add one from the Courses tab.',
     sessionBanner: 'Session is not active — open the Session tab to log in so polling can run.',
     schedToggleFailed: 'Scheduler toggle failed.',
+    loginToStart: 'Not logged in — open the Session tab and log in before starting the engine.',
+    engineRunning: 'Engine · running',
+    engineStopped: 'Engine · stopped',
   },
   courses: {
     addACourse: 'Add a course', addCourse: 'Add course', managed: 'Managed courses',
@@ -127,6 +130,9 @@ const zh: typeof en = {
     empty: '还没有监控任何课程。在「课程」页添加。',
     sessionBanner: '会话未激活 —— 打开「会话」页登录,轮询才能运行。',
     schedToggleFailed: '调度器开关失败。',
+    loginToStart: '未登录 —— 请先到「会话」页登录,再启动引擎。',
+    engineRunning: '引擎 · 运行中',
+    engineStopped: '引擎 · 已停止',
   },
   courses: {
     addACourse: '添加课程', addCourse: '添加', managed: '已管理课程',
@@ -205,6 +211,9 @@ const fr: typeof en = {
     empty: "Aucun cours surveillé. Ajoutez-en un dans l'onglet Cours.",
     sessionBanner: 'Session inactive — ouvrez l’onglet Session pour vous connecter et lancer le sondage.',
     schedToggleFailed: 'Échec du basculement du planificateur.',
+    loginToStart: "Non connecté — ouvrez l'onglet Session et connectez-vous avant de démarrer le moteur.",
+    engineRunning: 'Moteur · en marche',
+    engineStopped: 'Moteur · arrêté',
   },
   courses: {
     addACourse: 'Ajouter un cours', addCourse: 'Ajouter', managed: 'Cours gérés',

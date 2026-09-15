@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { WatchMode, WatchStatus } from '@autoregister/shared';
-import { api, MANUAL_RUN_COOLDOWN_MS } from '../lib/api';
+import { api, errorMessage, isSessionNotReady, MANUAL_RUN_COOLDOWN_MS } from '../lib/api';
 import { useData } from '../lib/DataContext';
-import { useEventStream } from '../lib/useEventStream';
 import { CourseCard } from '../components/CourseCard';
 import { Console } from '../components/Console';
 import { SchedulerToggle } from '../components/SchedulerToggle';
 
 export default function Dashboard() {
   const { t: tr } = useTranslation();
-  const { targets, session, scheduler, budget } = useData();
-  const { events, connected, clear } = useEventStream();
+  const { targets, session, scheduler, budget, stream } = useData();
+  const { events, connected, clear } = stream;
   const [running, setRunning] = useState<Set<string>>(new Set());
   /** Verdicts of *dropped* manual runs, keyed by target id. The cooldown verdict
    * is deliberately not stored here — it is derived from `coolingUntil` /
@@ -102,14 +101,25 @@ export default function Dashboard() {
       // No resuming/starting a task while logged out (the button is disabled too).
       if (next === 'watching' && sessionRef.current.data?.status !== 'authenticated') return;
       setSchedErr(undefined);
+      let sessionRefused = false;
       try {
         await api.updateTarget(id, { status: next });
         if (next === 'watching') await api.startScheduler();
       } catch (e) {
-        setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
+        // The server refuses to start the engine without a usable session; show
+        // that reason (localized) rather than a generic toggle failure.
+        sessionRefused = isSessionNotReady(e);
+        setSchedErr(sessionRefused ? tr('dashboard.loginToStart') : errorMessage(e));
       } finally {
-        // Always reconcile the UI with the server's real state.
-        await Promise.all([targetsRef.current.refetch(), schedulerRef.current.refetch()]);
+        // Always reconcile the UI with the server's real state. A refusal means
+        // the session resource is the thing that is wrong, so re-read it too —
+        // otherwise this path keeps a green "Active" up after the server has
+        // explicitly said it cannot poll.
+        await Promise.all([
+          targetsRef.current.refetch(),
+          schedulerRef.current.refetch(),
+          sessionRefused ? sessionRef.current.refetch() : Promise.resolve(),
+        ]);
       }
     },
     [tr],
@@ -199,7 +209,13 @@ export default function Dashboard() {
     // paused/error/done, the master button is "Start all".
     const anyWatching = (targetsRef.current.data ?? []).some((t) => t.status === 'watching');
     const loggedIn = sessionRef.current.data?.status === 'authenticated';
-    if (!anyWatching && !loggedIn) return; // can't "Start all" while logged out
+    // There is nothing to stop and no session to poll with. Say so instead of
+    // returning silently: a click that does nothing and explains nothing is the
+    // same dead end the server-side refusal exists to remove.
+    if (!anyWatching && !loggedIn) {
+      setSchedErr(tr('dashboard.loginToStart'));
+      return;
+    }
     schedBusyRef.current = true;
     setSchedBusy(true);
     setSchedErr(undefined);
@@ -209,7 +225,12 @@ export default function Dashboard() {
       else await api.startAll();
       await Promise.all([sch.refetch(), targetsRef.current.refetch()]);
     } catch (e) {
-      setSchedErr(e instanceof Error ? e.message : tr('dashboard.schedToggleFailed'));
+      setSchedErr(isSessionNotReady(e) ? tr('dashboard.loginToStart') : errorMessage(e));
+      if (isSessionNotReady(e)) {
+        // The server just told us the session is unusable — stop showing it as
+        // active. Re-read the session as well as the engine state.
+        await Promise.all([sch.refetch(), targetsRef.current.refetch(), sessionRef.current.refetch()]);
+      }
     } finally {
       schedBusyRef.current = false;
       setSchedBusy(false);
@@ -221,6 +242,7 @@ export default function Dashboard() {
   const sessionStatus = session.data?.status ?? 'unknown';
   const loggedIn = sessionStatus === 'authenticated';
   const sessionDown = sessionStatus === 'logged-out' || sessionStatus === 'unknown';
+  const engineRunning = scheduler.data?.running ?? false;
 
   return (
     <>
@@ -230,13 +252,25 @@ export default function Dashboard() {
         <div>
           <div className="col-h">
             <h2 className="serif">{tr('dashboard.watchedCourses')}</h2>
-            <SchedulerToggle
-              running={anyWatching}
-              onStart={onToggleScheduler}
-              onStop={onToggleScheduler}
-              busy={schedBusy}
-              canStart={loggedIn}
-            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              {/* The first column's dot is about stored course states, which is
+                  what the master button acts on. It says nothing about the
+                  engine (`POST /api/scheduler/start` can have been refused, or
+                  `stop()` called), and `GET /api/scheduler` was already being
+                  fetched without ever being rendered — so show it, otherwise
+                  "started" has no visible confirmation at all. */}
+              <span className="toggle" data-engine={engineRunning ? 'running' : 'stopped'}>
+                <span className={`dot ${engineRunning ? 'dot-ok' : ''}`} />
+                {engineRunning ? tr('dashboard.engineRunning') : tr('dashboard.engineStopped')}
+              </span>
+              <SchedulerToggle
+                running={anyWatching}
+                onStart={onToggleScheduler}
+                onStop={onToggleScheduler}
+                busy={schedBusy}
+                canStart={loggedIn}
+              />
+            </div>
           </div>
           {schedErr && <div className="errbar">{schedErr}</div>}
           {list.length === 0 ? (

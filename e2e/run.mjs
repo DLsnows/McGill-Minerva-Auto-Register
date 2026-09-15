@@ -244,6 +244,26 @@ async function assertEndpoints(expected, before) {
   );
 }
 
+/**
+ * Drive the fake backend's test-support session transition: set the status the
+ * real server would report, then broadcast the log line the real scheduler writes
+ * when a cycle finds the session unusable. Both halves matter — the UI is expected
+ * to re-read the status because of the line, not because anything polled.
+ */
+async function sendSessionEvent({ status, level = 'warn' }) {
+  const res = await fetch(`${BASE_URL}/api/__test/session-event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionStatus: status,
+      level,
+      message: `Session not active (logged out / evicted) — paused; please re-login (test: ${status})`,
+    }),
+  });
+  if (!res.ok) throw new Error(`session-event hook failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
 // ── test cases ────────────────────────────────────────────────────────────────────────
 const CASES = [
   {
@@ -408,7 +428,8 @@ const CASES = [
       // disables every action button — including the one under test. Opt this
       // case into a truthful-looking session so the click exercises the real
       // path (disabled logic → POST → rendered verdict) instead of a raw fetch.
-      await page.request.post(`${BASE_URL}/api/__session`, { data: { status: 'authenticated' } });
+      // Reuses the session-transition hook, which also broadcasts the log line.
+      await sendSessionEvent({ status: 'authenticated', level: 'ok' });
 
       // Add a course of this case's own so its cooldown state is untouched by
       // whatever earlier cases did to their targets.
@@ -487,6 +508,10 @@ const CASES = [
           body.lastForcedRunAt === created.lastForcedRunAt,
         `lastForcedRunAt should be the stored start of the window, got ${JSON.stringify(body.lastForcedRunAt)} vs ${JSON.stringify(created.lastForcedRunAt)}`,
       );
+
+      // The fake backend is shared by every case, so hand the session back the way
+      // this case found it: later cases assert on the honest `logged-out` default.
+      await sendSessionEvent({ status: 'logged-out' });
 
       assertEqual(errors.length, 0, `unexpected browser errors: ${errors.join(' | ')}`);
     },
@@ -576,6 +601,82 @@ const CASES = [
       await waitFor(
         async () => (await page.locator('h2').first().innerText()) === 'Ajouter un cours',
         'fr courses heading',
+      );
+
+      assertEqual(errors.length, 0, `unexpected browser errors: ${errors.join(' | ')}`);
+    },
+  },
+  {
+    name: 'session-truth',
+    title: 'Session cell follows the server after a warn event (no polling, no reload)',
+    /**
+     * Q7 acceptance, in the real bundle.
+     *
+     * The regression: the session was fetched once at mount and never again, so the
+     * console kept advertising "Active" while the server had already discarded the
+     * session. The fix is event-driven, so the proof has two halves:
+     *   - the session cell changes because of a warn line, with no reload;
+     *   - it does NOT change (and is not re-fetched) while nothing happens, which a
+     *     timer-driven implementation would fail.
+     * `POST /api/__test/session-event` is a test-support route (never part of the
+     * app's contract) that performs both sides of the real transition: the status
+     * the API reports, and the warn line the scheduler writes.
+     */
+    // One GET at mount + one triggered by the warn event below. A regression that
+    // drops the event-driven refresh leaves this at 1.
+    endpoints: { '/api/session': 2 },
+    async run({ page, errors }) {
+      const sessionCell = () =>
+        page
+          .locator('.ticker .cell')
+          .filter({ has: page.locator('.k', { hasText: /^Session$/i }) })
+          .locator('.v');
+      const sessionText = async () => (await sessionCell().innerText()).trim();
+
+      await page.goto(`${BASE_URL}/`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.ticker .cell', { timeout: 15_000 });
+
+      // The fake backend starts logged out (no Minerva behind it, ever).
+      await waitFor(
+        async () => (await sessionText()).includes('Logged out'),
+        'the session cell to show the fake backend state',
+      );
+
+      // Q41: the engine state is rendered from GET /api/scheduler, which used to be
+      // fetched and thrown away. The fake backend never starts the engine.
+      const engine = page.locator('[data-engine]');
+      await engine.waitFor({ timeout: 15_000 });
+      assertEqual(await engine.getAttribute('data-engine'), 'stopped', 'engine indicator state');
+      assert(
+        (await engine.innerText()).includes('Engine · stopped'),
+        `the engine indicator should read "Engine · stopped", got "${await engine.innerText()}"`,
+      );
+
+      // Idle window: nothing may re-read the session on its own. A 60–120s polling
+      // "fix" would keep the next assertion green but is not what this proves; what
+      // this proves is that the *only* trigger is an event.
+      const idleBefore = await fetchLedger();
+      const idleCount = idleBefore.routes?.['/api/session']?.count ?? 0;
+      await sleep(1500);
+      const idleAfter = await fetchLedger();
+      assertEqual(
+        idleAfter.routes?.['/api/session']?.count ?? 0,
+        idleCount,
+        'GET /api/session calls while idle for 1.5s (a timer would have fired)',
+      );
+
+      // The session comes back (a login elsewhere / in the automation window) and
+      // the server says so on the event stream — that line is the ONLY trigger.
+      await sendSessionEvent({ status: 'authenticated' });
+
+      await waitFor(
+        async () => (await sessionText()).includes('Active'),
+        'the session cell to follow the server after the event',
+      );
+      const after = await fetchLedger();
+      assert(
+        (after.routes?.['/api/session']?.count ?? 0) > idleCount,
+        `the event must make the client re-read the session (calls stayed at ${idleCount})`,
       );
 
       assertEqual(errors.length, 0, `unexpected browser errors: ${errors.join(' | ')}`);

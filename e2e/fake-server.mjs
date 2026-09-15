@@ -14,6 +14,10 @@
  *   GET    /api/budget
  *   WS     /api/stream
  *
+ * Test-support only (not part of the app contract):
+ *   GET    /api/__requests       — per-route request ledger for the runner
+ *   POST   /api/__test/session-event — flip the session status and emit the log line
+ *
  * It also serves the built SPA (packages/web/dist) with an index.html fallback, i.e. the
  * same one-process topology as the real server, so `/courses`, `/settings`, ... resolve
  * on a hard navigation.
@@ -103,7 +107,7 @@ const REQUIRED_TARGET_FIELDS = ['term', 'subject', 'courseNumber', 'targetCrn', 
  */
 
 /** The paths that exist for the test harness, not for the app. */
-const HARNESS_PATHS = new Set(['/api/__requests', '/api/__session', '/api/health']);
+const HARNESS_PATHS = new Set(['/api/__requests', '/api/health', '/api/__test/session-event']);
 const requestLedger = new Map();
 let harnessCalls = 0;
 
@@ -357,8 +361,7 @@ app.put('/api/settings', (req, reply) => {
   return state.settings;
 });
 
-// --- session (never authenticates on its own: the fake backend has no Minerva
-// behind it) ---
+// --- session (never authenticates on its own: the fake backend has no Minerva behind it) ---
 app.get('/api/session', () => ({ status: state.sessionStatus }));
 app.post('/api/session/login', () => {
   state.sessionStatus = 'logged-out';
@@ -366,23 +369,41 @@ app.post('/api/session/login', () => {
 });
 
 /**
- * Test-support endpoint: force the reported session status.
+ * Test-support endpoint: drive a session transition plus the log line that
+ * accompanies it, exactly the way the real server does (see `SessionTruth` /
+ * `Scheduler` — the scheduler logs a warn the moment a cycle finds the session
+ * unusable, and the API status follows it).
  *
- * `logged-out` is the honest default here (nothing is logged in), but it also
- * disables every action button in the UI, so cases that exercise a *real* click
- * path ("Register now" → POST /run → rendered verdict) need the UI to believe a
- * session exists. Before this hook the only way to cover such a path was to call
- * the endpoint with `page.request`, which skips the component under test.
+ * This is what lets the suite prove the *client* reacts: nothing polls
+ * `GET /api/session`, so a session cell that updates after this call can only
+ * have been refreshed because a warn event arrived. Same reasoning as
+ * `/api/__requests`: it exists for the harness, not for the app, so it is kept out
+ * of the request ledger.
+ *
+ * It also has to be able to set an *authenticated* status: `logged-out` is the
+ * honest default here (nothing is logged in), but it disables every action button
+ * in the UI, so a case that exercises a real click path ("Register now" → POST
+ * /run → rendered verdict) needs the UI to believe a session exists — otherwise
+ * that path can only be covered by calling the endpoint with `page.request`,
+ * which skips the component under test.
  */
-app.post('/api/__session', (req, reply) => {
-  const status = req.body?.status;
-  if (!['authenticated', 'logged-out', 'logging-in', 'unknown'].includes(status)) {
+const SESSION_STATUSES = ['unknown', 'authenticated', 'logged-out', 'logging-in'];
+const EVENT_LEVELS = ['info', 'ok', 'warn', 'error', 'action'];
+
+app.post('/api/__test/session-event', (req, reply) => {
+  const body = req.body ?? {};
+  if (body.sessionStatus !== undefined && !SESSION_STATUSES.includes(body.sessionStatus)) {
     return reply
       .code(400)
-      .send({ error: 'status must be authenticated|logged-out|logging-in|unknown' });
+      .send({ error: `sessionStatus must be one of ${SESSION_STATUSES.join(', ')}` });
   }
-  state.sessionStatus = status;
-  return { status: state.sessionStatus };
+  const level = body.level ?? 'warn';
+  if (!EVENT_LEVELS.includes(level)) {
+    return reply.code(400).send({ error: `level must be one of ${EVENT_LEVELS.join(', ')}` });
+  }
+  if (body.sessionStatus !== undefined) state.sessionStatus = body.sessionStatus;
+  const event = logEvent(level, body.message ?? `Session status changed (${state.sessionStatus}).`);
+  return { sessionStatus: state.sessionStatus, event };
 });
 
 // --- scheduler ---

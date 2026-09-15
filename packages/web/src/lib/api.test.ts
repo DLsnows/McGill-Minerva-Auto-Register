@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, cooldownRemainingMs, MANUAL_RUN_COOLDOWN_MS } from './api';
+import { api, cooldownRemainingMs, errorMessage, isSessionNotReady, MANUAL_RUN_COOLDOWN_MS, type ApiError } from './api';
 
 function mockFetch(body: unknown, ok = true, status = 200) {
   return vi.fn().mockResolvedValue({
@@ -58,8 +58,51 @@ describe('api', () => {
     const f = mockFetch({ running: true });
     vi.stubGlobal('fetch', f);
     const out = await api.getScheduler();
-    expect(f.mock.calls[0][0]).toBe('/api/scheduler');
+    expect(f).toHaveBeenCalledWith('/api/scheduler', undefined);
     expect(out).toEqual({ running: true });
+  });
+
+  it('throws on non-ok response', async () => {
+    const f = mockFetch({ error: 'bad' }, false, 400);
+    vi.stubGlobal('fetch', f);
+    // The API's own error shape carries a human-readable reason; surfacing it
+    // verbatim is what lets a refusal read as a reason in the UI.
+    await expect(api.getBudget()).rejects.toThrow('bad');
+  });
+
+  it('surfaces the server error code and reported session status', async () => {
+    const f = mockFetch(
+      { error: 'Not logged in — open the Session tab.', code: 'session-not-ready', status: 'logged-out' },
+      false,
+      409,
+    );
+    vi.stubGlobal('fetch', f);
+    const err = await api.startAll().catch((e: unknown) => e);
+    expect(isSessionNotReady(err)).toBe(true);
+    expect((err as ApiError).sessionStatus).toBe('logged-out');
+    expect(errorMessage(err)).toBe('Not logged in — open the Session tab.');
+  });
+
+  it('falls back to status + raw body when the error response is not JSON', async () => {
+    const f = mockFetch('<html>502 Bad Gateway</html>', false, 502);
+    vi.stubGlobal('fetch', f);
+    await expect(api.getTargets()).rejects.toThrow(/502.*502 Bad Gateway/s);
+  });
+
+  it('getBudget returns the atomic used/limit/remaining snapshot, not a bare remaining count', async () => {
+    const snapshot = {
+      query: { used: 900, limit: 1000, remaining: 100 },
+      register: { used: 4, limit: 20, remaining: 16 },
+    };
+    const f = mockFetch(snapshot);
+    vi.stubGlobal('fetch', f);
+    const out = await api.getBudget();
+    expect(f).toHaveBeenCalledWith('/api/budget', undefined);
+    expect(out).toEqual(snapshot);
+    // The shell renders `used / limit` straight from this, so both halves must
+    // come from the same response.
+    expect(out.query.used).toBeLessThanOrEqual(out.query.limit);
+    expect(out.query.remaining).toBe(out.query.limit - out.query.used);
   });
 });
 
