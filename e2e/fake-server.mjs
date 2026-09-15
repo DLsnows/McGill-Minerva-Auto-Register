@@ -239,9 +239,19 @@ app.delete('/api/events', () => {
   return { ok: true };
 });
 
+// Same atomic-snapshot contract as the real server's `Budget.snapshot()`: one
+// `{ used, limit, remaining }` triple per budget, with `used` clamped into
+// `[0, limit]`. Must stay in lockstep with packages/server/src/budget/budget.ts —
+// the web Ticker reads `used` / `limit` straight off this response, so handing it
+// bare remaining counts would render "NaN / undefined".
+function budgetCount(count, limit) {
+  const used = Math.max(0, Math.min(count, limit));
+  return { used, limit, remaining: limit - used };
+}
+
 app.get('/api/budget', () => ({
-  query: Math.max(0, state.settings.queryBudget - state.queryUsed),
-  register: Math.max(0, state.settings.registerBudget - state.registerUsed),
+  query: budgetCount(state.queryUsed, state.settings.queryBudget),
+  register: budgetCount(state.registerUsed, state.settings.registerBudget),
 }));
 
 // --- live event stream (registered inside a plugin so @fastify/websocket's onRoute hook applies)

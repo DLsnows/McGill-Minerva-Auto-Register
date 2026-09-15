@@ -110,10 +110,52 @@ describe('API', () => {
     expect(get.json().dryRun).toBe(true);
   });
 
-  it('returns budget remaining', async () => {
+  it('returns a self-consistent budget snapshot', async () => {
     const r = await app.inject({ method: 'GET', url: '/api/budget' });
-    expect(r.json()).toHaveProperty('query');
-    expect(r.json()).toHaveProperty('register');
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({
+      query: { used: 0, limit: 100, remaining: 100 },
+      register: { used: 0, limit: 20, remaining: 20 },
+    });
+  });
+
+  it('keeps the budget snapshot self-consistent in the same response after the limit is raised', async () => {
+    const store = new Store(dir);
+    const budget = new Budget(store);
+    const local = buildServer({ ...makeDeps(), store, budget });
+    try {
+      for (let i = 0; i < 3; i++) budget.recordQuery();
+
+      // The reported bug: raising the daily limit used to leave the UI pairing the
+      // new limit with a stale remaining-count (1000 spent of 100 → "900/1000").
+      await local.inject({ method: 'PUT', url: '/api/settings', payload: { queryBudget: 10000 } });
+      const body = (await local.inject({ method: 'GET', url: '/api/budget' })).json();
+
+      expect(body.query).toEqual({ used: 3, limit: 10000, remaining: 9997 });
+      expect(body.query.used).toBeLessThanOrEqual(body.query.limit);
+      expect(body.query.used + body.query.remaining).toBe(body.query.limit);
+    } finally {
+      await local.close();
+    }
+  });
+
+  it('clamps used to the limit when the limit drops below the ops already spent', async () => {
+    const store = new Store(dir);
+    const budget = new Budget(store);
+    const local = buildServer({ ...makeDeps(), store, budget });
+    try {
+      for (let i = 0; i < 7; i++) budget.recordQuery();
+      for (let i = 0; i < 2; i++) budget.recordRegister();
+
+      await local.inject({ method: 'PUT', url: '/api/settings', payload: { queryBudget: 1, registerBudget: 1 } });
+      const body = (await local.inject({ method: 'GET', url: '/api/budget' })).json();
+
+      // No negative remainder (the old arithmetic rendered "-6/1").
+      expect(body.query).toEqual({ used: 1, limit: 1, remaining: 0 });
+      expect(body.register).toEqual({ used: 1, limit: 1, remaining: 0 });
+    } finally {
+      await local.close();
+    }
   });
 
   it('reports session status and toggles the scheduler', async () => {

@@ -66,4 +66,26 @@ describe('useResource', () => {
     });
     expect(result.current.data).toBe('fresh');
   });
+
+  it('refetch resolves with the error (instead of swallowing it) and records it', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce('ok').mockRejectedValue(new Error('refresh nope'));
+    const { result } = renderHook(() => useResource(fetcher));
+    await waitFor(() => expect(result.current.data).toBe('ok'));
+
+    // A caller that must report a failed refresh needs the outcome from the
+    // refetch itself — the `error` captured in its closure is the pre-refetch one.
+    let returned: Error | undefined;
+    await act(async () => {
+      returned = await result.current.refetch();
+    });
+    expect(returned?.message).toBe('refresh nope');
+    await waitFor(() => expect(result.current.error?.message).toBe('refresh nope'));
+
+    // A successful refetch reports no error.
+    fetcher.mockResolvedValueOnce('ok again');
+    await act(async () => {
+      returned = await result.current.refetch();
+    });
+    expect(returned).toBeUndefined();
+  });
 });

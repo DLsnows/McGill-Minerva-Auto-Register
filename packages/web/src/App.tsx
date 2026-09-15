@@ -11,8 +11,6 @@ import Settings from './pages/Settings';
 function Shell() {
   const { targets, budget, session, settings } = useData();
   const s = settings.data;
-  const queryBudget = s?.queryBudget ?? 100;
-  const registerBudget = s?.registerBudget ?? 20;
 
   return (
     <div className="app-shell">
@@ -33,14 +31,15 @@ function Shell() {
           <LanguageSwitcher />
         </div>
       </div>
+      {/* The ticker renders the budget snapshot as-is. It must never derive a
+          used-count by subtracting a remaining-count from a limit: those two
+          numbers came from different reads and produced impossible ratios like
+          "9000 / 1000" right after the daily limit was raised. */}
       <Ticker
         watching={(targets.data ?? []).filter((t) => t.status === 'watching').length}
         intervalMinutes={s?.pollIntervalMinutes ?? 30}
         jitterMinutes={s?.jitterMinutes ?? 3}
-        queryUsed={queryBudget - (budget.data?.query ?? queryBudget)}
-        queryBudget={queryBudget}
-        registerUsed={registerBudget - (budget.data?.register ?? registerBudget)}
-        registerBudget={registerBudget}
+        budget={budget.data}
         sessionStatus={session.data?.status ?? 'unknown'}
       />
       <Outlet />

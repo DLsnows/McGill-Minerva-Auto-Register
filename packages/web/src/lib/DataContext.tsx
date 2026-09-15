@@ -1,12 +1,12 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import type { Settings, WatchTarget } from '@autoregister/shared';
-import { api, type BudgetRemaining, type SchedulerState, type SessionInfo } from './api';
+import { api, type BudgetSnapshot, type SchedulerState, type SessionInfo } from './api';
 import { useResource, type Resource } from './useResource';
 
 export interface DataContextValue {
   targets: Resource<WatchTarget[]>;
   session: Resource<SessionInfo>;
-  budget: Resource<BudgetRemaining>;
+  budget: Resource<BudgetSnapshot>;
   settings: Resource<Settings>;
   scheduler: Resource<SchedulerState>;
 }

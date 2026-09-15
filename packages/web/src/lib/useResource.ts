@@ -4,7 +4,12 @@ export interface Resource<T> {
   data: T | undefined;
   loading: boolean;
   error: Error | undefined;
-  refetch: () => Promise<void>;
+  /** Re-run the fetcher. Never rejects: the outcome is both recorded on the
+   * resource AND returned, so an action that must report a failed refresh
+   * (e.g. "saved settings, but the budget refresh failed") can act on it —
+   * reading `resource.error` right after awaiting is unreliable because the
+   * value captured by the closure is the one from the render that started it. */
+  refetch: () => Promise<Error | undefined>;
 }
 
 /** Run `fetcher` on mount; expose data/loading/error + a manual refetch.
@@ -31,7 +36,7 @@ export function useResource<T>(fetcher: () => Promise<T>): Resource<T> {
     };
   }, []);
 
-  const refetch = useCallback(async () => {
+  const refetch = useCallback(async (): Promise<Error | undefined> => {
     const gen = ++genRef.current;
     const live = () => mountedRef.current && gen === genRef.current;
     setLoading(true);
@@ -41,8 +46,11 @@ export function useResource<T>(fetcher: () => Promise<T>): Resource<T> {
         setData(result);
         setError(undefined);
       }
+      return undefined;
     } catch (e) {
-      if (live()) setError(e instanceof Error ? e : new Error(String(e)));
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (live()) setError(err);
+      return err;
     } finally {
       if (live()) setLoading(false);
     }

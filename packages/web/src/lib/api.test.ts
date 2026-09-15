@@ -67,4 +67,20 @@ describe('api', () => {
     vi.stubGlobal('fetch', f);
     await expect(api.getBudget()).rejects.toThrow(/400/);
   });
+
+  it('getBudget returns the atomic used/limit/remaining snapshot, not a bare remaining count', async () => {
+    const snapshot = {
+      query: { used: 900, limit: 1000, remaining: 100 },
+      register: { used: 4, limit: 20, remaining: 16 },
+    };
+    const f = mockFetch(snapshot);
+    vi.stubGlobal('fetch', f);
+    const out = await api.getBudget();
+    expect(f).toHaveBeenCalledWith('/api/budget', undefined);
+    expect(out).toEqual(snapshot);
+    // The shell renders `used / limit` straight from this, so both halves must
+    // come from the same response.
+    expect(out.query.used).toBeLessThanOrEqual(out.query.limit);
+    expect(out.query.remaining).toBe(out.query.limit - out.query.used);
+  });
 });

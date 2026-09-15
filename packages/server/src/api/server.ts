@@ -232,7 +232,9 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     deps.store.clearEvents();
     return { ok: true };
   });
-  app.get('/api/budget', () => deps.budget.remaining());
+  // A single atomic snapshot (one settings + one dailyOps read) so the client
+  // never has to combine a fresh limit with a stale op-count.
+  app.get('/api/budget', () => deps.budget.snapshot());
 
   // --- live event stream ---
   // WebSocket routes MUST be registered inside a `register(...)` so they're
