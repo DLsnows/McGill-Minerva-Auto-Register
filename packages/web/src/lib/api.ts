@@ -20,6 +20,27 @@ export interface StartAllResult {
   skipped: number;
 }
 
+/** Windows-only keep-awake state (see `GET /api/power`). */
+export type PowerSource = 'ac' | 'battery' | 'desktop' | 'unknown';
+export type KeepAwakeReason =
+  | 'active'
+  | 'battery'
+  | 'disabled'
+  | 'unsupported'
+  | 'unavailable'
+  | 'keeperFailed'
+  | 'pending'
+  | 'starting';
+export interface PowerStatus {
+  supported: boolean;
+  /** The persisted setting. */
+  enabled: boolean;
+  /** A keeper is actually holding sleep off right now. */
+  active: boolean;
+  powerSource: PowerSource;
+  reason: KeepAwakeReason;
+}
+
 type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'targetCrn' | 'mode'> &
   Partial<Pick<WatchTarget, 'faculty' | 'label'>>;
 
@@ -28,7 +49,9 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     // Read the body as text — error responses may be HTML (e.g. a 502 page), not JSON.
     const detail = await res.text().catch(() => '');
-    throw new Error(`${init?.method ?? 'GET'} ${url} failed: ${res.status}${detail ? ` — ${detail}` : ''}`);
+    throw new Error(
+      `${init?.method ?? 'GET'} ${url} failed: ${res.status}${detail ? ` — ${detail}` : ''}`,
+    );
   }
   return (await res.json()) as T;
 }
@@ -78,4 +101,6 @@ export const api = {
   getEvents: (limit = 200) => req<LogEvent[]>(`/api/events?limit=${limit}`),
   clearEvents: () => req<{ ok: true }>('/api/events', { method: 'DELETE' }),
   getBudget: () => req<BudgetSnapshot>('/api/budget'),
+
+  getPower: () => req<PowerStatus>('/api/power'),
 };

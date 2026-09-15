@@ -62,6 +62,10 @@ export interface Settings {
   /** Rehearsal mode: poll + decide normally but never actually submit a
    * registration (logs "would register" instead). Default false. */
   dryRun?: boolean;
+  /** Windows only: hold the machine awake (sleep disabled) while the app runs.
+   * The display still turns off; on a laptop this only applies on AC power.
+   * Default false — it changes machine behaviour, so it is opt-in. */
+  keepAwake?: boolean;
 }
 
 export interface NotifyChannels {
@@ -115,6 +119,7 @@ export const DEFAULT_SETTINGS: Settings = {
   registerBudget: 20,
   notify: { desktop: true, sound: true, email: false },
   dryRun: false,
+  keepAwake: false,
 };
 
 /**

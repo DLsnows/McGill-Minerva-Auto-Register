@@ -1,8 +1,13 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from '@autoregister/shared';
 // @ts-expect-error -- plain .mjs e2e fixture with no type declarations (see the
 // `e2e/**` block in eslint.config.mjs; there is no tsconfig project for it).
 import { NUMERIC_BOUNDS, defaultSettings } from '../../../../e2e/fake-settings.mjs';
+// @ts-expect-error -- same: a plain .mjs fixture with no type declarations.
+import { powerStatus } from '../../../../e2e/fake-power.mjs';
+import type { PowerStatusDto } from './server';
 import { settingsSchema } from './server';
 
 /**
@@ -196,5 +201,59 @@ describe('fake backend settings contract (e2e/fake-settings.mjs)', () => {
         });
       }
     }
+  });
+});
+
+describe('fake backend power contract (e2e/fake-power.mjs)', () => {
+  // The fake is plain JS; typing the call pins the shape at compile time, and
+  // the key assertions below pin it at runtime too (a wrong *value* type would
+  // otherwise sail through a key-only check).
+  const status = powerStatus() as PowerStatusDto;
+
+  it('reports exactly the keys the real PowerStatusDto carries', () => {
+    // Derived from the real DTO rather than listed here: with an explicit list,
+    // adding a field to the server's DTO would leave the fake silently behind.
+    const realKeys = Object.keys({
+      supported: false,
+      enabled: false,
+      active: false,
+      powerSource: 'unknown',
+      reason: 'disabled',
+    } satisfies PowerStatusDto).sort();
+    expect(Object.keys(status).sort()).toEqual(realKeys);
+  });
+
+  it('uses a reason the real KeepAwakeReason allows', () => {
+    // `satisfies` above checks every reason at compile time, so this stays a
+    // one-line runtime assertion rather than a second list to keep in sync.
+    expect(status.reason).toBe('unsupported');
+  });
+
+  it('carries value types the Settings page can render', () => {
+    expect(typeof status.supported).toBe('boolean');
+    expect(typeof status.enabled).toBe('boolean');
+    expect(typeof status.active).toBe('boolean');
+    expect(['ac', 'battery', 'desktop', 'unknown']).toContain(status.powerSource);
+  });
+
+  it('does not claim a machine that cannot host the keeper is awake', () => {
+    // `supported: false` must imply "nothing is being held". Letting the fake
+    // report `active: true` on an unsupported platform is exactly the kind of
+    // self-contradicting payload the real `toPowerDto()` cannot produce.
+    expect(status.supported).toBe(false);
+    expect(status.active).toBe(false);
+  });
+
+  it('is reachable: the fake backend registers GET /api/power', () => {
+    // The keep-awake regression was not a wrong payload but a missing route —
+    // the page fetched `/api/power`, got a 404, and the e2e run failed on
+    // "unexpected browser errors" two files away from the cause. Reading the
+    // source is crude, but it is the only check available without booting the
+    // fake, and it fails loudly the moment the route is dropped again.
+    const source = readFileSync(
+      fileURLToPath(new URL('../../../../e2e/fake-server.mjs', import.meta.url)),
+      'utf8',
+    );
+    expect(source).toMatch(/app\.get\(\s*'\/api\/power'/);
   });
 });

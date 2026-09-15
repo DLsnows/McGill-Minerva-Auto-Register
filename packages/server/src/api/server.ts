@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { LogEvent, Settings } from '@autoregister/shared';
 import { MAX_OP_PAUSE_MS, MIN_OP_PAUSE_MS } from '@autoregister/shared';
 import type { Budget } from '../budget/budget';
+import type { KeepAwakeReason, KeepAwakeStatus, PowerSource } from '../system/keep-awake';
 import type { Store } from '../store/store';
 import { applyPacingSettings } from '../util/pacing';
 
@@ -36,6 +37,13 @@ export interface ApiScheduler {
   /** Drop one target's consecutive-failure streak when it enters `watching`. */
   clearFailures?(id: string): void;
 }
+/** Windows keep-awake controller. Optional so non-Windows callers and test
+ * doubles can omit it entirely. */
+export interface ApiKeepAwake {
+  status(): KeepAwakeStatus;
+  apply(settings: { keepAwake?: boolean }): Promise<KeepAwakeStatus>;
+  stop(): KeepAwakeStatus;
+}
 
 /** First-poll timestamp for a target that just entered `watching`: *due now*.
  *
@@ -58,6 +66,7 @@ export interface ApiDeps {
   budget: Budget;
   session: ApiSession;
   scheduler: ApiScheduler;
+  keepAwake?: ApiKeepAwake;
   /** Injectable clock. Defaults to `Date.now`, and mirrors the scheduler's own `now`
    * hook so a test can drive both from one source. Asserting "the route armed it due
    * now" against `Date.now()` instead is fragile: another test in the same file may
@@ -119,6 +128,7 @@ export const settingsSchema = z
     notify: z.object({ desktop: z.boolean(), sound: z.boolean(), email: z.boolean() }),
     email: emailSchema,
     dryRun: z.boolean(),
+    keepAwake: z.boolean(),
   })
   .partial();
 
@@ -130,6 +140,35 @@ const targetPatchSchema = targetSchema
       .optional(),
   })
   .strict();
+
+/** Wire shape of `GET /api/power` (and of the `keepAwake` block the settings UI
+ * reads). `enabled` is the persisted setting, `active` what is happening now. */
+export interface PowerStatusDto {
+  supported: boolean;
+  enabled: boolean;
+  active: boolean;
+  powerSource: PowerSource;
+  reason: KeepAwakeReason;
+}
+
+/** What we report when no keep-awake controller was wired in at all. */
+const UNSUPPORTED_POWER: KeepAwakeStatus = {
+  supported: false,
+  settingEnabled: false,
+  active: false,
+  powerSource: 'unknown',
+  reason: 'unsupported',
+};
+
+function toPowerDto(status: KeepAwakeStatus): PowerStatusDto {
+  return {
+    supported: status.supported,
+    enabled: status.settingEnabled,
+    active: status.active,
+    powerSource: status.powerSource,
+    reason: status.reason,
+  };
+}
 
 /** Build the local HTTP/WebSocket API over the runtime. `clients` is the shared
  * WS client set (also used by the event broadcaster). */
@@ -231,7 +270,7 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
 
   // --- settings ---
   app.get('/api/settings', () => deps.store.getSettings());
-  app.put('/api/settings', (req, reply) => {
+  app.put('/api/settings', async (req, reply) => {
     const parsed = settingsSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     // Compare against the current values first: the UI saves the whole settings
@@ -259,12 +298,20 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     // Re-apply a changed cadence to already-scheduled targets now, so it takes
     // effect immediately rather than only from each target's next cycle.
     if (cadenceChanged) deps.scheduler.rescheduleWatching?.();
+    // Keep-awake: flip the keeper immediately on save. Applied on every save
+    // (not just on change) so the caller's response reports the real state.
+    // Awaited because the first tick probes the power source asynchronously — doing
+    // this synchronously used to stall the event loop for the whole server.
+    if (deps.keepAwake) await deps.keepAwake.apply(updated);
     // Same idea for the operation speed: `humanPause()` reads the runtime config
     // on every call, so a changed value applies from the next browser operation on.
     // Uses `updated` (the persisted merge) so unchanged fields keep their value.
     if (pacingChanged) applyPacingSettings(updated);
     return updated;
   });
+
+  // --- power / keep-awake (Windows only; `supported:false` elsewhere) ---
+  app.get('/api/power', () => toPowerDto(deps.keepAwake?.status() ?? UNSUPPORTED_POWER));
 
   // --- session ---
   app.get('/api/session', async () => {

@@ -22,6 +22,14 @@ const sampleTarget = {
 };
 
 describe('Store', () => {
+  it('defaults keepAwake to off (opt-in) and persists it once set', () => {
+    const s = new Store(dir);
+    expect(s.getSettings().keepAwake).toBe(false);
+    expect(s.setSettings({ keepAwake: true }).keepAwake).toBe(true);
+    // Reopening the store keeps the persisted value.
+    expect(new Store(dir).getSettings().keepAwake).toBe(true);
+  });
+
   it('adds a target with generated id and default status', () => {
     const s = new Store(dir);
     const t = s.addTarget(sampleTarget);

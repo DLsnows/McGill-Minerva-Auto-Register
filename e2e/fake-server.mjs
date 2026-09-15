@@ -28,6 +28,7 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import websocketPlugin from '@fastify/websocket';
 import { NUMERIC_BOUNDS, defaultSettings } from './fake-settings.mjs';
+import { powerStatus } from './fake-power.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -344,6 +345,13 @@ app.post('/api/session/login', () => {
   state.sessionStatus = 'logged-out';
   return { started: true };
 });
+
+// --- power / keep-awake (Windows only; `supported:false` elsewhere) ---
+// `enabled` mirrors the persisted setting while `supported`/`active`/`reason`
+// describe the machine, exactly as the real `toPowerDto()` splits them. The
+// Settings page reads both and must not be told it is active on a machine that
+// cannot host the keeper.
+app.get('/api/power', () => ({ ...powerStatus(), enabled: state.settings.keepAwake ?? false }));
 
 // --- scheduler ---
 app.get('/api/scheduler', () => ({ running: state.schedulerRunning }));

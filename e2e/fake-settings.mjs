@@ -38,6 +38,7 @@ export function defaultSettings() {
     registerBudget: 20,
     notify: { desktop: true, sound: true, email: false },
     dryRun: false,
+    keepAwake: false,
   };
 }
 

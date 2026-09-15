@@ -200,6 +200,31 @@ il enregistre plutôt `DRY-RUN: would REGISTER <CRN>` et laisse le cours en
 surveillance. Surveillez la console pour confirmer qu'il se comporte comme prévu,
 puis désactivez le dry-run pour le laisser agir pour de vrai.
 
+## Interrupteur « garder éveillé » (Windows uniquement)
+
+Les paramètres proposent l'option **« Garder ce PC éveillé pendant l'exécution
+d'AutoRegister »**, désactivée par défaut. Activez-la et la machine ne se mettra
+pas en veille tant que l'application tourne — une inscription peut s'ouvrir à
+3 h du matin, et un PC endormi ne peut rien faire.
+
+Ses limites (également indiquées dans l'interface) :
+
+- **Pas de veille, mais l'écran s'éteint toujours.** L'écran garde son
+  comportement normal ; empêcher la veille n'empêche pas son extinction.
+- **Sur un portable, l'option ne s'applique que sur secteur.** Sur batterie, le
+  PC se met en veille comme d'habitude pour préserver votre autonomie, et le
+  maintien reprend automatiquement dès que le chargeur est branché (la source
+  d'alimentation est revérifiée toutes les 60 s).
+- **Sur un ordinateur de bureau**, elle reste active tant que l'option est
+  activée.
+- **Désactiver l'option ou quitter l'application rétablit immédiatement le
+  comportement normal.** Le maintien est assuré par un processus PowerShell
+  d'arrière-plan appelant
+  `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` ; dès qu'il se
+  termine, la demande disparaît. L'application **ne modifie jamais votre plan
+  d'alimentation** (pas de `powercfg /change`).
+- Le bloc entier est masqué sur les systèmes non Windows.
+
 ## Comment ça marche
 
 - **Décision** : à partir de `cap/act/rem` et `wlcap/wlact/wlrem` → REGISTER
@@ -242,7 +267,11 @@ npm run lint
 npm run typecheck
 npm run test          # Vitest (projets node et web/jsdom)
 npm run build:web     # build web de production (servi par le serveur)
+npm run keep-awake:smoke -w @autoregister/server   # Windows uniquement : lance le vrai keeper et vérifie qu'il est bien arrêté
 ```
+
+> Les tests unitaires ne lancent jamais PowerShell (spawn / source d'alimentation
+> injectés). Utilisez `keep-awake:smoke` pour vérifier le comportement réel.
 
 Monorepo Node + TypeScript (npm workspaces) : `packages/{shared,server,web}` —
 Playwright (automatisation du navigateur), Fastify + WebSocket (API), interface

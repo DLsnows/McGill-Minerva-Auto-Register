@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DataProvider } from '../lib/DataContext';
 import SettingsPage from './Settings';
@@ -22,6 +22,26 @@ function mockAll() {
   vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
   vi.spyOn(api, 'getSettings').mockResolvedValue(LOADED_SETTINGS);
   vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+  vi.spyOn(api, 'getPower').mockResolvedValue({
+    supported: false,
+    enabled: false,
+    active: false,
+    powerSource: 'unknown',
+    reason: 'unsupported',
+  });
+}
+
+/** The Windows keep-awake controller is available and reports `reason`. */
+function mockPower(
+  reason: 'active' | 'battery' | 'disabled' | 'unavailable' | 'keeperFailed' = 'disabled',
+) {
+  return vi.spyOn(api, 'getPower').mockResolvedValue({
+    supported: true,
+    enabled: reason === 'active',
+    active: reason === 'active',
+    powerSource: reason === 'battery' ? 'battery' : 'ac',
+    reason,
+  });
 }
 
 const renderSettings = () =>
@@ -293,5 +313,126 @@ describe('Settings', () => {
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
     expect(put).not.toHaveBeenCalled();
     expect(screen.getByText(/nothing was saved/i).textContent).toContain('250–60000 ms');
+  });
+});
+
+describe('Settings — keep-awake (Windows only)', () => {
+  it('renders nothing at all when the platform is not supported', async () => {
+    mockAll(); // getPower → supported: false
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+    // Wait for the power probe to have settled before asserting absence.
+    await waitFor(() => expect(api.getPower).toHaveBeenCalled());
+    expect(screen.queryByLabelText('Keep this PC awake')).not.toBeInTheDocument();
+    expect(screen.queryByText('Power (Windows)')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('keep-awake-status')).not.toBeInTheDocument();
+  });
+
+  it('renders the switch plus the full explanation when supported', async () => {
+    mockAll();
+    mockPower('disabled');
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Keep this PC awake'));
+
+    expect(screen.getByText('Power (Windows)')).toBeInTheDocument();
+    // The four things the user asked to be told clearly:
+    expect(screen.getByText(/will not go to sleep while the switch is on/i)).toBeInTheDocument();
+    expect(screen.getByText(/display still turns off normally/i)).toBeInTheDocument();
+    expect(screen.getByText(/only applies while the charger is connected/i)).toBeInTheDocument();
+    expect(screen.getByText(/on battery the PC still sleeps/i)).toBeInTheDocument();
+    expect(screen.getByText(/normal power behaviour resumes immediately/i)).toBeInTheDocument();
+  });
+
+  it('shows the live status reported by GET /api/power', async () => {
+    mockAll();
+    mockPower('active');
+    renderSettings();
+    await waitFor(() =>
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(
+        /Active — the PC will not sleep/i,
+      ),
+    );
+  });
+
+  it('shows the waiting-for-AC status on battery', async () => {
+    mockAll();
+    mockPower('battery');
+    renderSettings();
+    await waitFor(() =>
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(/Waiting for AC power/i),
+    );
+  });
+
+  it('saves the switch and refreshes the live status', async () => {
+    mockAll();
+    const power = mockPower('disabled');
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
+      queryBudget: 100,
+      registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+      keepAwake: true,
+    });
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Keep this PC awake'));
+    await userEvent.click(screen.getByLabelText('Keep this PC awake'));
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(expect.objectContaining({ keepAwake: true })),
+    );
+    // Initial load + post-save refresh.
+    await waitFor(() => expect(power).toHaveBeenCalledTimes(2));
+  });
+
+  it('distinguishes a dead keeper from an unreadable power source', async () => {
+    // Review regression: a keeper that dies on its own used to be surfaced as
+    // "the power source could not be read", which blames the wrong thing.
+    mockAll();
+    mockPower('keeperFailed');
+    renderSettings();
+    await waitFor(() =>
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(
+        /sleep-prevention helper could not run/i,
+      ),
+    );
+    expect(screen.getByTestId('keep-awake-status')).not.toHaveTextContent(
+      /power source could not be read/i,
+    );
+  });
+
+  it('polls the status so a mid-session power change is reflected', async () => {
+    mockAll();
+    const power = mockPower('disabled');
+    // Fake timers must be installed BEFORE render: the interval is created on
+    // whatever clock exists at mount time (same pattern as Session.poll.test).
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        renderSettings();
+      });
+      expect(power).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(/^Status: Off$/);
+
+      // The server releases the hold when a laptop switches to battery; the open
+      // settings page must not keep claiming it is active.
+      power.mockResolvedValue({
+        supported: true,
+        enabled: true,
+        active: false,
+        powerSource: 'battery',
+        reason: 'battery',
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(30_000);
+      });
+      expect(power.mock.calls.length).toBeGreaterThan(1);
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(/Waiting for AC power/i);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

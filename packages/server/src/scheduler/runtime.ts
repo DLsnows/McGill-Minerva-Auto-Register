@@ -5,6 +5,7 @@ import { Notifier } from '../notifier/notifier';
 import { SessionManager } from '../session/session-manager';
 import { Budget } from '../budget/budget';
 import { Store } from '../store/store';
+import { createKeepAwake, type KeepAwakeManagerHandle } from '../system/keep-awake';
 import { applyPacingSettings } from '../util/pacing';
 import { Scheduler } from './scheduler';
 
@@ -14,6 +15,9 @@ export interface Runtime {
   session: SessionManager;
   notifier: Notifier;
   scheduler: Scheduler;
+  /** The manager handle (not the bare `KeepAwake` interface) so process-teardown code
+   * can call the synchronous `killChildSync()` from an `exit` handler. */
+  keepAwake: KeepAwakeManagerHandle;
 }
 
 /**
@@ -63,5 +67,25 @@ export function createRuntime(onEvent?: (e: LogEvent) => void): Runtime {
       onEvent?.(e);
     },
   });
-  return { store, budget, session, notifier, scheduler };
+  // Windows-only keep-awake: report state changes to the live console so the
+  // user can see when a laptop switches to battery and the hold is released.
+  const keepAwake = createKeepAwake({
+    onEvent: (message, level) => {
+      const event = store.appendEvent({ level, message });
+      onEvent?.(event);
+    },
+  });
+  // Resume the persisted preference on startup (it is opt-in and off by default).
+  // Fire-and-forget: the first tick awaits an async PowerShell probe, and startup must
+  // not block on it. Errors are swallowed by the probe itself (it degrades to
+  // 'unknown'), and a rejection here would otherwise be an unhandled rejection.
+  if (store.getSettings().keepAwake === true) {
+    void keepAwake.start().catch((err: unknown) => {
+      console.error(
+        '[keep-awake] failed to resume on startup:',
+        err instanceof Error ? err.message : String(err),
+      );
+    });
+  }
+  return { store, budget, session, notifier, scheduler, keepAwake };
 }
