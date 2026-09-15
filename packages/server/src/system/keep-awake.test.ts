@@ -4,6 +4,7 @@ import type { ChildProcess } from 'node:child_process';
 import {
   KEEPER_REFRESH_SECONDS,
   POWER_POLL_MS,
+  POWER_QUERY_SCRIPT,
   createKeepAwake,
   detectPowerSource,
   parsePowerSourceOutput,
@@ -245,7 +246,7 @@ describe('keep-awake', () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
-    it('a failed spawn degrades to unavailable instead of throwing', async () => {
+    it('a failed spawn surfaces as keeperFailed instead of throwing', async () => {
       const spawn = vi.fn(() => {
         throw new Error('spawn powershell.exe ENOENT');
       });
@@ -256,10 +257,11 @@ describe('keep-awake', () => {
         getPowerSource: (): Promise<PowerSource> => Promise.resolve('ac'),
       });
       // The spawn happens inside the async first tick, so a rejection must surface as a
-      // resolved status rather than bubbling out of start().
+      // resolved status rather than bubbling out of start(). The reason is
+      // 'keeperFailed' (the source WAS read) — see the dedicated test below.
       await expect(manager.start()).resolves.toMatchObject({
         active: false,
-        reason: 'unavailable',
+        reason: 'keeperFailed',
       });
       expect(errorSpy).toHaveBeenCalled();
       manager.stop();
@@ -317,16 +319,91 @@ describe('keep-awake', () => {
       expect(parsePowerSourceOutput('battery')).toBe('battery');
       expect(parsePowerSourceOutput('battery\n')).toBe('battery');
       expect(parsePowerSourceOutput('  ac  ')).toBe('ac');
+      expect(parsePowerSourceOutput('unknown')).toBe('unknown');
       // PowerShell unavailable / empty output / err
       expect(parsePowerSourceOutput(undefined)).toBe('unknown');
       expect(parsePowerSourceOutput('')).toBe('unknown');
       expect(parsePowerSourceOutput('something else')).toBe('unknown');
     });
 
+    it('a FAILED battery query is not reported as a desktop', () => {
+      // Regression: `-ErrorAction SilentlyContinue` alone makes a failed query look
+      // like a successful-but-empty one, i.e. "desktop" — which holds sleep off on
+      // any power, including battery. That would silently break the one guarantee
+      // this feature makes. The script must use -ErrorVariable and answer 'unknown'.
+      expect(POWER_QUERY_SCRIPT).toContain('-ErrorVariable');
+      expect(POWER_QUERY_SCRIPT).toContain("Write-Output 'unknown'");
+      // The error branch has to come BEFORE the empty-result branch, otherwise a
+      // failure still falls through to 'desktop'.
+      expect(POWER_QUERY_SCRIPT.indexOf("'unknown'")).toBeLessThan(
+        POWER_QUERY_SCRIPT.indexOf("'desktop'"),
+      );
+    });
+
     it('power queries never throw (PowerShell missing ⇒ unknown)', async () => {
       // The real detector shells out to powershell.exe; wherever it cannot run
       // the answer must be `unknown`, never an exception.
       expect(['ac', 'battery', 'desktop', 'unknown']).toContain(detectPowerSource());
+    });
+  });
+
+  describe('review regressions', () => {
+    it('defaults to the ASYNC probe so no live path blocks the event loop', async () => {
+      // Regression: the manager used to default to the synchronous `detectPowerSource`
+      // (execFileSync), which stalled the scheduler/session/WebSocket for the whole
+      // PowerShell round trip. `detectPowerSourceAsync` existed but was never wired.
+      //
+      // The sync detector returns a bare string; the async one returns a Promise.
+      // On this machine PowerShell exists, so the sync one would resolve instantly and
+      // the async one has a real `.then` — that difference is the assertion.
+      const h = harness();
+      const manager = createKeepAwake({ platform: 'win32', spawn: h.spawn as never });
+      const inFlight = manager.refreshPowerSource();
+      expect(typeof (inFlight as { then?: unknown }).then).toBe('function');
+      const source = await inFlight;
+      expect(['ac', 'battery', 'desktop', 'unknown']).toContain(source);
+    });
+
+    it('reports keeperFailed (not "unavailable") when the keeper dies on its own', async () => {
+      const h = harness();
+      const manager = makeManager(h, 'win32', () => 'ac');
+      await manager.start();
+      expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
+
+      // `Add-Type` blocked by execution policy ⇒ the keeper exits 3 by itself.
+      // Nothing is holding sleep off now, but the power source is perfectly readable.
+      h.children[0].emit('exit', 3, null);
+      expect(manager.status()).toMatchObject({
+        active: false,
+        powerSource: 'ac',
+        reason: 'keeperFailed',
+      });
+      manager.stop();
+    });
+
+    it('a deliberate stop() is NOT reported as keeperFailed', async () => {
+      const h = harness();
+      const manager = makeManager(h, 'win32', () => 'ac');
+      await manager.start();
+      // Simulates the child noticing the closed stdin and exiting 0 after stop().
+      manager.stop();
+      h.children[0].emit('exit', 0, null);
+      expect(manager.status()).toMatchObject({ active: false, reason: 'disabled' });
+    });
+
+    it('a failed spawn is keeperFailed, not "the power source is unreadable"', async () => {
+      const spawn = vi.fn(() => {
+        throw new Error('spawn powershell.exe EPERM');
+      });
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const manager = createKeepAwake({
+        platform: 'win32',
+        spawn: spawn as never,
+        getPowerSource: () => 'ac',
+      });
+      const status = await manager.start();
+      expect(status).toMatchObject({ active: false, powerSource: 'ac', reason: 'keeperFailed' });
+      manager.stop();
     });
   });
 });

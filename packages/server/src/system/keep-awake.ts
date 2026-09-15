@@ -16,7 +16,7 @@ import { execFile, execFileSync, spawn as nodeSpawn, type ChildProcess } from 'n
 export type PowerSource = 'ac' | 'battery' | 'desktop' | 'unknown';
 
 export type KeepAwakeReason =
-  'active' | 'battery' | 'disabled' | 'unsupported' | 'unavailable' | 'pending';
+  'active' | 'battery' | 'disabled' | 'unsupported' | 'unavailable' | 'keeperFailed' | 'pending';
 
 export interface KeepAwakeStatus {
   /** The platform can host the keeper (Windows only). */
@@ -118,15 +118,24 @@ exit 0
 
 /**
  * One-shot power-source probe. Prints exactly one of:
- * `desktop` (no battery, i.e. a tower/mini), `ac`, `battery`, or nothing when
- * the query itself failed (→ `unknown`).
+ * `desktop` (no battery, i.e. a tower/mini), `ac`, `battery`, or `unknown` when
+ * the query itself failed.
+ *
+ * `-ErrorVariable` is load-bearing: `-ErrorAction SilentlyContinue` alone makes a
+ * *failed* query look identical to a *successful, empty* one, so a laptop whose
+ * CIM/WMI provider errors out would be reported as `desktop` and — because
+ * desktops hold on any power — the machine would stay awake **on battery**,
+ * silently breaking the one guarantee this feature makes. A failure must degrade
+ * to `unknown` (→ "unavailable"), never to a hold.
  *
  * `Win32_Battery.BatteryStatus`: 2 = AC, 1 = discharging. A present-but-idle
  * battery can report other values; those fall back to `ac` because
  * `PowerManagementSupported`/status are unreliable on some firmware.
  */
 export const POWER_QUERY_SCRIPT = `
-$battery = @(Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue)
+$cimError = $null
+$battery = @(Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue -ErrorVariable cimError)
+if ($cimError.Count -gt 0) { Write-Output 'unknown'; exit 0 }
 if ($battery.Count -eq 0) { Write-Output 'desktop'; exit 0 }
 if ($battery[0].BatteryStatus -eq 1) { Write-Output 'battery'; exit 0 }
 Write-Output 'ac'
@@ -212,17 +221,23 @@ function reasonFor(
   settingEnabled: boolean,
   active: boolean,
   probeSettled: boolean,
+  keeperFailed: boolean,
 ): KeepAwakeReason {
   if (active) return 'active';
   if (!settingEnabled) return 'disabled';
   if (powerSource === 'battery') return 'battery';
+  // Enabled, no keeper, and the last one *we started* died on its own (blocked
+  // `Add-Type` under an execution policy, `SetThreadExecutionState` returning 0, …).
+  // The power source is fine — reporting 'unavailable' here would blame the probe
+  // for something that is not its fault.
+  if (keeperFailed) return 'keeperFailed';
   // Enabled, no keeper yet, and no reading has landed yet: the first probe is still in
   // flight (it is async now, so the switch can be on for a moment before the first
   // reading arrives). 'pending' rather than 'unavailable' so the UI does not briefly
   // claim the platform cannot be used.
   if (powerSource === 'unknown' && !probeSettled) return 'pending';
   // Enabled but not holding, and the reading is settled — so the hold was refused for
-  // another reason (PowerShell missing, the probe failed, a spawn failure, ...).
+  // another reason (PowerShell missing, the probe failed, ...).
   return 'unavailable';
 }
 
@@ -242,11 +257,18 @@ class KeepAwakeManager implements KeepAwake {
   /** Whether a probe has ever completed (successfully or not). Distinguishes an
    * in-flight first probe from a settled "we could not read it" outcome. */
   private probeSettled = false;
+  /** Set when a keeper we started exited on its own; cleared when one is running. */
+  private keeperFailed = false;
 
   constructor(deps: KeepAwakeDeps = {}) {
     this.platform = deps.platform ?? process.platform;
     this.spawnChild = deps.spawn ?? (nodeSpawn as unknown as SpawnFn);
-    this.probe = deps.getPowerSource ?? detectPowerSource;
+    // The async detector, NOT the sync one: this default runs on every live-server
+    // path (the 60s watchdog, `start()` on save/startup, the first `/api/power`).
+    // `detectPowerSource` uses `execFileSync` and would stall the scheduler, the
+    // session manager and the WebSocket stream for the whole PowerShell round trip
+    // (up to `QUERY_TIMEOUT_MS`). Inject `getPowerSource` to drive the sync path.
+    this.probe = deps.getPowerSource ?? detectPowerSourceAsync;
     this.onEvent = deps.onEvent ?? (() => undefined);
   }
 
@@ -353,7 +375,13 @@ class KeepAwakeManager implements KeepAwake {
       active,
       powerSource: this.powerSource,
       reason: supported
-        ? reasonFor(this.powerSource, this.settingEnabled, active, this.probeSettled)
+        ? reasonFor(
+            this.powerSource,
+            this.settingEnabled,
+            active,
+            this.probeSettled,
+            this.keeperFailed,
+          )
         : 'unsupported',
     };
   }
@@ -367,6 +395,7 @@ class KeepAwakeManager implements KeepAwake {
     const child = this.child;
     this.child = undefined;
     if (!child) return;
+    this.keeperFailed = false;
     try {
       child.stdin?.destroy();
       child.kill();
@@ -400,10 +429,12 @@ class KeepAwakeManager implements KeepAwake {
         '[keep-awake] failed to spawn keeper:',
         err instanceof Error ? err.message : String(err),
       );
-      this.powerSource = 'unknown';
+      // The source itself was read fine; it is the keeper that could not run.
+      this.keeperFailed = true;
       return;
     }
     this.child = child;
+    this.keeperFailed = false;
     // Do not hold the event loop open on the keeper; the exit hooks below (and
     // the fact that its stdin closes with our own stdio) clean it up.
     child.unref?.();
@@ -411,11 +442,16 @@ class KeepAwakeManager implements KeepAwake {
     child.on('error', (err) => {
       console.error('[keep-awake] keeper error:', err.message);
       if (this.child === child) this.child = undefined;
-      this.powerSource = 'unknown';
+      this.keeperFailed = true;
     });
     child.on('exit', (code, signal) => {
-      if (this.child === child) this.child = undefined;
-      if (code === 0 || signal) return;
+      const wasCurrent = this.child === child;
+      if (wasCurrent) this.child = undefined;
+      // A code-0/signal exit is one *we* asked for (stop()/killChild): not a failure.
+      // Anything else means the keeper died on its own, and nothing is holding sleep
+      // off — surface that as such instead of blaming the power-source probe.
+      if (code === 0 || signal || !wasCurrent) return;
+      this.keeperFailed = true;
       console.warn(
         `[keep-awake] keeper exited unexpectedly (code ${String(code)}) — wake request released.`,
       );
@@ -427,6 +463,8 @@ class KeepAwakeManager implements KeepAwake {
     const child = this.child;
     this.child = undefined;
     if (!child) return;
+    // We are shutting this keeper down on purpose, so its exit is not a failure.
+    this.keeperFailed = false;
     try {
       // Closing stdin is the cooperative path: the keeper sees EOF, restores
       // ES_CONTINUOUS and exits on its own within one refresh tick.

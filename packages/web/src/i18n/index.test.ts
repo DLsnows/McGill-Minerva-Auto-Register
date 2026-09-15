@@ -49,6 +49,7 @@ describe('i18n', () => {
       'settings.keepAwakeStatusBattery',
       'settings.keepAwakeStatusDisabled',
       'settings.keepAwakeStatusUnavailable',
+      'settings.keepAwakeStatusKeeperFailed',
       'settings.keepAwakeStatusUnsupported',
       'settings.keepAwakeStatusPending',
     ];

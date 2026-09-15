@@ -16,6 +16,7 @@ const KEEP_AWAKE_REASON_KEY: Record<PowerStatus['reason'], string> = {
   battery: 'settings.keepAwakeStatusBattery',
   disabled: 'settings.keepAwakeStatusDisabled',
   unavailable: 'settings.keepAwakeStatusUnavailable',
+  keeperFailed: 'settings.keepAwakeStatusKeeperFailed',
   unsupported: 'settings.keepAwakeStatusUnsupported',
   pending: 'settings.keepAwakeStatusPending',
 };
@@ -35,7 +36,15 @@ const inputStyle = {
   color: 'var(--tx)',
 } as const;
 
-function NumField({ label, value, onChange }: { label: string; value: number; onChange: (n: number) => void }) {
+function NumField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (n: number) => void;
+}) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
       {label}
@@ -137,10 +146,26 @@ export default function SettingsPage() {
 
       <div className="card glass">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-          <NumField label={t('settings.pollInterval')} value={form.pollIntervalMinutes} onChange={(n) => setForm({ ...form, pollIntervalMinutes: n })} />
-          <NumField label={t('settings.jitter')} value={form.jitterMinutes} onChange={(n) => setForm({ ...form, jitterMinutes: n })} />
-          <NumField label={t('settings.queryBudget')} value={form.queryBudget} onChange={(n) => setForm({ ...form, queryBudget: n })} />
-          <NumField label={t('settings.registerBudget')} value={form.registerBudget} onChange={(n) => setForm({ ...form, registerBudget: n })} />
+          <NumField
+            label={t('settings.pollInterval')}
+            value={form.pollIntervalMinutes}
+            onChange={(n) => setForm({ ...form, pollIntervalMinutes: n })}
+          />
+          <NumField
+            label={t('settings.jitter')}
+            value={form.jitterMinutes}
+            onChange={(n) => setForm({ ...form, jitterMinutes: n })}
+          />
+          <NumField
+            label={t('settings.queryBudget')}
+            value={form.queryBudget}
+            onChange={(n) => setForm({ ...form, queryBudget: n })}
+          />
+          <NumField
+            label={t('settings.registerBudget')}
+            value={form.registerBudget}
+            onChange={(n) => setForm({ ...form, registerBudget: n })}
+          />
         </div>
 
         <div style={{ color: 'var(--tx-2)', fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
@@ -149,10 +174,26 @@ export default function SettingsPage() {
 
         <div style={{ display: 'flex', gap: 18, marginTop: 14 }}>
           <label>
-            <input type="checkbox" aria-label={t('settings.desktopAria')} checked={form.notify.desktop} onChange={(e) => setForm({ ...form, notify: { ...form.notify, desktop: e.target.checked } })} /> {t('settings.desktop')}
+            <input
+              type="checkbox"
+              aria-label={t('settings.desktopAria')}
+              checked={form.notify.desktop}
+              onChange={(e) =>
+                setForm({ ...form, notify: { ...form.notify, desktop: e.target.checked } })
+              }
+            />{' '}
+            {t('settings.desktop')}
           </label>
           <label>
-            <input type="checkbox" aria-label={t('settings.soundAria')} checked={form.notify.sound} onChange={(e) => setForm({ ...form, notify: { ...form.notify, sound: e.target.checked } })} /> {t('settings.sound')}
+            <input
+              type="checkbox"
+              aria-label={t('settings.soundAria')}
+              checked={form.notify.sound}
+              onChange={(e) =>
+                setForm({ ...form, notify: { ...form.notify, sound: e.target.checked } })
+              }
+            />{' '}
+            {t('settings.sound')}
           </label>
         </div>
 
@@ -205,7 +246,9 @@ export default function SettingsPage() {
         <button type="button" className="btn btn-accent" onClick={save}>
           {t('settings.saveSettings')}
         </button>
-        {saved && <span style={{ color: 'var(--color-green)', fontSize: 12 }}>{t('settings.saved')}</span>}
+        {saved && (
+          <span style={{ color: 'var(--color-green)', fontSize: 12 }}>{t('settings.saved')}</span>
+        )}
       </div>
     </div>
   );

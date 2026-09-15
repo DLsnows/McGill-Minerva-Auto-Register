@@ -12,12 +12,7 @@ export interface SchedulerState {
 /** Windows-only keep-awake state (see `GET /api/power`). */
 export type PowerSource = 'ac' | 'battery' | 'desktop' | 'unknown';
 export type KeepAwakeReason =
-  | 'active'
-  | 'battery'
-  | 'disabled'
-  | 'unsupported'
-  | 'unavailable'
-  | 'pending';
+  'active' | 'battery' | 'disabled' | 'unsupported' | 'unavailable' | 'keeperFailed' | 'pending';
 export interface PowerStatus {
   supported: boolean;
   /** The persisted setting. */
@@ -36,7 +31,9 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     // Read the body as text — error responses may be HTML (e.g. a 502 page), not JSON.
     const detail = await res.text().catch(() => '');
-    throw new Error(`${init?.method ?? 'GET'} ${url} failed: ${res.status}${detail ? ` — ${detail}` : ''}`);
+    throw new Error(
+      `${init?.method ?? 'GET'} ${url} failed: ${res.status}${detail ? ` — ${detail}` : ''}`,
+    );
   }
   return (await res.json()) as T;
 }
