@@ -25,6 +25,13 @@ class FakePage {
   async innerText(): Promise<string> {
     return 'Minerva menu';
   }
+  async evaluate(): Promise<void> {
+    this.log.push('evaluate');
+  }
+  async waitForFunction(): Promise<unknown> {
+    this.log.push('waitForFunction');
+    return true; // the submit's response replaced the document
+  }
   async waitForLoadState(): Promise<void> {
     this.log.push('waitForLoadState');
   }

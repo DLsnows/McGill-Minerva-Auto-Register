@@ -82,6 +82,9 @@ class FakePage {
   private failingReads = 0;
   /** Simulates the browser navigating when the worksheet is submitted. */
   onSubmit?: () => void;
+  /** Whether the submit's response replaces the page within the wait (a submit
+   * whose navigation is still in flight keeps the old document in place). */
+  documentReplaced = true;
 
   queueReads(...docs: string[]): void {
     this.reads = docs;
@@ -98,6 +101,14 @@ class FakePage {
   }
   async goto(url: string): Promise<void> {
     this.log.push(`goto ${url}`);
+  }
+  async evaluate(): Promise<void> {
+    this.log.push('evaluate');
+  }
+  async waitForFunction(): Promise<unknown> {
+    this.log.push('waitForFunction');
+    if (!this.documentReplaced) throw new Error('Timeout 10000ms exceeded.');
+    return true;
   }
   async content(): Promise<string> {
     this.log.push('content');
@@ -271,10 +282,11 @@ ${schedRow('1814', 'Waitlist on Jun 01, 2026')}
         page.queueReads(RESULT_WAITLIST_OFFER);
         return;
       }
-      // The re-submit's first read still lands on the page we submitted from —
-      // its navigation has not committed yet — and the CRN sits in that page's
-      // Registration Errors row with an LW option. Only the next read shows the
-      // waitlist join.
+      // The re-submit's navigation is still in flight when its first read
+      // happens, so the page we submitted from (the offer page) is still there —
+      // and the CRN sits in its Registration Errors row with an LW option. Only
+      // the next read shows the waitlist join.
+      page.documentReplaced = false;
       page.queueReads(RESULT_WAITLIST_OFFER, RESULT_WAITLISTED);
     };
 
@@ -285,6 +297,19 @@ ${schedRow('1814', 'Waitlist on Jun 01, 2026')}
     // Reporting the stale page would tell the user "will reassess next cycle"
     // while the waitlist join already happened.
     expect(outcome.kind).toBe('waitlisted');
+  });
+
+  it('waits for the result document to commit, not merely for a result table', async () => {
+    const page = new FakePage();
+    page.onSubmit = () => page.queueReads(RESULT_REGISTERED);
+
+    const outcome = await clientFor(page).then((c) => c.act('202701', '1814', 'REGISTER'));
+
+    expect(outcome.kind).toBe('registered');
+    // The anchor also exists on the worksheet, so the client must mark the
+    // document it submits from and wait for the response to replace it.
+    expect(page.log).toContain('evaluate');
+    expect(page.log).toContain('waitForFunction');
   });
 
   it('falls through to the submission when the worksheet cannot be parsed', async () => {

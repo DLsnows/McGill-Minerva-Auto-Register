@@ -6,12 +6,17 @@ import { humanPause } from '../util/pacing';
 import { parseRegisterResult } from './parse-register-result';
 
 /**
- * The tables the post-submit result page must render. Waiting for one of these
- * (instead of `waitForLoadState('domcontentloaded')`, which returns immediately
- * on the pre-submit document) is the fix for audit Q4/Q21.
+ * The tables the post-submit result page must render. They are necessary but NOT
+ * sufficient: the page we submit FROM renders them too (the worksheet shows
+ * Current Schedule, the waitlist-offer page shows Registration Errors), so this
+ * anchor alone can resolve against the old document — see `submitChanges`.
  */
 export const RESULT_ANCHOR =
   'table[summary="Current Schedule"], table[summary*="Registration Errors"]';
+
+/** Attribute planted on the document we are submitting from, so the submit can
+ * be distinguished from the response that replaces it. */
+const SUBMITTING_ATTR = 'data-autoreg-submitting';
 
 /** How long to give the post-submit result page to render its tables. */
 const RESULT_TIMEOUT_MS = 10_000;
@@ -22,8 +27,7 @@ const RESULT_TIMEOUT_MS = 10_000;
 const PRE_SUBMIT_TIMEOUT_MS = 2_000;
 /**
  * How many times to re-read the result page when it doesn't mention our CRN.
- * A single read can land on the PRE-submit document (the click's navigation has
- * not committed yet) or on a half-streamed response body — the auditor measured
+ * A single read can land on a half-streamed response body — the auditor measured
  * `page.content()` returning 58 characters of a page still being written.
  */
 const RESULT_READ_ATTEMPTS = 3;
@@ -145,21 +149,27 @@ export class RegisterClient {
   /**
    * Submit the worksheet and read the result.
    *
-   * Two things make an immediate read lie (audit Q4/Q21):
-   * - the tables we wait for also exist on the page we submit FROM, so an anchor
-   *   wait can resolve against the document we are leaving (this is what made the
-   *   waitlist re-submit report the stale offer page as its outcome);
-   * - a slow response body is read while it is still streaming — the auditor
+   * Reading the result is delicate (audit Q4/Q21), because three things make an
+   * immediate read lie:
+   * - `RESULT_ANCHOR` also matches the page we submit FROM, so waiting for it
+   *   can resolve against the document we are leaving;
+   * - the click's navigation may not have committed yet;
+   * - a slow response body can be read while it is still streaming — the auditor
    *   measured a 58-character document.
-   * So the document is snapshotted before the click and a read is only trusted
-   * once it is a DIFFERENT document; otherwise we re-read a bounded number of
-   * times. `not-found` is never returned: a submit whose result we could not
-   * establish is `unverified`.
+   * So: mark the document we submit from, wait for the response to REPLACE it,
+   * and only trust a read that comes from a different document (or from a
+   * confirmed replacement). Anything else is re-read a bounded number of times;
+   * `not-found` is never returned, and a submit whose result cannot be
+   * established is reported as `unverified`.
    */
   private async submitChanges(page: Page, crn: string): Promise<RegisterOutcome> {
     const submittedFrom = await page.content().catch(() => null);
+    await this.markSubmittingDocument(page);
     await humanPause();
     await page.click('input[name="REG_BTN"][value="Submit Changes"]');
+    // Wait for the result document to commit — the anchor alone cannot tell the
+    // two documents apart (see RESULT_ANCHOR).
+    const replaced = await this.waitForNewDocument(page, RESULT_TIMEOUT_MS);
 
     let lastError: string | undefined;
     let fallback: RegisterOutcome | undefined;
@@ -182,12 +192,13 @@ export class RegisterClient {
         lastError = `the result page could not be parsed: ${errMsg(e)}`;
         continue;
       }
-      if (submittedFrom !== null && html === submittedFrom) {
-        // Still the document we submitted from: the response has not replaced it
-        // yet, so this is a pre-submit statement, not a result. Keep re-reading —
-        // but remember a definite outcome: a submit that legitimately changes
-        // nothing re-renders this very page, and then this IS the answer (an LW
-        // re-submit Minerva rejects still shows the waitlist offer).
+      const stillSubmittedFrom = !replaced && submittedFrom !== null && html === submittedFrom;
+      if (stillSubmittedFrom) {
+        // Same document we submitted from, and no replacement was observed: this
+        // is a pre-submit statement, not a result. Keep re-reading — but remember
+        // a definite outcome, because a submit that legitimately changes nothing
+        // re-renders this very page and then this IS the answer (an LW re-submit
+        // Minerva rejects still shows the waitlist offer).
         if (outcome.kind !== 'not-found') fallback = outcome;
         lastError = 'the page still shows the worksheet we submitted from';
         continue;
@@ -204,6 +215,28 @@ export class RegisterClient {
       crn,
       message: `${lastError ?? 'the result page was not recognized'} — the submission may still have gone through; re-check the schedule before submitting again`,
     };
+  }
+
+  /** Tag the current document so the submit's response can be told apart from it. */
+  private async markSubmittingDocument(page: Page): Promise<void> {
+    await page
+      .evaluate(`document.documentElement.setAttribute('${SUBMITTING_ATTR}', '1')`)
+      .catch(() => undefined);
+  }
+
+  /**
+   * Resolve once the marked document has been replaced by the submit's response
+   * (the mark is gone), or `false` when it never was. Playwright keeps polling
+   * across the navigation, and a failed/absent mark degrades to "no replacement
+   * observed" rather than throwing.
+   */
+  private async waitForNewDocument(page: Page, timeout: number): Promise<boolean> {
+    return page
+      .waitForFunction(`!document.documentElement.hasAttribute('${SUBMITTING_ATTR}')`, undefined, {
+        timeout,
+      })
+      .then(() => true)
+      .catch(() => false);
   }
 
   private async captureResultScreenshot(page: Page, crn: string): Promise<void> {
