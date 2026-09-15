@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DataProvider } from '../lib/DataContext';
 import Dashboard from './Dashboard';
 import { api, ApiError, SESSION_NOT_READY } from '../lib/api';
 import { ZERO_BUDGET } from '../lib/budget-fixture';
+import { installFakeWebSocket, lastFakeSocket } from '../test-setup';
 
 /**
  * Read a React `onClick` handler straight off an element.
@@ -20,14 +21,6 @@ function reachableOnClick(el: Element): unknown {
   return (el as unknown as Record<string, { onClick?: unknown }>)[key]?.onClick;
 }
 
-vi.mock('../lib/useEventStream', () => ({
-  useEventStream: () => ({
-    events: [{ id: 'e', ts: Date.now(), level: 'info', message: 'hello-console' }],
-    connected: true,
-    clear: () => {},
-  }),
-}));
-
 function mockApi(targets: Awaited<ReturnType<typeof api.getTargets>>, sessionStatus: 'authenticated' | 'logged-out') {
   vi.spyOn(api, 'getTargets').mockResolvedValue(targets);
   vi.spyOn(api, 'getSession').mockResolvedValue({ status: sessionStatus });
@@ -39,6 +32,16 @@ function mockApi(targets: Awaited<ReturnType<typeof api.getTargets>>, sessionSta
   vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
 }
 
+/** Deliver a live event frame on the tab's single stream socket. */
+function streamEvent(message: string) {
+  act(() =>
+    lastFakeSocket()?.emit({
+      type: 'event',
+      event: { id: `live-${message}`, ts: Date.now(), level: 'info', message },
+    }),
+  );
+}
+
 const renderDashboard = () =>
   render(
     <DataProvider>
@@ -46,6 +49,7 @@ const renderDashboard = () =>
     </DataProvider>,
   );
 
+beforeEach(() => installFakeWebSocket());
 afterEach(() => vi.restoreAllMocks());
 
 describe('Dashboard', () => {
@@ -56,8 +60,10 @@ describe('Dashboard', () => {
     );
     renderDashboard();
     await waitFor(() => expect(screen.getByText(/COMP 551/)).toBeInTheDocument());
-    expect(screen.getByText('hello-console')).toBeInTheDocument();
     expect(screen.getByText('Watched Courses')).toBeInTheDocument();
+    // The console renders the shared stream (the same socket the whole tab uses).
+    streamEvent('hello-console');
+    await waitFor(() => expect(screen.getByText('hello-console')).toBeInTheDocument());
   });
 
   it('shows the empty state when there are no targets', async () => {
@@ -143,8 +149,9 @@ describe('Dashboard', () => {
     });
     vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
     renderDashboard();
-    // Mount fetch (useResource) + the event-driven refetch (mocked event id 'e')
-    // → each endpoint is hit at least twice without any manual page refresh.
+    await waitFor(() => expect(getBudget).toHaveBeenCalledTimes(1)); // mount fetch
+    streamEvent('a poll finished');
+    // The event-driven refetch hits both endpoints without a manual page refresh.
     await waitFor(() => {
       expect(getBudget.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(getTargets.mock.calls.length).toBeGreaterThanOrEqual(2);

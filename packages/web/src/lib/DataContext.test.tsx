@@ -140,6 +140,46 @@ describe('DataProvider session truth (Q7)', () => {
     expect(getSession).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * Reported in review: the throttle used to *drop* an event that landed inside
+   * the window. If the earlier refresh came from an unrelated error while the
+   * session was still healthy, and the eviction warning followed moments later,
+   * nothing would ever re-run it — the UI would keep showing Active until some
+   * unrelated event happened to arrive.
+   */
+  it('defers a warn that lands inside the throttle window instead of dropping it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockResources();
+      const getSession = vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'logged-out' });
+
+      render(
+        <DataProvider>
+          <Probe />
+        </DataProvider>,
+      );
+      await waitFor(() => expect(getSession).toHaveBeenCalledTimes(1));
+
+      streamEvent(event('error', 'Query failed: boom')); // refresh #2 starts the window
+      await waitFor(() => expect(getSession).toHaveBeenCalledTimes(2));
+
+      streamEvent(event('warn', 'Session not active (logged out / evicted)')); // inside it
+      await act(async () => {
+        await Promise.resolve();
+      });
+      // Not fetched yet — the window is still open (that is the pacing guarantee).
+      expect(getSession).toHaveBeenCalledTimes(2);
+
+      // ...but it must not be forgotten: once the window elapses the refresh runs.
+      await act(async () => {
+        vi.advanceTimersByTime(SESSION_REFRESH_THROTTLE_MS);
+      });
+      await waitFor(() => expect(getSession).toHaveBeenCalledTimes(3));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('throttles a failure storm into one refresh per window', async () => {
     mockResources();
     const getSession = vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'logged-out' });

@@ -577,6 +577,86 @@ describe('API', () => {
         await app2.close();
       }
     });
+
+    // The per-course "Resume" button PATCHes the target to 'watching' *before*
+    // starting the engine, so a stale client could flip a course back to watching
+    // and then have the start refused — leaving a course that claims to be polled
+    // with no engine behind it. The PATCH itself has to refuse.
+    it('refuses PATCH … status=watching without a usable session', async () => {
+      const store = new Store(dir);
+      const t = store.addTarget({ ...validTarget, targetCrn: '4444' });
+      store.updateTarget(t.id, { status: 'paused' });
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: makeSession(),
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+      });
+      try {
+        const r = await app2.inject({
+          method: 'PATCH',
+          url: `/api/targets/${t.id}`,
+          payload: { status: 'watching' },
+        });
+        expect(r.statusCode).toBe(409);
+        expect((r.json() as { code: string }).code).toBe(SESSION_NOT_READY);
+        expect(store.getTarget(t.id)!.status).toBe('paused');
+      } finally {
+        await app2.close();
+      }
+    });
+
+    it('still allows pausing (and other edits) with no session', async () => {
+      const store = new Store(dir);
+      const t = store.addTarget({ ...validTarget, targetCrn: '5555' }); // watching
+      const app2 = buildServer({
+        store,
+        budget: new Budget(store),
+        session: makeSession(),
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+      });
+      try {
+        const paused = await app2.inject({
+          method: 'PATCH',
+          url: `/api/targets/${t.id}`,
+          payload: { status: 'paused' },
+        });
+        expect(paused.statusCode).toBe(200);
+        expect(store.getTarget(t.id)!.status).toBe('paused');
+        // A field edit that leaves the status alone is not gated either.
+        const relabel = await app2.inject({
+          method: 'PATCH',
+          url: `/api/targets/${t.id}`,
+          payload: { label: 'COMP 551 (renamed)' },
+        });
+        expect(relabel.statusCode).toBe(200);
+      } finally {
+        await app2.close();
+      }
+    });
+
+    it('accepts PATCH … status=watching once the session is authenticated', async () => {
+      const store = new Store(dir);
+      const t = store.addTarget({ ...validTarget, targetCrn: '6666' });
+      store.updateTarget(t.id, { status: 'paused' });
+      const app2 = await loggedInApp({
+        store,
+        budget: new Budget(store),
+        session: makeSession(),
+        scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+      });
+      try {
+        const r = await app2.inject({
+          method: 'PATCH',
+          url: `/api/targets/${t.id}`,
+          payload: { status: 'watching' },
+        });
+        expect(r.statusCode).toBe(200);
+        expect(store.getTarget(t.id)!.status).toBe('watching');
+      } finally {
+        await app2.close();
+      }
+    });
   });
 
   // --- Q7 (server half): the reported status must follow the scheduler ---

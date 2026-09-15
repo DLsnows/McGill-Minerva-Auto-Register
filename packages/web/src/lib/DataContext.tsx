@@ -13,12 +13,21 @@ import { api, type BudgetSnapshot, type SchedulerState, type SessionInfo } from 
 import { useResource, type Resource } from './useResource';
 import { useEventStream } from './useEventStream';
 
+/** The live event stream, owned once by the provider and shared with every page. */
+export interface EventStreamValue {
+  events: LogEvent[];
+  connected: boolean;
+  clear: () => void;
+}
+
 export interface DataContextValue {
   targets: Resource<WatchTarget[]>;
   session: Resource<SessionInfo>;
   budget: Resource<BudgetSnapshot>;
   settings: Resource<Settings>;
   scheduler: Resource<SchedulerState>;
+  /** The one `/api/stream` subscription for this tab (see DataProvider). */
+  stream: EventStreamValue;
 }
 
 /** Log levels that mean "something is wrong in the automation right now". A
@@ -36,7 +45,12 @@ const SESSION_RELEVANT_LEVELS: ReadonlySet<LogEvent['level']> = new Set(['warn',
  * burst of real requests against the school's server — exactly the pacing
  * violation this fix must not introduce. One coalesced refresh per window is
  * enough: the session is a slowly-changing, all-or-nothing fact, and a single
- * refresh is what ends the UI's lie either way. */
+ * refresh is what ends the UI's lie either way.
+ *
+ * Throttling is *deferring*, never dropping: an event that lands inside the
+ * window schedules the refresh for the end of it. Dropping it would mean one
+ * unrelated error could swallow the eviction warning that follows it a moment
+ * later, leaving the UI lying until some later event happened to arrive. */
 export const SESSION_REFRESH_THROTTLE_MS = 10_000;
 
 /** The id of the most recent warn/error event, or undefined when there is none.
@@ -62,14 +76,15 @@ export function lastSessionRelevantEventId(events: LogEvent[]): string | undefin
  * schedule.
  *
  * `snapshotTick` increments every time the server replays its history (`recent`)
- * on (re)connect. A replay is handled by *identity*, not by trust: an event whose
- * id this client has already received is history and is ignored (otherwise merely
- * opening the console after any past failure would fire a real navigation to
- * Minerva), but a relevant event that arrives in a replay **while the app is
- * running** happened during a disconnect and is genuinely news — the session may
- * have died while the socket was down, and no live line is coming for it. Those
- * trigger exactly one refresh, and the freshness throttle is reset so the refresh
- * cannot be swallowed by an unrelated event fired just before the drop.
+ * on (re)connect. A replay is classified by **id identity**, not by any ordering
+ * derived from the id: production ids are `randomUUID()` (the store and
+ * `sessionEvent` both use it), so no numeric tail of them is a sequence number —
+ * a watermark built from one classifies events at random, both missing real
+ * evictions and firing pointless probes. Ids this client has already been handed
+ * are history and are ignored (otherwise merely opening the console after any past
+ * failure would fire a real navigation to Minerva); a relevant line seen for the
+ * first time in a replay happened during a disconnect and is news — the session
+ * may have died while the socket was down, and no live line is coming for it.
  */
 export function useSessionRefreshFromEvents(
   events: LogEvent[],
@@ -79,9 +94,14 @@ export function useSessionRefreshFromEvents(
   const lastRelevantId = lastSessionRelevantEventId(events);
   const lastRefreshedId = useRef<string | undefined>(undefined);
   const lastRefreshedAt = useRef(0);
-  /** Relevant event ids already delivered to this client. */
-  const seenRelevant = useRef(new Set<string>());
+  /** Every event id already delivered to this client (see the doc comment). */
+  const seenIds = useRef(new Set<string>());
   const lastSnapshotTick = useRef(snapshotTick);
+  const pending = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // The deferred branch reads the trigger through a ref so the timer always sees
+  // the newest relevant id rather than the one captured when it was armed.
+  const lastRelevantIdRef = useRef(lastRelevantId);
+  lastRelevantIdRef.current = lastRelevantId;
   // Read the latest refetch through a ref so a new event never needs the (fresh
   // object every render) resource as an effect dependency.
   const refetchRef = useRef(session.refetch);
@@ -93,17 +113,39 @@ export function useSessionRefreshFromEvents(
     if (lastRelevantId === undefined) return;
     // Same event seen again (re-render, reconnect) — nothing new to react to.
     if (lastRelevantId === lastRefreshedId.current) return;
-    const now = Date.now();
-    if (now - lastRefreshedAt.current < SESSION_REFRESH_THROTTLE_MS) return;
+    const wait = SESSION_REFRESH_THROTTLE_MS - (Date.now() - lastRefreshedAt.current);
+    if (wait > 0) {
+      // Inside the window: defer, do not drop. The deferred call is idempotent
+      // (a newer event re-arms it and only one timer is ever pending).
+      if (pending.current === undefined) {
+        pending.current = setTimeout(() => {
+          pending.current = undefined;
+          const id = lastRelevantIdRef.current;
+          if (id === undefined || id === lastRefreshedId.current) return;
+          lastRefreshedId.current = id;
+          lastRefreshedAt.current = Date.now();
+          void refetchRef.current();
+        }, wait);
+      }
+      return;
+    }
     lastRefreshedId.current = lastRelevantId;
-    lastRefreshedAt.current = now;
+    lastRefreshedAt.current = Date.now();
     void refetchRef.current();
   }, [lastRelevantId]);
+
+  useEffect(
+    () => () => {
+      clearTimeout(pending.current);
+      pending.current = undefined;
+    },
+    [],
+  );
 
   // Every event the app has already been handed, relevant or not — the basis for
   // deciding, on a reconnect, whether the replay carries anything new.
   useEffect(() => {
-    for (const e of events) seenRelevant.current.add(e.id);
+    for (const e of events) seenIds.current.add(e.id);
   }, [events]);
 
   // A (re)connect replays the server's history — decide what in it is news.
@@ -111,18 +153,19 @@ export function useSessionRefreshFromEvents(
     if (snapshotTick === lastSnapshotTick.current) return;
     lastSnapshotTick.current = snapshotTick;
     const hasUnseen = events.some(
-      (e) => SESSION_RELEVANT_LEVELS.has(e.level) && !seenRelevant.current.has(e.id),
+      (e) => SESSION_RELEVANT_LEVELS.has(e.level) && !seenIds.current.has(e.id),
     );
     if (!hasUnseen) return;
-    // The replayed lines have already been delivered (they are in `seenRelevant`
-    // by the time the next render runs), so only a *later* live event should count
-    // as new again. Resetting the freshness clock is deliberate: without it an
-    // event that fired just before the drop would throttle this refresh away.
+    // The replayed lines are in `seenIds` by the time the next render runs, so
+    // only a *later* live event counts as new again. Resetting the freshness clock
+    // is deliberate: without it an event that fired just before the drop would
+    // throttle this refresh away.
     lastRefreshedId.current = lastRelevantId;
     lastRefreshedAt.current = Date.now();
     void refetchRef.current();
   }, [snapshotTick, events, lastRelevantId]);
 }
+
 const DataContext = createContext<DataContextValue | null>(null);
 
 /** Loads the shared app resources once and shares them with every page. */
@@ -133,20 +176,26 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const settings = useResource(() => api.getSettings());
   const scheduler = useResource(() => api.getScheduler());
 
-  // The session must be re-checked from anywhere in the app (the user may never
-  // open the Dashboard), so the provider — not a page — subscribes to the stream.
+  // One stream subscription for the whole tab. The session must be re-checked
+  // from anywhere in the app (the user may never open the Dashboard), so the
+  // provider — not a page — owns the socket; pages read it back through `useData`
+  // instead of opening a second connection to the same events.
   // `snapshotTick` increments whenever the server replays its history on
   // (re)connect, which is how the refresh tells old lines from live ones.
   const [snapshotTick, setSnapshotTick] = useState(0);
   const onSeed = useCallback(() => setSnapshotTick((n) => n + 1), []);
-  const { events } = useEventStream(500, onSeed);
+  const { events, connected, clear } = useEventStream(500, onSeed);
   useSessionRefreshFromEvents(events, session, snapshotTick);
+  const stream = useMemo<EventStreamValue>(
+    () => ({ events, connected, clear }),
+    [events, connected, clear],
+  );
 
   // Each resource is referentially stable until its own data changes (see
   // useResource), so this memo only produces a new value when something changed.
   const value = useMemo<DataContextValue>(
-    () => ({ targets, session, budget, settings, scheduler }),
-    [targets, session, budget, settings, scheduler],
+    () => ({ targets, session, budget, settings, scheduler, stream }),
+    [targets, session, budget, settings, scheduler, stream],
   );
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }

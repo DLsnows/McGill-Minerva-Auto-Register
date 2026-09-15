@@ -136,6 +136,17 @@ export function buildServer(
   app.patch('/api/targets/:id', (req, reply) => {
     const parsed = targetPatchSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    // Setting a target to 'watching' is a promise that it will be polled — the
+    // per-course "Resume" button also starts the engine right after this PATCH.
+    // Without a usable session that promise cannot be kept, and the client that
+    // asks for it may hold a stale session snapshot (the exact case that used to
+    // leave a course 'watching' on a dead engine, with nothing to ever poll it).
+    // Refusing here keeps the stored state honest, and the client shows the same
+    // localized reason as for `/scheduler/start`.
+    if (parsed.data.status === 'watching') {
+      const denied = requireSession(reply);
+      if (denied) return denied;
+    }
     const updated = deps.store.updateTarget((req.params as { id: string }).id, parsed.data);
     if (!updated) return reply.code(404).send({ error: 'not found' });
     return updated;

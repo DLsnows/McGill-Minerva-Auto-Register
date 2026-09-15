@@ -3,15 +3,14 @@ import { useTranslation } from 'react-i18next';
 import type { WatchMode, WatchStatus } from '@autoregister/shared';
 import { api, errorMessage, isSessionNotReady } from '../lib/api';
 import { useData } from '../lib/DataContext';
-import { useEventStream } from '../lib/useEventStream';
 import { CourseCard } from '../components/CourseCard';
 import { Console } from '../components/Console';
 import { SchedulerToggle } from '../components/SchedulerToggle';
 
 export default function Dashboard() {
   const { t: tr } = useTranslation();
-  const { targets, session, scheduler, budget } = useData();
-  const { events, connected, clear } = useEventStream();
+  const { targets, session, scheduler, budget, stream } = useData();
+  const { events, connected, clear } = stream;
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [schedErr, setSchedErr] = useState<string>();
   const [clearErr, setClearErr] = useState<string>();
