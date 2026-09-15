@@ -299,4 +299,20 @@ ${schedRow('1814', 'Waitlist on Jun 01, 2026')}
     expect(submits(page)).toBe(1);
     expect(outcome.kind).toBe('registered');
   });
+
+  it('keeps reporting the waitlist offer when a rejected re-submit re-renders the same page', async () => {
+    const page = new FakePage();
+    let submitCount = 0;
+    page.onSubmit = () => {
+      submitCount++;
+      if (submitCount === 1) page.queueReads(RESULT_WAITLIST_OFFER);
+      // The LW re-submit changes nothing: Minerva re-renders the very same offer
+      // page. That page is a legitimate, readable answer — not an unverified one.
+    };
+
+    const outcome = await clientFor(page).then((c) => c.act('202701', '1814', 'WAITLIST'));
+
+    expect(submitCount).toBe(2);
+    expect(outcome.kind).toBe('waitlist-available');
+  });
 });

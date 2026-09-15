@@ -15,8 +15,11 @@ export const RESULT_ANCHOR =
 
 /** How long to give the post-submit result page to render its tables. */
 const RESULT_TIMEOUT_MS = 10_000;
-/** Soft wait for the worksheet's Current Schedule before submitting. */
-const PRE_SUBMIT_TIMEOUT_MS = 5_000;
+/** Soft wait for the worksheet's Current Schedule before submitting. Kept short:
+ * the document is already parsed at `domcontentloaded`, so this only gives a
+ * JS-rendered table a moment, and there is nothing to wait for on a worksheet
+ * without one. */
+const PRE_SUBMIT_TIMEOUT_MS = 2_000;
 /**
  * How many times to re-read the result page when it doesn't mention our CRN.
  * A single read can land on the PRE-submit document (the click's navigation has
@@ -159,6 +162,7 @@ export class RegisterClient {
     await page.click('input[name="REG_BTN"][value="Submit Changes"]');
 
     let lastError: string | undefined;
+    let fallback: RegisterOutcome | undefined;
     for (let attempt = 0; attempt < RESULT_READ_ATTEMPTS; attempt++) {
       if (attempt > 0) await humanPause();
       await page
@@ -171,12 +175,6 @@ export class RegisterClient {
         lastError = `the result page could not be read: ${errMsg(e)}`;
         continue;
       }
-      if (submittedFrom !== null && html === submittedFrom) {
-        // Still the document we submitted from: the response has not replaced it
-        // yet, so whatever it says is a pre-submit statement, not a result.
-        lastError = 'the page still shows the worksheet we submitted from';
-        continue;
-      }
       let outcome: RegisterOutcome;
       try {
         outcome = parseRegisterResult(html, crn);
@@ -184,10 +182,21 @@ export class RegisterClient {
         lastError = `the result page could not be parsed: ${errMsg(e)}`;
         continue;
       }
+      if (submittedFrom !== null && html === submittedFrom) {
+        // Still the document we submitted from: the response has not replaced it
+        // yet, so this is a pre-submit statement, not a result. Keep re-reading —
+        // but remember a definite outcome: a submit that legitimately changes
+        // nothing re-renders this very page, and then this IS the answer (an LW
+        // re-submit Minerva rejects still shows the waitlist offer).
+        if (outcome.kind !== 'not-found') fallback = outcome;
+        lastError = 'the page still shows the worksheet we submitted from';
+        continue;
+      }
       if (outcome.kind !== 'not-found') return outcome;
       lastError = 'the result page neither confirms the registration nor reports an error for it';
     }
 
+    if (fallback) return fallback;
     // Never report a submit we could not read as "not-found": that is what made
     // the old code resubmit a CRN that had in fact been registered.
     return {
