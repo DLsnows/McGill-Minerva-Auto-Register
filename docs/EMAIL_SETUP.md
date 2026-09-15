@@ -1,11 +1,33 @@
 # Email Notification Setup
 
+> ## ⚠️ This feature is temporarily unavailable (sunset)
+>
+> Email notifications are **turned off in the current build** — the guide below is
+> kept for when the feature comes back:
+>
+> - The **Settings page no longer shows** the *Email* toggle or the SMTP form; no
+>   email/SMTP option is exposed anywhere in the UI.
+> - The **server forces `notify.email = false`**: it overrides the flag on every
+>   `PUT /api/settings`, and on startup it normalizes (and writes back) an old
+>   `store.json` that still had `notify.email: true`. So the app cannot send email
+>   even if the old value is still on disk.
+> - Nothing was deleted: `packages/server/src/notifier/email.ts`, the `nodemailer`
+>   dependency, the `EmailConfig` type, `NotifyChannels.email` and this document
+>   are all still here.
+>
+> **To restore it:** re-add the toggle + SMTP form to
+> `packages/web/src/pages/Settings.tsx` (the `settings.email*` i18n keys are still
+> in `packages/web/src/i18n/index.ts`), and delete the `notify.email = false`
+> override in `packages/server/src/api/server.ts` plus the `enforceEmailSunset()`
+> call in `packages/server/src/scheduler/runtime.ts`.
+
 Email notifications are **optional**. Desktop + sound notifications and the in-app
 log work without any of this. Set up email only if you want alerts when you're
 away from the machine.
 
 You configure email **in the app's Settings page** (Notifications → Email). The
 values are stored locally on your machine only — never committed or uploaded.
+(Not in the current build — see the notice above.)
 
 ## What you'll enter in Settings → Email
 

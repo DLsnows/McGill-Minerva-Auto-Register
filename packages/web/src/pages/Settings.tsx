@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { EmailConfig, Settings } from '@autoregister/shared';
+import type { Settings } from '@autoregister/shared';
 import { api } from '../lib/api';
 import { useData } from '../lib/DataContext';
 
-// /blob/HEAD/ resolves to the repo's default branch, so the link survives branch renames.
-const DOC_URL = 'https://github.com/DLsnows/McGill-Minerva-Auto-Register/blob/HEAD/docs/EMAIL_SETUP.md';
-const EMPTY_EMAIL: EmailConfig = { host: '', port: 587, user: '', pass: '', to: '' };
+// NOTE: email/SMTP notifications are temporarily sunset — the UI is hidden and
+// the server forces `notify.email = false` (see packages/server/src/api/server.ts
+// + scheduler/runtime.ts). The backend code, the `EmailConfig` type and
+// docs/EMAIL_SETUP.md are intentionally kept so the feature can be restored with
+// a small change. The `settings.email*` i18n keys are kept but no longer rendered.
 
 const inputStyle = {
   padding: 8,
@@ -31,56 +33,25 @@ function NumField({ label, value, onChange }: { label: string; value: number; on
   );
 }
 
-function TextField({
-  label,
-  value,
-  onChange,
-  type = 'text',
-}: {
-  label: string;
-  value: string | number;
-  onChange: (s: string) => void;
-  type?: string;
-}) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
-      {label}
-      <input aria-label={label} type={type} style={inputStyle} value={value} onChange={(e) => onChange(e.target.value)} />
-    </label>
-  );
-}
-
 export default function SettingsPage() {
   const { t } = useTranslation();
   const { settings } = useData();
   const [form, setForm] = useState<Settings | null>(null);
-  const [email, setEmail] = useState<EmailConfig>(EMPTY_EMAIL);
   const [err, setErr] = useState<string>();
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (settings.data && !form) {
       setForm(settings.data);
-      setEmail(settings.data.email ?? EMPTY_EMAIL);
     }
   }, [settings.data, form]);
 
   if (!form) return <div className="empty">{t('settings.loading')}</div>;
 
-  const emailComplete = Boolean(email.host && email.user && email.pass && email.to && email.port);
-
   const save = async () => {
-    if (form.notify.email && !emailComplete) {
-      setErr(t('settings.emailRequired'));
-      setSaved(false);
-      return;
-    }
     setErr(undefined);
     try {
-      // Persist the email config whenever it's complete (even if notifications
-      // are off) so toggling email on later doesn't lose it. The server only
-      // *sends* email when notify.email is true.
-      await api.putSettings({ ...form, email: form.notify.email || emailComplete ? email : undefined });
+      await api.putSettings(form);
       await settings.refetch();
       setSaved(true);
     } catch (e) {
@@ -114,9 +85,6 @@ export default function SettingsPage() {
           <label>
             <input type="checkbox" aria-label={t('settings.soundAria')} checked={form.notify.sound} onChange={(e) => setForm({ ...form, notify: { ...form.notify, sound: e.target.checked } })} /> {t('settings.sound')}
           </label>
-          <label>
-            <input type="checkbox" aria-label={t('settings.emailAria')} checked={form.notify.email} onChange={(e) => setForm({ ...form, notify: { ...form.notify, email: e.target.checked } })} /> {t('settings.email')}
-          </label>
         </div>
 
         <div style={{ marginTop: 14 }}>
@@ -129,22 +97,6 @@ export default function SettingsPage() {
             />{' '}
             {t('settings.dryRun')}
           </label>
-        </div>
-      </div>
-
-      <div className="col-h" style={{ marginTop: 22 }}>
-        <h2 className="serif">{t('settings.emailSection')}</h2>
-        <a className="btn" href={DOC_URL} target="_blank" rel="noreferrer">
-          {t('settings.setupGuide')}
-        </a>
-      </div>
-      <div className="card glass">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-          <TextField label={t('settings.smtpHost')} value={email.host} onChange={(s) => setEmail({ ...email, host: s })} />
-          <TextField label={t('settings.smtpPort')} type="number" value={email.port} onChange={(s) => setEmail({ ...email, port: Number(s) })} />
-          <TextField label={t('settings.smtpUser')} value={email.user} onChange={(s) => setEmail({ ...email, user: s })} />
-          <TextField label={t('settings.smtpPass')} type="password" value={email.pass} onChange={(s) => setEmail({ ...email, pass: s })} />
-          <TextField label={t('settings.emailTo')} value={email.to} onChange={(s) => setEmail({ ...email, to: s })} />
         </div>
       </div>
 

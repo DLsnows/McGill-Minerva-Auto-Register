@@ -152,8 +152,10 @@ Then open **http://127.0.0.1:4575** and:
    help; the **Term** is the Minerva term code (Winter = …01, Summer = …05,
    Fall = …09, e.g. Winter 2027 = `202701`). Faculty is required (e.g. `Faculty of Science`).
 3. **Settings** tab → poll interval & jitter, daily query/register budgets,
-   notification channels (desktop / sound / email — see
-   [`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md)), and **Dry-run** mode.
+   notification channels (desktop / sound) and **Dry-run** mode.
+   > **Email notifications are temporarily unavailable** — the Email toggle and
+   > SMTP form are hidden and the server forces the channel off. The setup guide
+   > ([`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md)) is kept for when it returns.
 4. **Dashboard** → press **Start all** to begin watching. (On startup every
    course is **paused**, and *Start all* is disabled until you're logged in — so
    nothing polls until you explicitly start it. You can also **Pause / Resume**

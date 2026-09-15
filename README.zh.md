@@ -131,8 +131,10 @@ npm run serve
    **Term** 是 Minerva 的学期代码(Winter = …01,Summer = …05,Fall = …09,
    比如 Winter 2027 = `202701`)。Faculty 是必填的(比如 `Faculty of Science`)。
 3. **Settings** 标签页 → 轮询间隔和抖动、每日查询/注册额度、通知方式(桌面 /
-   声音 / 邮件 —— 见 [`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md))、以及
-   **Dry-run** 模式。
+   声音)、以及 **Dry-run** 模式。
+   > **邮件通知已暂时下架** —— Email 开关和 SMTP 表单已隐藏,服务端也会强制关闭
+   > 该通道。配置指南([`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md))仍然保留,
+   > 供将来恢复时使用。
 4. **Dashboard** → 点 **Start all** 开始盯课。(启动时每门课都是**暂停**状态,
    而且在你登录之前 *Start all* 是禁用的 —— 所以不点就不会轮询。你也可以在每张
    卡片上单独 **Pause / Resume** 暂停或恢复。)实时控制台会把每次
