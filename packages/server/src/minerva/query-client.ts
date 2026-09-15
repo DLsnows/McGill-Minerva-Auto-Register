@@ -1,5 +1,6 @@
 import type { CourseQuery, Decision, SectionStats } from '@autoregister/shared';
 import { decide } from '@autoregister/shared';
+import type { Page } from 'playwright';
 import { MINERVA_BASE } from '../session/config';
 import type { SessionManager } from '../session/session-manager';
 import { humanPause } from '../util/pacing';
@@ -16,10 +17,17 @@ export interface CourseCheck {
 export class QueryClient {
   constructor(private readonly session: SessionManager) {}
 
-  /** Run the advanced search and return all parsed sections for the query. */
+  /**
+   * Run the advanced search and return all parsed sections for the query.
+   * The whole navigation sequence runs as ONE session operation (audit Q2): the
+   * context has a single page, so a search and a registration must never drive
+   * it at the same time.
+   */
   async getSections(query: CourseQuery): Promise<SectionStats[]> {
-    const page = await this.session.getPage();
+    return this.session.runExclusive((page) => this.search(page, query));
+  }
 
+  private async search(page: Page, query: CourseQuery): Promise<SectionStats[]> {
     // 1. Term select page → submit term (posts to p_proc_term_date).
     await humanPause();
     await page.goto(TERM_SELECT_URL, { waitUntil: 'domcontentloaded' });
@@ -63,7 +71,9 @@ export class QueryClient {
     ]);
 
     // 4. Parse the results page (P_GetCrse_Advanced). Soft-wait for the table
-    // (don't throw on a legitimate no-results page).
+    // (don't throw on a legitimate no-results page). A page we cannot read
+    // throws PageStructureError from parseSections — the scheduler reports that
+    // as a page problem instead of blaming the CRN (audit Q22).
     await page.waitForSelector('table.datadisplaytable', { timeout: 8000 }).catch(() => undefined);
     return parseSections(await page.content());
   }
