@@ -228,6 +228,11 @@ export default function Dashboard() {
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         drop(tr('run.failed', { reason }));
+        // The in-flight `-Infinity` seed is deliberately left in place: it is
+        // already expired, so the retirement effect above drops it on the next
+        // targets refetch and `target.lastForcedRunAt` is consulted again. Clearing
+        // it here as well would be dead code (verified: the "gives the server
+        // fallback back after a failed run request" test passes without it).
       } finally {
         setRunning((s) => {
           const next = new Set(s);

@@ -512,6 +512,44 @@ describe('Dashboard', () => {
     await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/run boom/i));
   });
 
+  // Review finding (9th round): a request that fails carries no verdict, so it must
+  // not leave the in-flight `-Infinity` seed suppressing the `target.lastForcedRunAt`
+  // fallback — a window started in another tab would then not render here.
+  //
+  // Implemented by the *retirement effect*, not by special-casing the catch branch:
+  // the seed is already expired, so the next targets refetch drops it. This test
+  // pins that composition; an explicit `clearCooling()` in the catch was tried and
+  // removed as dead code (the test passes without it).
+  it('gives the server fallback back after a failed run request', async () => {
+    vi.useFakeTimers();
+    try {
+      mockApi(watching, 'authenticated');
+      // The request fails without saying anything about the cooldown.
+      vi.spyOn(api, 'runTarget').mockRejectedValue(new Error('run boom'));
+      renderDashboard();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.click(screen.getByRole('button', { name: /register now/i }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/run boom/i);
+
+      // Meanwhile another tab starts a manual run, which the server records on the
+      // target. With the seed cleared, that window renders here immediately.
+      vi.spyOn(api, 'getTargets').mockResolvedValue([{ ...watching[0], lastForcedRunAt: Date.now() }]);
+      await act(async () => {
+        streamEvent('Immediate cycle started elsewhere');
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/throttled to one per minute/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows an in-flight starting notice while the run request is pending', async () => {
     mockApi(watching, 'authenticated');
     let resolveRun!: (v: { started: boolean; retryAfterMs: number }) => void;
