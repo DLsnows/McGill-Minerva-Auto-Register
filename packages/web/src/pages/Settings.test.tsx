@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DataProvider } from '../lib/DataContext';
 import SettingsPage from './Settings';
@@ -214,5 +214,33 @@ describe('Settings — keep-awake (Windows only)', () => {
     await waitFor(() => expect(put).toHaveBeenCalledWith(expect.objectContaining({ keepAwake: true })));
     // Initial load + post-save refresh.
     await waitFor(() => expect(power).toHaveBeenCalledTimes(2));
+  });
+
+  it('polls the status so a mid-session power change is reflected', async () => {
+    mockAll();
+    const power = mockPower('disabled');
+    // Fake timers must be installed BEFORE render: the interval is created on
+    // whatever clock exists at mount time (same pattern as Session.poll.test).
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        renderSettings();
+      });
+      expect(power).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(/^Status: Off$/);
+
+      // The server releases the hold when a laptop switches to battery; the open
+      // settings page must not keep claiming it is active.
+      power.mockResolvedValue({
+        supported: true, enabled: true, active: false, powerSource: 'battery', reason: 'battery',
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(30_000);
+      });
+      expect(power.mock.calls.length).toBeGreaterThan(1);
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(/Waiting for AC power/i);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -22,6 +22,11 @@ const KEEP_AWAKE_REASON_KEY: Record<PowerStatus['reason'], string> = {
 
 const noteStyle = { color: 'var(--tx-2)', fontSize: 12, lineHeight: 1.6 } as const;
 
+/** How often the settings page re-reads the live keep-awake status. The server
+ * re-checks the power source every 60 s, so this stays comfortably ahead of it
+ * while the page is open (a laptop unplugged mid-session flips to "on battery"). */
+const POWER_POLL_MS = 30_000;
+
 const inputStyle = {
   padding: 8,
   borderRadius: 8,
@@ -51,23 +56,31 @@ export default function SettingsPage() {
   const [form, setForm] = useState<Settings | null>(null);
   const [err, setErr] = useState<string>();
   const [saved, setSaved] = useState(false);
-  // Windows-only keep-awake status. `null` = not loaded / unsupported (the whole
+  // Windows-only keep-awake status. `null` = not loaded / unreachable (the whole
   // block stays unrendered, so non-Windows users never see a dead switch).
   const [power, setPower] = useState<PowerStatus | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .getPower()
-      .then((p) => {
-        if (!cancelled) setPower(p);
-      })
-      .catch(() => {
-        // Network/API failure is not "unsupported" — leave the block hidden.
-        if (!cancelled) setPower(null);
-      });
+    const load = () =>
+      api
+        .getPower()
+        .then((p) => {
+          if (!cancelled) setPower(p);
+        })
+        .catch(() => {
+          // A failed probe is not "unsupported" — keep the last known status
+          // (or stay hidden on the very first load).
+        });
+    void load();
+    // Keep the status line honest while the page is open: a laptop switching to
+    // battery makes the server release the hold within 60 s. `unref`-style
+    // cleanup is not available in the browser, so the interval is always cleared
+    // on unmount.
+    const timer = setInterval(() => void load(), POWER_POLL_MS);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
   }, []);
 
