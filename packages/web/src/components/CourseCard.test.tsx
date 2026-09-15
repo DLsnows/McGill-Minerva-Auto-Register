@@ -89,10 +89,27 @@ describe('CourseCard', () => {
         onToggleMode={noop}
         onRun={noop}
         onTogglePolling={noop}
-        runNotice="A check for this course is already running"
+        runNotice={{ text: 'A check for this course is already running', until: Date.now() + 30_000 }}
       />,
     );
     expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i);
+  });
+
+  // The notice describes a cycle that was running *at that moment*, so it may not
+  // sit on the card forever: the client cannot observe the end of that cycle
+  // reliably, so it is shown for a bounded time (review finding — a stale
+  // "already running" line ended up next to a REGISTERED badge).
+  it('clears an expired run notice', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        runNotice={{ text: 'A check for this course is already running', until: Date.now() - 1 }}
+      />,
+    );
+    expect(screen.queryByTestId('run-notice')).toBeNull();
   });
 
   it('renders no run notice by default', () => {

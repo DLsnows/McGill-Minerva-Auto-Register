@@ -14,10 +14,11 @@ interface Props {
   onTogglePolling: (id: string, next: WatchStatus) => void;
   running?: boolean;
   /** Verdict of the last manual-run request that was *dropped* ("in progress",
-   * a failure, …), so it is visible instead of the button silently flashing
-   * (Q16/Q60). The cooldown verdict is derived below instead of being frozen
-   * here, so it can count down and disappear. */
-  runNotice?: string;
+   * a failure, …) plus the moment it stops being shown, so it is visible instead
+   * of the button silently flashing (Q16/Q60) without outliving the cycle it
+   * describes. The cooldown verdict is derived below rather than stored here, so
+   * it can count down and clear itself. */
+  runNotice?: { text: string; until: number };
   /** End of the manual-run cooldown on *this* clock, built by the Dashboard from
    * the `retryAfterMs` duration the server reported (never by mixing the server's
    * `lastForcedRunAt` epoch with `Date.now()`). The server enforces the window and
@@ -57,7 +58,9 @@ export function CourseCard({
   // the stale `now` still reads the server fallback as expired.
   const coolingByResponse = Date.now() < (coolingUntil ?? 0);
   const coolingByTarget = Date.now() < (target.lastForcedRunAt ?? 0) + MANUAL_RUN_COOLDOWN_MS;
-  const now = useNow(running || coolingByResponse || coolingByTarget ? 1_000 : 30_000);
+  // A dropped-run notice also needs the fast tick: it expires on the clock.
+  const noticeLive = runNotice !== undefined && runNotice.until > Date.now();
+  const now = useNow(running || coolingByResponse || coolingByTarget || noticeLive ? 1_000 : 30_000);
   const title = target.label ?? `${target.subject} ${target.courseNumber}`;
   const canRun = target.status === 'watching';
   const canPause = PAUSABLE.includes(target.status);
@@ -68,6 +71,10 @@ export function CourseCard({
   // enabled button).
   const cooldownSecs = Math.ceil(cooldownRemainingMs(target.lastForcedRunAt, coolingUntil, now) / 1000);
   const cooling = cooldownSecs > 0;
+  // Same reasoning for the dropped-run verdict: it is shown for a bounded time and
+  // then clears itself, so it cannot be left stranded next to a card that has moved
+  // on (see NOTICE_TTL_MS in Dashboard.tsx).
+  const droppedNotice = noticeLive ? runNotice.text : undefined;
   return (
     <div className="card glass">
       <div className="row1">
@@ -113,9 +120,9 @@ export function CourseCard({
           {t('run.cooldown', { s: cooldownSecs })}
         </div>
       ) : (
-        runNotice && (
+        droppedNotice && (
           <div className="meta" role="status" data-testid="run-notice">
-            {runNotice}
+            {droppedNotice}
           </div>
         )
       )}

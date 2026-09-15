@@ -7,18 +7,22 @@ import { CourseCard } from '../components/CourseCard';
 import { Console } from '../components/Console';
 import { SchedulerToggle } from '../components/SchedulerToggle';
 
+/** How long a dropped-run verdict stays on the card. Long enough to read, short
+ * enough that a stale claim cannot sit next to a "last poll just now" or a
+ * REGISTERED badge — the client cannot reliably observe the end of the running
+ * cycle it describes (see the retirement effect below). */
+const NOTICE_TTL_MS = 30_000;
+
 export default function Dashboard() {
   const { t: tr } = useTranslation();
   const { targets, session, scheduler, budget, stream } = useData();
   const { events, connected, clear } = stream;
   const [running, setRunning] = useState<Set<string>>(new Set());
-  /** Verdicts of *dropped* manual runs, keyed by target id. The cooldown verdict
-   * is deliberately not stored here — it is derived from `coolingUntil` /
-   * `target.lastForcedRunAt` in CourseCard so it counts down and clears. */
-  const [runNotice, setRunNotice] = useState<Record<string, string>>({});
-  /** `nextPollAt` at the moment each notice was written — the cycle boundary, used
-   * to retire a dropped-run notice once the cycle it was about has finished. */
-  const [noticeAtPoll, setNoticeAtPoll] = useState<Record<string, number | undefined>>({});
+  /** Verdicts of *dropped* manual runs, keyed by target id, each carrying the
+   * moment it stops being shown. The cooldown verdict is deliberately not stored
+   * here — it is derived from `coolingUntil` / `target.lastForcedRunAt` in
+   * CourseCard, so it counts down and clears itself. */
+  const [runNotice, setRunNotice] = useState<Record<string, { text: string; until: number }>>({});
   const [coolingUntil, setCoolingUntil] = useState<Record<string, number>>({});
   const [schedErr, setSchedErr] = useState<string>();
   const [clearErr, setClearErr] = useState<string>();
@@ -50,31 +54,40 @@ export default function Dashboard() {
   }, [lastEventId]);
 
   // A dropped "in progress" notice describes a cycle that was running *at that
-  // moment*, so it must not outlive it. The signal is `nextPollAt`, not
-  // `lastPolledAt`: the scheduler writes `lastPolledAt` mid-cycle (right after the
-  // query, before it acts), so a click landing in the post-query phase would
-  // capture an already-advanced value and the notice could never be retired.
-  // `nextPollAt` is only rewritten at the very end of a cycle — every exit path
-  // calls `scheduleNext()` / `scheduleAfterReset()` — so a change there means the
-  // cycle the notice described is over.
+  // moment*, so it must not outlive it — otherwise it ends up pinned next to a
+  // REGISTERED / WAITLISTED / ERROR badge, which is the contradiction the notice
+  // exists to remove.
+  //
+  // Rather than inferring "the cycle finished" from target state, the notice is
+  // given a short lifetime (see NOTICE_TTL_MS) and retracted early on the two
+  // unambiguous signals: the target's status changed (a terminal outcome), or the
+  // target is gone (course deleted).
+  //
+  // Target-state inference was tried twice and failed in both directions:
+  //   - `lastPolledAt` is written mid-cycle (after the query, before the cycle
+  //     acts), so a click landing in the post-query phase captured an
+  //     already-advanced value and the notice could never be retired;
+  //   - `nextPollAt` is only rewritten by the exit paths that schedule another
+  //     cycle, so the terminal outcomes (`registered`, `waitlisted`, a lost
+  //     session → `paused`, `FAILURE_LIMIT` → `error`) left the notice pinned —
+  //     while `PUT /api/settings` → `rescheduleWatching()` rewrote it without any
+  //     cycle finishing and retired the notice early.
+  // A bounded lifetime is honest about what the client can actually know here.
   useEffect(() => {
     const list = targets.data;
     if (!list) return;
     setRunNotice((s) => {
-      const next: Record<string, string> = {};
+      const next: Record<string, { text: string; until: number }> = {};
       let changed = false;
       for (const [id, notice] of Object.entries(s)) {
-        // `undefined` means the target had no scheduled cycle when the drop was
-        // reported, so any value now recorded is newer than the notice.
-        const atDrop = noticeAtPoll[id];
-        const nextPollAt = list.find((t) => t.id === id)?.nextPollAt;
-        const stale = nextPollAt !== undefined && (atDrop === undefined || nextPollAt !== atDrop);
-        if (stale) changed = true;
+        const target = list.find((t) => t.id === id);
+        const retired = target === undefined || target.status !== 'watching';
+        if (retired) changed = true;
         else next[id] = notice;
       }
       return changed ? next : s;
     });
-  }, [targets.data, noticeAtPoll]);
+  }, [targets.data]);
 
   const onToggleMode = useCallback(async (id: string, next: WatchMode) => {
     await api.updateTarget(id, { mode: next });
@@ -143,15 +156,8 @@ export default function Dashboard() {
           delete next[id];
           return next;
         });
-      const drop = (notice: string) => {
-        setRunNotice((s) => ({ ...s, [id]: notice }));
-        // Remember this target's `nextPollAt` when the notice was written, so the
-        // effect above can retire it once the cycle it described ends.
-        setNoticeAtPoll((s) => ({
-          ...s,
-          [id]: targetsRef.current.data?.find((t) => t.id === id)?.nextPollAt,
-        }));
-      };
+      const drop = (notice: string) =>
+        setRunNotice((s) => ({ ...s, [id]: { text: notice, until: Date.now() + NOTICE_TTL_MS } }));
       // `coolingUntil` is an end instant on *this* clock, so it is built from a
       // duration (`retryAfterMs`, anchored to the moment the answer arrived)
       // rather than from the server's `lastForcedRunAt` epoch: mixing a server

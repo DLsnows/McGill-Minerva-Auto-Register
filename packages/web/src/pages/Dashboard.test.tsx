@@ -316,17 +316,21 @@ describe('Dashboard', () => {
     }
   });
 
-  // Review finding (5th round): the "already running" notice was written once and
-  // never retired, so once the cycle finished the card showed it next to a fresh
-  // "last poll just now" — two lines contradicting each other.
+  // Review findings, rounds 5–7: the "already running" notice was written once and
+  // never retired, so it ended up pinned next to a fresh "last poll just now" or a
+  // REGISTERED badge — the contradiction it exists to remove.
   //
-  // The signal is `nextPollAt`, the cycle boundary, not `lastPolledAt`: the
-  // scheduler writes the latter mid-cycle (after the query, before it acts), so a
-  // click landing in that window would capture an already-advanced value and the
-  // notice could never be retired (6th-round review finding). This test models
-  // exactly that: the refreshed target keeps the *same* `lastPolledAt` the drop
-  // captured and only moves `nextPollAt`.
-  it('retires the "already running" notice once the cycle it described has finished', async () => {
+  // Two rounds tried to infer "the cycle finished" from target state and both
+  // failed: `lastPolledAt` is written mid-cycle (a click landing after the query
+  // captured an already-advanced value, so the notice could never be retired), and
+  // `nextPollAt` is only rewritten by the exit paths that schedule another cycle —
+  // the terminal outcomes (`registered`, `waitlisted`, lost session → `paused`,
+  // FAILURE_LIMIT → `error`) never touch it, while `PUT /api/settings` →
+  // `rescheduleWatching()` rewrote it with no cycle finishing at all.
+  //
+  // So the notice is retracted on a *status* change (unambiguous: the cycle ended
+  // in a terminal state) and otherwise expires on its own (NOTICE_TTL_MS).
+  it('retires the "already running" notice when the running cycle ends in a terminal state', async () => {
     const scheduled = { ...watching[0], lastPolledAt: Date.now() - 5_000, nextPollAt: Date.now() + 60_000 };
     mockApi([scheduled], 'authenticated');
     vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'in progress' });
@@ -336,13 +340,39 @@ describe('Dashboard', () => {
     await userEvent.click(screen.getByRole('button', { name: /register now/i }));
     await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i));
 
-    // The cycle that the notice described finishes: its log line arrives on the
-    // live stream, the Dashboard refetches targets, and the refreshed target has
-    // been rescheduled — so the drop is history. `lastPolledAt` is deliberately
-    // unchanged, because the cycle had already polled when the drop was reported.
-    getTargets.mockResolvedValue([{ ...scheduled, nextPollAt: Date.now() + 120_000 }]);
-    streamEvent('cycle finished');
+    // The running cycle registers the course. That path sets the status and returns
+    // WITHOUT rescheduling — it never touches `nextPollAt`, which is why the
+    // previous `nextPollAt`-based signal left the notice pinned here forever.
+    getTargets.mockResolvedValue([{ ...scheduled, status: 'registered' as const }]);
+    streamEvent('Registered COMP 551! 🎉');
     await waitFor(() => expect(screen.queryByTestId('run-notice')).toBeNull());
+  });
+
+  it('expires the "already running" notice on its own when no status change arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      mockApi(watching, 'authenticated');
+      vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'in progress' });
+      renderDashboard();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.click(screen.getByRole('button', { name: /register now/i }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i);
+
+      // A cycle that schedules another poll leaves `status` at 'watching', so no
+      // signal distinguishes "still running" from "finished and rescheduled". The
+      // bounded lifetime is what keeps the notice from being stranded.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(31_000);
+      });
+      expect(screen.queryByTestId('run-notice')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Review finding (6th round): the in-flight seed must not read as an *active*
