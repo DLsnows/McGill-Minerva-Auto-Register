@@ -3,6 +3,38 @@
 > 由 6 份代码审计报告（审计线 A 调度器与运行时并发 / B 会话与 Minerva 自动化 / C 设置与预算展示一致性 / D 启动与状态转换流程 / E API 契约与安全性 / F 前端健壮性与测试缺口）合并去重、统一排序后形成，供项目所有者审批。
 > 所有条目均已由技术主管只读打开 `C:/Users/lenovo/deepseekHarness/Auto-Register/wt/audit` 下的源码逐条核对（引用行号与代码语义一致），并补充了修复批次、用户可见性与状态判断。
 
+## ⏳ 审批状态：**等待项目所有者批准**（尚未修复任何一条）
+
+按项目所有者指示「扫出来的现有 bug 先不修，扫出来给我看，我了解并且批准了再修」，本清单**只做记录**，未对任何条目动手。
+
+### P0 四条已由调度者**二次独立复核**（2026-09-15）
+
+这 4 条在最关键路径上，调度者用下述命令亲手确认，不是只转述审计员的结论：
+
+| 条目 | 复核命令 | 复核结果 |
+|---|---|---|
+| **Q1** tick 无 `.catch()` | `Select-String -Path packages/server/src/scheduler/scheduler.ts -Pattern 'void this\.tick\|\.finally\('` | 只命中 `314: void this.tick().finally(` —— **无 `.catch()`**，全仓无 `unhandledRejection` 处理器 |
+| **Q2** 共用单一 Playwright page | 阅读 `session-manager.ts` 的 `getPage()` | `ctx.pages().find(p => !p.isClosed())` 返回**同一个 Page** 给所有调用者；全仓 `mutex\|lock\|queue\|semaphore` **零命中**（唯一匹配是注释文本） |
+| **Q3** `error` 是死状态 | `Select-String -Path packages/server/src/api/server.ts -Pattern 'paused'` + `CourseCard.tsx` 的 `PAUSABLE\|RESUMABLE` | `server.ts:199` 只捞 `filter(t => t.status === 'paused')`；`CourseCard.tsx:22-23` 的 `PAUSABLE=['watching']` / `RESUMABLE=['paused']` **都不含 `error`** |
+| **Q4** 注册后不等待结果页 | `Select-String -Path packages/server/src/minerva/register-client.ts -Pattern 'waitForSelector\|waitForLoadState\|page.content'` | `register-client.ts:52` 直接 `page.content()`；**对照** `query-client.ts:67` 有 `waitForSelector('table.datadisplaytable', { timeout: 8000 })` —— 注册路径**没有**对应等待 |
+
+### 与本次已实现修复的对应关系（供批准时对比）
+
+- **Q10**（ticker 显示错乱）= 报障 1 的根因 → 已由 `feat/budget-progress` 修复
+- **Q8 + Q12**（主开关绑错对象 / 引擎从不自启）= 报障 2 的根因 → 已由 `feat/start-polling` 修复
+- **Q13**（资源加载错误被吞成空态）与 Q10 同源，`feat/budget-progress` 部分覆盖（ticker 占位符）；错误条与重试入口仍未做
+- **Q20**（`error` 恢复语义）与 Q3 同源，`feat/start-polling` 已补「重新监控」入口，但 Q3 的**全部**侧面（`start-all` 的跳过计数、编辑保存时复位 status）尚未全部覆盖
+
+### 建议（调度者意见，最终由所有者决定）
+
+建议至少把 **P0 四条（Q1–Q4）** 与 **P1 九条（Q5–Q13）** 纳入本批次。理由：
+
+- Q1–Q4 覆盖「进程会死 / 可能注册错课 / 注册成功不认 / 课程永久停摆」四类不可接受后果，且都落在本次正在改的同一批文件上，改动面小；
+- Q5/Q6（本地 API 无 Host/Origin 校验、WebSocket 不校验 Origin）是安全边界问题，已被审计员用真实 fastify + 真实 TCP 握手实测复现；
+- Q7（会话状态永不刷新，UI 主动谎报 Active）是唯一「核心功能静默失效 + UI 误导」的路径。
+
+P2/P3 共 47 条建议单独排期，不要塞进本次。
+
 ## 概览
 
 - **总数 60 条**：原始 6 份报告共 53 条发现，合并 9 组同根因重复项后为 44 条，另有 16 条由技术主管在核对源码后补出（含 12 条此前未被任何审计线单列的实现缺口，以及 4 条由既有条目的附带观察析出）→ 44 + 16 = 60。严重度分布：critical 11 / high 12 / medium 18 / low 19。
