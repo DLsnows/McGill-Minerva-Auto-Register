@@ -32,6 +32,12 @@ export interface SchedulerDeps {
   random?: () => number;
   /** Relay each persisted log event (for desktop/sound/email/WS in P5b/P6). */
   onEvent?: (e: LogEvent) => void;
+  /** Called the moment a cycle finds the session unusable (the `isLoggedIn`
+   * check returned false or threw). This is the earliest reliable observation
+   * that the session is gone — the API uses it to correct what `GET /api/session`
+   * reports, so the UI can't keep showing "Active" over an engine that has
+   * stopped polling. */
+  onSessionLost?: (reason: string) => void;
 }
 
 function errMsg(e: unknown): string {
@@ -58,6 +64,37 @@ interface CycleGuard {
  * burns the daily budget. A small streak (not 1) absorbs a transient blip; any
  * clean cycle resets it. */
 const FAILURE_LIMIT = 3;
+
+/** Minimum gap between two manual forced runs of the same target ("⚡ Register
+ * now"). Manual runs deliberately skip `nextPollAt`, so without this a user
+ * tapping the button in a row would fire a real Minerva query every time — the
+ * only other brake is the shared daily query budget. 60s is long enough to stop
+ * double-clicks and button-mashing while still letting someone retry after
+ * reading the result of the previous cycle. It is deliberately NOT persisted as
+ * a setting: the point is a floor on human-triggered pacing, not a knob. */
+export const MANUAL_RUN_COOLDOWN_MS = 60_000;
+
+/** What a manual "run this target now" request actually did. Returned all the
+ * way to the HTTP layer so the UI can tell "accepted" apart from "dropped"
+ * (audit Q16/Q60) — before this existed both cases returned `{started: true}`. */
+export interface ForcedRunResult {
+  started: boolean;
+  /** Why nothing was started. `'in progress'` = a cycle is already running for
+   * this target; `'cooldown'` = the manual cooldown has not elapsed;
+   * `'target is <status>'` = the target left the watching state. */
+  reason?: string;
+  /** Milliseconds until the caller may try again: the remaining part of the
+   * manual cooldown, so a client can drive its countdown from a *duration*
+   * anchored to its own clock. Sent on rejections and (as the full window) on
+   * acceptance; `0`/absent means no cooldown applies to this answer. */
+  retryAfterMs?: number;
+  /** The target's current `lastForcedRunAt` (epoch ms, absent if it never had a
+   * forced run). Informational for the client — it lets a freshly-loaded page
+   * show that a window is still running without asking again. The countdown uses
+   * `retryAfterMs` instead, which does not mix the server's clock with the
+   * client's. */
+  lastForcedRunAt?: number;
+}
 
 /**
  * Orchestrates a single watch cycle per target: session check → query → decide
@@ -87,10 +124,24 @@ export class Scheduler {
    * a stop mid-round does not start the remaining ones. Kept separate from the timer
    * because a directly-invoked `tick()` has no timer and must still run. */
   private stopRequested = false;
+  /** Set after construction by the API process (see `setSessionLostHandler`). */
+  private sessionLostHandler: ((reason: string) => void) | undefined;
 
   constructor(private readonly deps: SchedulerDeps) {
     this.now = deps.now ?? Date.now;
     this.random = deps.random ?? Math.random;
+    this.sessionLostHandler = deps.onSessionLost;
+  }
+
+  /** Register (or replace) the "the session is gone" callback after construction.
+   * `createRuntime` builds the scheduler long before the HTTP layer exists, so the
+   * API process wires this up once it has something to notify. */
+  setSessionLostHandler(handler: (reason: string) => void): void {
+    this.sessionLostHandler = handler;
+  }
+
+  private reportSessionLost(reason: string): void {
+    this.sessionLostHandler?.(reason);
   }
 
   /** Append a log event AND surface it. Never throws: the scheduler's whole job
@@ -159,19 +210,28 @@ export class Scheduler {
    * A per-target in-flight guard prevents concurrent runs of the same target.
    * Rejects only for errors the caller should surface (a watcher/actor exception
    * is handled inside the cycle); `tick()` wraps each call so one target's
-   * failure can never starve the rest of the round. */
-  async runOnce(targetId: string, opts: { force?: boolean } = {}): Promise<void> {
+   * failure can never starve the rest of the round.
+   *
+   * Returns false when the guard dropped this call (a cycle was already running)
+   * so a caller can report the drop instead of pretending it was accepted. The
+   * guard itself is intentionally kept: it is what stops a manual run and the
+   * tick loop from double-registering the same course. */
+  async runOnce(targetId: string, opts: { force?: boolean } = {}): Promise<boolean> {
     if (this.inFlight.has(targetId)) {
       this.log(
         'info',
         'Run already in progress for this target — skipping concurrent run',
         targetId,
       );
-      return;
+      return false;
     }
     this.inFlight.add(targetId);
     try {
+      // The `guard` is this branch's cancellation token: the cycle captures the
+      // generation it started under and aborts as soon as `stop()` bumps it (Q9/Q14).
+      // The base's boolean return is kept alongside it.
       await this.runCycle(targetId, { ...opts, guard: { generation: this.generation } });
+      return true;
     } finally {
       this.inFlight.delete(targetId);
     }
@@ -193,25 +253,25 @@ export class Scheduler {
       return;
     }
 
-    // Session probe. This is the *only* awaited call before the query that had
-    // no protection, and the real-world trigger is mundane: the user closes the
-    // automation's Chromium window, `getPage()` then throws
-    // ("SessionManager not launched", or Target-closed while it is closing).
-    // Treat any throw as "session unavailable" — the same outcome as a `false`
-    // return — instead of letting it escape and kill the whole process.
-    let loggedIn: boolean;
+    // A throwing session probe counts as "cannot poll" (the same pause path as a
+    // false answer) — but it must not silently look like a deliberate logout, so
+    // the reason carries the error. This is also where the API learns the session
+    // is gone, before any UI ever asks.
+    let loggedIn = false;
+    let sessionError: string | undefined;
     try {
       loggedIn = await this.deps.session.isLoggedIn();
     } catch (e) {
-      store.updateTarget(targetId, { status: 'paused' });
-      this.log('warn', `Session check failed (${errMsg(e)}) — paused; please re-login`, targetId);
-      return;
+      sessionError = errMsg(e);
     }
     if (!loggedIn) {
+      this.reportSessionLost(sessionError ?? 'session check returned not-logged-in');
       store.updateTarget(targetId, { status: 'paused' });
       this.log(
         'warn',
-        'Session not active (logged out / evicted) — paused; please re-login',
+        sessionError
+          ? `Session check failed (${sessionError}) — paused; please re-login`
+          : 'Session not active (logged out / evicted) — paused; please re-login',
         targetId,
       );
       return;
@@ -401,11 +461,59 @@ export class Scheduler {
   }
 
   /** Trigger an immediate forced run for one target (one-click "Register now").
-   * Fire-and-forget; results surface via the event stream like a normal tick. */
-  runTarget(id: string): void {
+   * Fire-and-forget; results surface via the event stream like a normal tick.
+   * Returns what happened so the HTTP layer can answer honestly: a request that
+   * was dropped by the in-flight guard or blocked by the manual cooldown is
+   * reported as `started: false` instead of the blanket `started: true` the API
+   * used to return (audit Q16/Q23/Q60). */
+  runTarget(id: string): ForcedRunResult {
+    const target = this.deps.store.getTarget(id);
+    // The window's authority is the stored value; the client renders its
+    // countdown from this rather than from its own clock.
+    const lastForcedRunAt = target?.lastForcedRunAt;
+    // Re-read the status here (not only in the route): a target can be paused
+    // between the check and this call, and claiming "in progress" for a paused
+    // course would be exactly the kind of dishonest answer this fix removes.
+    if (!target) return { started: false, reason: 'target not found' };
+    if (target.status !== 'watching') {
+      return { started: false, reason: `target is ${target.status}`, lastForcedRunAt };
+    }
+
+    if (this.inFlight.has(id)) {
+      // Logged here, not left to `runOnce`: this branch returns before `runOnce`
+      // is ever called, and the guard's info line is the only trace a dropped
+      // click leaves. (`runOnce` logs the same message for its own callers.)
+      this.log('info', 'Run already in progress for this target — skipping concurrent run', id);
+      return { started: false, reason: 'in progress', lastForcedRunAt };
+    }
+
+    const now = this.now();
+    const remaining = this.manualCooldownRemaining(target, now);
+    if (remaining > 0) {
+      this.log(
+        'info',
+        `Manual run ignored — ${Math.ceil(remaining / 1000)}s of the ${MANUAL_RUN_COOLDOWN_MS / 1000}s cooldown between manual runs is left`,
+        id,
+      );
+      return { started: false, reason: 'cooldown', retryAfterMs: remaining, lastForcedRunAt };
+    }
+
+    // Start the cooldown when the run is *accepted* (not when it finishes), so
+    // mashing the button during a slow cycle cannot queue up back-to-back runs.
+    this.deps.store.updateTarget(id, { lastForcedRunAt: now });
     void this.runOnce(id, { force: true }).catch((e) =>
       this.log('error', `Forced run failed: ${errMsg(e)}`, id),
     );
+    // `retryAfterMs` is the full window here: a *duration* the client can anchor
+    // to its own receive time, so its countdown needs no clock agreement at all.
+    return { started: true, retryAfterMs: MANUAL_RUN_COOLDOWN_MS, lastForcedRunAt: now };
+  }
+
+  /** Milliseconds left of the manual-run cooldown, 0 when a forced run is allowed. */
+  private manualCooldownRemaining(target: WatchTarget, now: number): number {
+    if (target.lastForcedRunAt === undefined) return 0;
+    const elapsed = now - target.lastForcedRunAt;
+    return elapsed >= MANUAL_RUN_COOLDOWN_MS ? 0 : MANUAL_RUN_COOLDOWN_MS - Math.max(0, elapsed);
   }
   /**
    * Record the result of an `act()` that already happened.
@@ -578,6 +686,10 @@ export class Scheduler {
         return;
       }
       try {
+        // `runOnce` returns false when the in-flight guard dropped this cycle (the
+        // manual "Register now" path got there first) and has already logged why.
+        // Both outcomes mean "move on to the next target", so the value is not used
+        // here — the caller that needs it is the `/run` route, which reports it.
         await this.runOnce(t.id);
       } catch (e) {
         this.log('error', `Cycle failed for this target: ${errMsg(e)}`, t.id);

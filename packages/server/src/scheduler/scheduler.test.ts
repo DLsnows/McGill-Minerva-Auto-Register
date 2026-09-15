@@ -11,7 +11,7 @@ import type {
 } from '@autoregister/shared';
 import { Store } from '../store/store';
 import { Budget } from '../budget/budget';
-import { Scheduler, type Actor, type SessionGuard, type Watcher } from './scheduler';
+import { MANUAL_RUN_COOLDOWN_MS, Scheduler, type Actor, type SessionGuard, type Watcher } from './scheduler';
 
 let dir: string;
 beforeEach(() => {
@@ -54,6 +54,12 @@ class FakeSession implements SessionGuard {
   constructor(public loggedIn = true) {}
   isLoggedIn = async () => this.loggedIn;
 }
+/** A session probe that blows up — e.g. the browser context died mid-cycle. */
+class ExplodingSession implements SessionGuard {
+  isLoggedIn = async (): Promise<boolean> => {
+    throw new Error('no browser context');
+  };
+}
 
 function setup(opts: {
   mode?: WatchMode;
@@ -61,12 +67,14 @@ function setup(opts: {
   stats?: SectionStats;
   outcome?: RegisterOutcome;
   loggedIn?: boolean;
+  session?: SessionGuard;
+  onSessionLost?: (reason: string) => void;
 }) {
   const store = new Store(dir);
   const budget = new Budget(store);
   const watcher = new FakeWatcher({ stats: opts.stats ?? stats(), decision: opts.decision });
   const actor = new FakeActor(opts.outcome ?? { kind: 'registered', crn: '1814' });
-  const session = new FakeSession(opts.loggedIn ?? true);
+  const session = opts.session ?? new FakeSession(opts.loggedIn ?? true);
   const scheduler = new Scheduler({
     store,
     budget,
@@ -75,6 +83,7 @@ function setup(opts: {
     session,
     now: () => NOW,
     random: () => 0.5, // zero jitter
+    onSessionLost: opts.onSessionLost,
   });
   const target = store.addTarget({
     term: '202701',
@@ -157,6 +166,49 @@ describe('Scheduler.runOnce', () => {
     await scheduler.runOnce(target.id);
     expect(watcher.calls).toBe(0);
     expect(store.getTarget(target.id)!.status).toBe('paused');
+  });
+
+  // The API's reported session status is corrected from here: a cycle that finds
+  // no session is the earliest reliable evidence, and without reporting it
+  // `GET /api/session` kept answering 'authenticated' while every target sat
+  // paused — the UI then showed a green "Active" over a stopped engine (Q7/Q12).
+  it('reports the lost session so the API can stop claiming it is authenticated', async () => {
+    const reasons: string[] = [];
+    const { scheduler, target } = setup({
+      decision: { action: 'NOOP', reason: 'x' },
+      loggedIn: false,
+      onSessionLost: (r) => reasons.push(r),
+    });
+    await scheduler.runOnce(target.id);
+    expect(reasons).toEqual(['session check returned not-logged-in']);
+  });
+
+  it('reports a throwing session probe as a lost session instead of only logging it', async () => {
+    const reasons: string[] = [];
+    const { scheduler, store, target } = setup({
+      decision: { action: 'NOOP', reason: 'x' },
+      session: new ExplodingSession(),
+      onSessionLost: (r) => reasons.push(r),
+    });
+    await scheduler.runOnce(target.id);
+    expect(reasons).toEqual(['no browser context']);
+    expect(store.getTarget(target.id)!.status).toBe('paused');
+    expect(store.recentEvents().some((e) => e.level === 'warn' && /no browser context/.test(e.message))).toBe(
+      true,
+    );
+  });
+
+  it('accepts a handler registered after construction (the API wires it up later)', async () => {
+    const { scheduler, store, target } = setup({ decision: { action: 'NOOP', reason: 'x' }, loggedIn: false });
+    const reasons: string[] = [];
+    scheduler.setSessionLostHandler((r) => reasons.push(r));
+    await scheduler.runOnce(target.id);
+    expect(reasons).toHaveLength(1);
+    // The cycle paused the target; re-arm it to prove the late-registered
+    // handler keeps firing on later cycles, not just the first one.
+    store.updateTarget(target.id, { status: 'watching' });
+    await scheduler.runOnce(target.id);
+    expect(reasons).toHaveLength(2);
   });
 
   it('keeps watching and logs an error when registration errors', async () => {
@@ -406,9 +458,145 @@ describe('Scheduler.runOnce', () => {
     const p1 = scheduler.runOnce(t.id);
     const p2 = scheduler.runOnce(t.id); // in-flight → should skip immediately
     releaseCheck();
-    await Promise.all([p1, p2]);
+    const [ran1, ran2] = await Promise.all([p1, p2]);
     expect(checkCalls).toBe(1);
     expect(actor.calls).toBe(1);
+    // The guard also *reports* the drop now: the accepted call returns true, the
+    // skipped one false — what `started:false/reason:'in progress'` is built on
+    // (audit Q16/Q60). Before the fix runOnce returned void for both.
+    expect(ran1).toBe(true);
+    expect(ran2).toBe(false);
+    expect(
+      store.recentEvents().some((e) => e.message.includes('Run already in progress')),
+    ).toBe(true);
+  });
+});
+
+describe('Scheduler.runTarget (manual "Register now")', () => {
+  function manualSetup() {
+    const store = new Store(dir);
+    const budget = new Budget(store);
+    const watcher = new FakeWatcher({ stats: stats(), decision: { action: 'NOOP', reason: 'full' } });
+    const actor = new FakeActor({ kind: 'not-found', crn: '1814' });
+    let clock = NOW;
+    const scheduler = new Scheduler({
+      store,
+      budget,
+      watcher,
+      actor,
+      session: new FakeSession(true),
+      now: () => clock,
+      random: () => 0.5,
+    });
+    const target = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+    return { store, budget, watcher, scheduler, target, setClock: (t: number) => (clock = t) };
+  }
+
+  it('accepts the first manual run and records lastForcedRunAt', async () => {
+    const { scheduler, store, watcher, target } = manualSetup();
+    // The result carries the *duration* the client anchors its countdown to, plus
+    // the start it can echo/debug with — never a value the client must subtract
+    // from its own clock.
+    expect(scheduler.runTarget(target.id)).toEqual({
+      started: true,
+      retryAfterMs: MANUAL_RUN_COOLDOWN_MS,
+      lastForcedRunAt: NOW,
+    });
+    expect(store.getTarget(target.id)!.lastForcedRunAt).toBe(NOW);
+    await vi.waitFor(() => expect(watcher.calls).toBe(1));
+  });
+
+  // Regression (audit Q23): before this, nothing throttled manual runs — each
+  // click hit Minerva for real, bounded only by the shared daily query budget.
+  it('refuses a second manual run inside the cooldown and reports how long is left', async () => {
+    const { scheduler, watcher, target, setClock } = manualSetup();
+    scheduler.runTarget(target.id);
+    await vi.waitFor(() => expect(watcher.calls).toBe(1));
+
+    setClock(NOW + 20_000); // 20s of the 60s window elapsed
+    expect(scheduler.runTarget(target.id)).toEqual({
+      started: false,
+      reason: 'cooldown',
+      retryAfterMs: MANUAL_RUN_COOLDOWN_MS - 20_000,
+      lastForcedRunAt: NOW,
+    });
+    // The refused click did not query Minerva again.
+    expect(watcher.calls).toBe(1);
+  });
+
+  it('allows a manual run again once the cooldown has elapsed', async () => {
+    const { scheduler, watcher, target, setClock } = manualSetup();
+    scheduler.runTarget(target.id);
+    await vi.waitFor(() => expect(watcher.calls).toBe(1));
+
+    setClock(NOW + MANUAL_RUN_COOLDOWN_MS);
+    expect(scheduler.runTarget(target.id)).toEqual({
+      started: true,
+      retryAfterMs: MANUAL_RUN_COOLDOWN_MS,
+      lastForcedRunAt: NOW + MANUAL_RUN_COOLDOWN_MS,
+    });
+    await vi.waitFor(() => expect(watcher.calls).toBe(2));
+  });
+
+  it('does not let the automatic tick loop consume or need the manual cooldown', async () => {
+    const { scheduler, store, watcher, target } = manualSetup();
+    expect(scheduler.runTarget(target.id).started).toBe(true);
+    await vi.waitFor(() => expect(watcher.calls).toBe(1));
+
+    // The cooldown throttles *manual* runs only: a due automatic cycle still runs.
+    store.updateTarget(target.id, { nextPollAt: NOW - 1 });
+    await scheduler.tick();
+    expect(watcher.calls).toBe(2);
+  });
+
+  it('reports in progress — not a false start — when a cycle is already running', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+    let releaseCheck!: () => void;
+    const gate = new Promise<void>((r) => (releaseCheck = r));
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher: {
+        checkCourse: async () => {
+          await gate;
+          return { stats: stats(), decision: { action: 'NOOP', reason: 'full' } };
+        },
+      },
+      actor: new FakeActor({ kind: 'not-found', crn: '1814' }),
+      session: new FakeSession(true),
+      now: () => NOW,
+      random: () => 0.5,
+    });
+    expect(scheduler.runTarget(t.id)).toEqual({
+      started: true,
+      retryAfterMs: MANUAL_RUN_COOLDOWN_MS,
+      lastForcedRunAt: NOW,
+    });
+    expect(scheduler.runTarget(t.id)).toEqual({
+      started: false,
+      reason: 'in progress',
+      lastForcedRunAt: NOW,
+    });
+    // `runTarget` short-circuits *before* `runOnce`, so it has to emit the guard's
+    // info line itself — otherwise a dropped manual click would leave no trace at
+    // all (review finding: the first version relied on `runOnce`, which this
+    // branch never reaches).
+    expect(
+      store.recentEvents().filter((e) => e.message.includes('Run already in progress')),
+    ).toHaveLength(1);
+    releaseCheck();
+  });
+
+  it('refuses a non-watching target with its real status', () => {
+    const { scheduler, store, target } = manualSetup();
+    store.updateTarget(target.id, { status: 'paused' });
+    expect(scheduler.runTarget(target.id)).toEqual({ started: false, reason: 'target is paused' });
+  });
+
+  it('refuses an unknown target instead of pretending to start', () => {
+    const { scheduler } = manualSetup();
+    expect(scheduler.runTarget('no-such-id')).toEqual({ started: false, reason: 'target not found' });
   });
 });
 
@@ -560,7 +748,13 @@ describe('Scheduler.tick — process resilience (Q1)', () => {
       mode: 'auto',
     });
 
-    await expect(scheduler.runOnce(t.id)).resolves.toBeUndefined();
+    // `runOnce` resolved to `true`: the guard accepted the cycle (it was not a
+    // concurrent-run drop) and the throwing session check was handled *inside* it
+    // and downgraded to the logged-out path below, rather than rejecting out of
+    // `runOnce`. HEAD asserted `undefined` here because `runOnce` used to be void;
+    // the merged signature is `Promise<boolean>` (see `Scheduler.runOnce`, and the
+    // true/false contract pinned in the in-flight-guard test above).
+    await expect(scheduler.runOnce(t.id)).resolves.toBe(true);
 
     expect(store.getTarget(t.id)!.status).toBe('paused'); // same path as logged-out
     expect(watcher.calls).toBe(0); // never reached the query

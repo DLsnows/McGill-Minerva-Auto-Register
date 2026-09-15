@@ -138,6 +138,15 @@ async function main() {
   // reported too rather than crashing with no explanation.
   installProcessGuards(runtime);
   const app = buildServer(runtime, clients);
+  // A cycle that finds the session gone is the earliest reliable evidence that
+  // it is gone. Feed it back into the status the API reports, otherwise
+  // `GET /api/session` keeps answering 'authenticated' while the scheduler has
+  // paused every target — the UI then shows a green "Active" over a stopped
+  // engine. The status change broadcasts a warn event, so the UI learns without
+  // polling (which would mean really navigating to Minerva on a timer).
+  runtime.scheduler.setSessionLostHandler((reason) => {
+    if (app.sessions.markLoggedOut()) console.log(`Session lost: ${reason}`);
+  });
   await app.listen({ host: '127.0.0.1', port: PORT });
   console.log(`AutoRegister API listening on http://127.0.0.1:${PORT}`);
 }

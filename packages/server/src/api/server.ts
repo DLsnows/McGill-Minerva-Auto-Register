@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import websocketPlugin from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import type { WebSocket } from 'ws';
@@ -8,6 +9,16 @@ import { z } from 'zod';
 import type { LogEvent, LogLevel, Settings } from '@autoregister/shared';
 import type { Budget } from '../budget/budget';
 import type { Store } from '../store/store';
+import type { ForcedRunResult } from '../scheduler/scheduler';
+import { SessionTruth, sessionReadiness, type SessionStatus } from './session-truth';
+
+export { SessionTruth, sessionReadiness };
+export type { SessionStatus };
+
+/** Error code returned by `POST /api/scheduler/start*` when the session cannot
+ * support polling. Exported so the web client (and tests) can match on it
+ * instead of on prose. */
+export const SESSION_NOT_READY = 'session-not-ready';
 
 /** Safety net for a login that hangs outside the session flow's own control
  * (e.g. `launch()` never resolving). Must exceed the SessionManager's internal
@@ -24,7 +35,9 @@ export interface ApiSession {
 export interface ApiScheduler {
   start(tickMs?: number): void;
   stop(): void;
-  runTarget(id: string): void;
+  /** Request an immediate forced cycle. Returns what actually happened so the
+   * route can distinguish "accepted" from "dropped" (audit Q16/Q60). */
+  runTarget(id: string): ForcedRunResult;
   isRunning(): boolean;
   /** Re-apply the poll cadence to already-scheduled targets (after a settings
    * change). Optional so lightweight test doubles can omit it. */
@@ -82,10 +95,36 @@ const targetPatchSchema = targetSchema
   .strict();
 
 /** Build the local HTTP/WebSocket API over the runtime. `clients` is the shared
- * WS client set (also used by the event broadcaster). */
-export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()): FastifyInstance {
+ * WS client set (also used by the event broadcaster). The returned instance also
+ * carries `sessions`, the authoritative session status (see `SessionTruth`). */
+export function buildServer(
+  deps: ApiDeps,
+  clients: Set<WebSocket> = new Set(),
+): FastifyInstance & { sessions: SessionTruth } {
   const app = Fastify({ logger: false });
-  let sessionStatus: 'unknown' | 'authenticated' | 'logged-out' | 'logging-in' = 'unknown';
+  // The session's single source of truth. It is owned here (not by a closure
+  // variable) precisely so that the *scheduler* can also write it: a cycle that
+  // finds the session gone is the earliest and most reliable observation, and the
+  // status it used to leave untouched is what let the UI keep showing "Active".
+  const sessions = new SessionTruth();
+  // Push every real transition to connected clients. The UI must not have to poll
+  // for this: `GET /api/session` verifies liveness with a real navigation to
+  // Minerva, so a timer-driven refresh would hammer the school's server.
+  sessions.onChange((status) => {
+    const event = sessionEvent(status);
+    if (event) broadcast(clients, event);
+  });
+
+  /** Reject an engine start when polling could not possibly work, instead of
+   * accepting the click and leaving the UI (and the user) to discover it later.
+   * Purely local: it reads the status the server already holds and never probes
+   * Minerva, so it cannot itself generate traffic against the school. */
+  const requireSession = (reply: FastifyReply): FastifyReply | undefined => {
+    const status = sessions.get();
+    const readiness = sessionReadiness(status);
+    if (readiness.ready) return undefined;
+    return reply.code(409).send({ error: readiness.message, code: SESSION_NOT_READY, status });
+  };
 
   /** Record an API-originated state change in the app's own event log (and push it
    * to the live console). Mutations that change what the user will be watching used
@@ -124,7 +163,20 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     const parsed = targetPatchSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const id = (req.params as { id: string }).id;
+    // Read the prior state before the gate: the edit-recovery block below needs it,
+    // and a refused request must not have touched anything.
     const before = deps.store.getTarget(id);
+    // Setting a target to 'watching' is a promise that it will be polled — the
+    // per-course "Resume" button also starts the engine right after this PATCH.
+    // Without a usable session that promise cannot be kept, and the client that
+    // asks for it may hold a stale session snapshot (the exact case that used to
+    // leave a course 'watching' on a dead engine, with nothing to ever poll it).
+    // Refusing here keeps the stored state honest, and the client shows the same
+    // localized reason as for `/scheduler/start`.
+    if (parsed.data.status === 'watching') {
+      const denied = requireSession(reply);
+      if (denied) return denied;
+    }
     const updated = deps.store.updateTarget(id, parsed.data);
     if (!updated) return reply.code(404).send({ error: 'not found' });
     // Recovery on edit (Q3): a target sits in `error` because three consecutive
@@ -195,19 +247,23 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   });
 
   // One-click "Register now": run an immediate forced cycle for this target.
-  // `started: true` means the run was *accepted*; it executes asynchronously and
-  // its outcome arrives via the event stream (like a normal tick). The status
-  // check below is a best-effort fast-fail — runCycle re-checks status when it runs.
+  // The response says what really happened for this request:
+  //   { started: true }                                  — accepted, runs async
+  //   { started: false, reason: 'in progress' }          — a cycle already runs
+  //   { started: false, reason: 'cooldown', retryAfterMs } — manual throttle
+  //   { started: false, reason: 'target is <status>' }   — not being watched
+  // The outcome of an accepted cycle still arrives via the event stream (like a
+  // normal tick); `started` only means "this request was accepted". Returning a
+  // blanket `started: true` is what made the button flash and do nothing
+  // (audit Q16/Q60) — the dropped-vs-accepted distinction is the whole point.
   app.post('/api/targets/:id/run', (req, reply) => {
     const { id } = req.params as { id: string };
     const target = deps.store.getTarget(id);
     if (!target) return reply.code(404).send({ error: 'not found' });
-    // runOnce no-ops on non-watching targets; report honestly rather than a bare started:true.
-    if (target.status !== 'watching') {
-      return reply.send({ started: false, reason: `target is ${target.status}` });
-    }
-    deps.scheduler.runTarget(id);
-    return { started: true };
+    // `runTarget` re-checks status, the in-flight guard and the manual cooldown,
+    // and reports each case honestly rather than a bare started:true. Its
+    // fast-fail status check is still best-effort: runCycle re-checks when it runs.
+    return reply.send(deps.scheduler.runTarget(id));
   });
 
   // --- settings ---
@@ -245,32 +301,32 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   app.get('/api/session', async () => {
     // Lazy re-check so the reported status doesn't drift from reality
     // (session can expire naturally without going through /api/session/login).
-    if (sessionStatus === 'authenticated') {
+    if (sessions.get() === 'authenticated') {
       try {
         const live = await deps.session.isLoggedIn();
-        if (!live) sessionStatus = 'logged-out';
+        if (!live) sessions.set('logged-out');
       } catch {
-        sessionStatus = 'unknown';
+        sessions.set('unknown');
       }
     }
-    return { status: sessionStatus };
+    return { status: sessions.get() };
   });
   app.post('/api/session/login', () => {
-    if (sessionStatus !== 'logging-in') {
-      sessionStatus = 'logging-in';
+    if (sessions.get() !== 'logging-in') {
+      sessions.set('logging-in');
       void (async () => {
         // Safety net: if the browser/SSO flow hangs, reset the status so the
         // user can retry instead of being stuck in 'logging-in' forever.
         const timeout = setTimeout(() => {
-          if (sessionStatus === 'logging-in') sessionStatus = 'logged-out';
+          if (sessions.get() === 'logging-in') sessions.set('logged-out');
         }, LOGIN_TIMEOUT_MS);
         if (typeof timeout.unref === 'function') timeout.unref();
         try {
           await deps.session.launch();
           await deps.session.ensureLoggedIn();
-          sessionStatus = (await deps.session.isLoggedIn()) ? 'authenticated' : 'logged-out';
+          sessions.set((await deps.session.isLoggedIn()) ? 'authenticated' : 'logged-out');
         } catch {
-          sessionStatus = 'logged-out';
+          sessions.set('logged-out');
         } finally {
           clearTimeout(timeout);
         }
@@ -281,7 +337,14 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
 
   // --- scheduler ---
   app.get('/api/scheduler', () => ({ running: deps.scheduler.isRunning() }));
-  app.post('/api/scheduler/start', () => {
+  // Both start routes refuse to accept a click they cannot honour. Previously
+  // they returned `{running:true}` unconditionally: with no session the engine
+  // started anyway, the first tick's session check threw or paused everything,
+  // and the user was left staring at a toggle that claimed the automation was
+  // running. (That unhandled rejection inside the tick is a separate defect.)
+  app.post('/api/scheduler/start', (_req, reply) => {
+    const denied = requireSession(reply);
+    if (denied) return denied;
     deps.scheduler.start();
     return { running: true };
   });
@@ -297,7 +360,13 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   // count of those skipped courses was never reported, so "Start all" looked like
   // it had done nothing at all. `skipped` makes the outcome legible; the card's
   // Resume button is the explicit per-course opt-in.
-  app.post('/api/scheduler/start-all', () => {
+  //
+  // The session readiness check runs BEFORE any target is touched, so a refused
+  // start leaves the stored state exactly as it was (no courses resumed on a dead
+  // engine).
+  app.post('/api/scheduler/start-all', (_req, reply) => {
+    const denied = requireSession(reply);
+    if (denied) return denied;
     const all = deps.store.listTargets();
     const toResume = all.filter((t) => t.status === 'paused');
     for (const t of toResume) deps.store.updateTarget(t.id, { status: 'watching' });
@@ -329,6 +398,8 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   // `scheduler.stop()` now also cancels any in-flight cycle, so nothing is
   // submitted after this returns (Q9/Q14) — the log line makes the stop visible,
   // matching what the cycle-level cancel event reports.
+  //
+  // Deliberately NOT gated on the session: stopping must always work.
   app.post('/api/scheduler/stop-all', () => {
     const paused = deps.store.listTargets().filter((t) => t.status === 'watching');
     for (const t of paused) deps.store.updateTarget(t.id, { status: 'paused' });
@@ -395,7 +466,25 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     });
   }
 
-  return app;
+  // Exposed on the instance so `main.ts` can feed the scheduler's session-lost
+  // observation back into it (and so tests can drive the status directly).
+  // Fastify's `decorate` overloads don't propagate the property onto the
+  // already-inferred instance type, so the intersection is asserted here.
+  return Object.assign(app, { sessions }) as FastifyInstance & { sessions: SessionTruth };
+}
+
+/** Human-readable log line for a session transition. Only the transitions that
+ * need explaining are announced — the live console explains *why* the session
+ * cell went bad, instead of the dot flipping with no trace (the same class of
+ * silent state change the audit flagged for the startup pause). A successful
+ * login is already visible in the UI, so it stays quiet. */
+export function sessionEvent(status: SessionStatus): LogEvent | undefined {
+  if (status !== 'logged-out' && status !== 'unknown') return undefined;
+  const message =
+    status === 'logged-out'
+      ? 'Session is no longer active — automation cannot poll. Log in again from the Session tab.'
+      : 'Session state could not be verified — automation may not poll. Log in again from the Session tab.';
+  return { id: randomUUID(), ts: Date.now(), level: 'warn', message };
 }
 
 /** Broadcast a log event to all connected WebSocket clients. */
