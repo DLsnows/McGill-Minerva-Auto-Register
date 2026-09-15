@@ -692,4 +692,115 @@ describe('Dashboard', () => {
   // authoritative…"), which fails with the old `Math.max`. An earlier version of
   // this test drove the same scenario through the Dashboard, but the refetch it
   // relied on never actually fired, so the skewed value never reached the card and
+  /**
+   * Q13 variant C. `/api/targets` failing left `targets.data` undefined, and the
+   * page rendered its empty state for that — the same screen as "you watch
+   * nothing". Nothing in the app read `resource.error`, so the user was told
+   * their configuration was empty and, having no retry entry point, the natural
+   * move was to re-add the courses (which `addTarget` happily duplicates).
+   */
+  it('shows an error bar with a working retry instead of the empty state when /api/targets fails', async () => {
+    const watchTarget = {
+      id: 't1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551',
+      targetCrn: '2347', mode: 'auto' as const, status: 'watching' as const, createdAt: 0,
+    };
+    // The list stays unreadable until the user retries: the mocked event stream
+    // makes the Dashboard refetch targets on mount, and a counter-based mock
+    // would let that second call succeed and quietly erase the failure.
+    let failing = true;
+    let calls = 0;
+    vi.spyOn(api, 'getTargets').mockImplementation(() => {
+      calls += 1;
+      return failing
+        ? Promise.reject(new Error('GET /api/targets failed: 503'))
+        : Promise.resolve([watchTarget]);
+    });
+    vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
+    vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
+    vi.spyOn(api, 'getSettings').mockResolvedValue({
+      pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+    });
+    vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+    renderDashboard();
+
+    await waitFor(() => expect(screen.getByText(/Could not load Course list/i)).toBeInTheDocument());
+    // The defect was the *empty state* showing for a failed load.
+    expect(screen.queryByText(/No courses watched/i)).toBeNull();
+    expect(screen.queryByText(/Loading courses/i)).toBeNull();
+    expect(screen.getByText(/GET \/api\/targets failed: 503/)).toBeInTheDocument();
+    const callsBeforeRetry = calls;
+
+    failing = false;
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+    // Retry re-runs the fetch: the real course shows up and the bar goes away.
+    await waitFor(() => expect(screen.getByText(/COMP 551/)).toBeInTheDocument());
+    expect(screen.queryByText(/Could not load Course list/i)).toBeNull();
+    expect(calls).toBeGreaterThan(callsBeforeRetry);
+  });
+
+  it('does not claim a target list is empty before it has been read', async () => {
+    // A list that has not arrived yet is not an empty list. Showing "No courses
+    // watched yet" during the initial fetch is the same lie as showing it after a
+    // failure, and it also invites a duplicate re-add.
+    let release!: (v: Awaited<ReturnType<typeof api.getTargets>>) => void;
+    vi.spyOn(api, 'getTargets').mockImplementation(
+      () => new Promise((resolve) => (release = resolve)),
+    );
+    vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
+    vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
+    vi.spyOn(api, 'getSettings').mockResolvedValue({
+      pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+    });
+    vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+    renderDashboard();
+
+    expect(screen.getByText(/Loading courses/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No courses watched/i)).toBeNull();
+
+    await act(async () => {
+      release([]);
+    });
+    // A list that really is empty renders the empty state, not a stuck spinner.
+    await waitFor(() => expect(screen.getByText(/No courses watched/i)).toBeInTheDocument());
+  });
+
+  /**
+   * `refetch` keeps the last successful `data` on failure, so a later blip means
+   * "stale data + an error", not "no data". Replacing the whole list with the bar
+   * would throw away information the client still holds — and it is inconsistent
+   * with the ticker, which keeps rendering the stale budget snapshot under its
+   * own bar.
+   */
+  it('keeps the (stale) course list on screen when a later refetch fails', async () => {
+    const watchTarget = {
+      id: 't1', label: 'COMP 551', term: '202701', subject: 'COMP', courseNumber: '551',
+      targetCrn: '2347', mode: 'auto' as const, status: 'watching' as const, createdAt: 0,
+    };
+    let failing = false;
+    vi.spyOn(api, 'getTargets').mockImplementation(() =>
+      failing ? Promise.reject(new Error('refresh boom')) : Promise.resolve([watchTarget]),
+    );
+    vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
+    vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
+    vi.spyOn(api, 'getSettings').mockResolvedValue({
+      pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+    });
+    vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+    renderDashboard();
+    await waitFor(() => expect(screen.getByText(/COMP 551/)).toBeInTheDocument());
+
+    // First read succeeded; the next one (a manual pause refetch) fails.
+    failing = true;
+    await userEvent.click(screen.getByRole('button', { name: /pause/i }));
+
+    await waitFor(() => expect(screen.getByText(/Could not load Course list/i)).toBeInTheDocument());
+    // The bar is additive: the last good list survives underneath it.
+    expect(screen.getByText(/COMP 551/)).toBeInTheDocument();
+    expect(screen.queryByText(/No courses watched/i)).toBeNull();
+    expect(screen.queryByText(/Loading courses/i)).toBeNull();
+  });
 });

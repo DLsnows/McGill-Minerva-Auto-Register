@@ -1,46 +1,111 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
 import { useData } from '../lib/DataContext';
 import { CourseForm, type CourseFormValues } from '../components/CourseForm';
+import { ResourceError } from '../components/ResourceError';
 import { StatusBadge } from '../components/StatusBadge';
 
 export default function Courses() {
   const { t: tr } = useTranslation();
   const { targets } = useData();
   const [editing, setEditing] = useState<string | null>(null);
-  const [err, setErr] = useState<string>();
+  // Tagged, because the two kinds retire differently: the resource error clears
+  // itself when a read lands, so only the "the refresh failed" note may be cleared
+  // with it — a later, unrelated mutation failure must survive that read. The
+  // retirement is driven by the `targets.revision` effect below.
+  const [err, setErr] = useState<{ kind: 'op' | 'refresh'; message: string }>();
   const [addKey, setAddKey] = useState(0); // bumped to remount (reset) the add form
   const list = targets.data ?? [];
+  // Set when a mutation's post-write re-read fails, so the note about it can be
+  // retired once `targets.revision` moves past it — i.e. once a read really lands,
+  // whichever gesture triggered it. A mutation that *threw* sits in the same `err`
+  // slot but is not disproved by a readable list, hence the `kind` tag.
+  const staleAtRevision = useRef<number | null>(null);
+  // The revision as of the latest render, kept current *synchronously* (a render
+  // assignment, not an effect — an effect runs after commit and can still be one
+  // render behind when `run` resumes after `await op()`).
+  const revisionRef = useRef(targets.revision);
+  revisionRef.current = targets.revision;
 
-  // Run a mutation, surface any failure, refresh the list; returns success.
-  const run = async (op: () => Promise<unknown>) => {
+  useEffect(() => {
+    if (staleAtRevision.current === null) return;
+    if (targets.revision === staleAtRevision.current) return; // still the failed read
+    staleAtRevision.current = null;
+    setErr((e) => (e?.kind === 'refresh' ? undefined : e));
+  }, [targets.revision]);
+  // Run a mutation, surface any failure, refresh the list. Reports the two
+  // halves separately because they have different consequences for the caller:
+  // `mutated` says the write landed (so the caller may clear its form), `ok`
+  // says the list on screen is current again. A mutation that succeeded but
+  // whose refresh failed *did* happen — collapsing both into one boolean would
+  // leave the add form populated and invite a duplicate target, which
+  // `addTarget` does not de-duplicate.
+  const run = async (op: () => Promise<unknown>): Promise<{ mutated: boolean; ok: boolean }> => {
     setErr(undefined);
+    staleAtRevision.current = null;
+    // Baseline captured *before* the request, not after: the revision a failed
+    // re-read leaves behind is the one current now, and by the time `op()` resolves
+    // a concurrent read may already have bumped it — arming the note against the
+    // older value would make the retirement effect skip it (it already ran for the
+    // new revision), so the note would linger for one extra read cycle and claim a
+    // failure that fresh data has already disproved.
+    const revisionBeforeRefresh = revisionRef.current;
     try {
       await op();
-      await targets.refetch();
-      return true;
     } catch (e) {
-      setErr(e instanceof Error ? e.message : tr('courses.opFailed'));
-      return false;
+      setErr({ kind: 'op', message: e instanceof Error ? e.message : tr('courses.opFailed') });
+      return { mutated: false, ok: false };
     }
+    // `refetch` records its own failure and returns the outcome instead of
+    // throwing, so it has to be inspected explicitly: the list is now stale and
+    // must not be reported as a clean success.
+    const refresh = await targets.refetch();
+    // A *superseded* result is not a failure and must not be reported as one: a
+    // newer read won the race, so the list on screen is already the newer one —
+    // and the revision may have moved before this continuation ran, which would
+    // leave a "re-reading failed" note armed against a revision the effect has
+    // already passed (so it lingers and misreports). The winner reports itself:
+    // success ⇒ no note needed, failure ⇒ `targets.error` drives the bar.
+    if (!refresh.ok && 'error' in refresh) {
+      staleAtRevision.current = revisionBeforeRefresh;
+      setErr({
+        kind: 'refresh',
+        message: `${tr('courses.savedButRefreshFailed')} ${refresh.error.message}`,
+      });
+      return { mutated: true, ok: false };
+    }
+    return { mutated: true, ok: refresh.ok };
   };
 
   const add = async (v: CourseFormValues) => {
-    const ok = await run(() =>
+    // Clear the form whenever the course was actually added — including when the
+    // follow-up list refresh failed. Keying this off `ok` would keep the fields
+    // filled after a successful add and let the user add the same CRN twice.
+    const { mutated } = await run(() =>
       api.addTarget({
-        term: v.term, subject: v.subject, courseNumber: v.courseNumber, targetCrn: v.targetCrn,
-        faculty: v.faculty || undefined, label: v.label || undefined, mode: v.mode,
+        term: v.term,
+        subject: v.subject,
+        courseNumber: v.courseNumber,
+        targetCrn: v.targetCrn,
+        faculty: v.faculty || undefined,
+        label: v.label || undefined,
+        mode: v.mode,
       }),
     );
-    if (ok) setAddKey((k) => k + 1); // clear the form so the next course starts fresh
+    if (mutated) setAddKey((k) => k + 1); // remount (reset) the add form
   };
 
   const saveEdit = (id: string, v: CourseFormValues) =>
     run(async () => {
       await api.updateTarget(id, {
-        term: v.term, subject: v.subject, courseNumber: v.courseNumber, targetCrn: v.targetCrn,
-        faculty: v.faculty || undefined, label: v.label || undefined, mode: v.mode,
+        term: v.term,
+        subject: v.subject,
+        courseNumber: v.courseNumber,
+        targetCrn: v.targetCrn,
+        faculty: v.faculty || undefined,
+        label: v.label || undefined,
+        mode: v.mode,
       });
       setEditing(null);
     });
@@ -53,12 +118,26 @@ export default function Courses() {
         <h2 className="serif">{tr('courses.addACourse')}</h2>
       </div>
       <CourseForm key={addKey} submitLabel={tr('courses.addCourse')} onSubmit={add} />
-      {err && <div className="errbar">{err}</div>}
+      {err && <div className="errbar">{err.message}</div>}
 
       <div className="col-h" style={{ marginTop: 22 }}>
         <h2 className="serif">{tr('courses.managed')}</h2>
       </div>
-      {list.length === 0 ? (
+      {/* Branch order matters, and this is the defect: `list.length === 0` cannot
+          tell "you have no courses" from "we could not read your courses".
+          - no data AND an error: the bar alone, never the empty state (that is the
+            screen that invites re-adding a course the user still has, and
+            `addTarget` does not de-duplicate). Checked explicitly on `error` rather
+            than inferring it from `!settled`: a failed read *is* settled.
+          - no data, no error, not settled yet: the loading state.
+          - read, and the list really is empty: the empty state.
+          - read, and there is a list: the list, including the stale one a failed
+            refetch left behind, under the bar.
+          The add form stays mounted either way so a course can still be added. */}
+      <ResourceError resource={targets} label={tr('courses.loadFailedLabel')} />
+      {targets.data === undefined && targets.error ? null : !targets.settled ? (
+        <div className="empty glass">{tr('courses.loading')}</div>
+      ) : targets.data !== undefined && list.length === 0 ? (
         <div className="empty glass">{tr('courses.empty')}</div>
       ) : (
         <div className="cards">
@@ -68,8 +147,13 @@ export default function Courses() {
                 key={t.id}
                 submitLabel={tr('courses.save')}
                 initial={{
-                  term: t.term, subject: t.subject, courseNumber: t.courseNumber, targetCrn: t.targetCrn,
-                  faculty: t.faculty ?? '', label: t.label ?? '', mode: t.mode,
+                  term: t.term,
+                  subject: t.subject,
+                  courseNumber: t.courseNumber,
+                  targetCrn: t.targetCrn,
+                  faculty: t.faculty ?? '',
+                  label: t.label ?? '',
+                  mode: t.mode,
                 }}
                 onSubmit={(v) => saveEdit(t.id, v)}
                 onCancel={() => {
