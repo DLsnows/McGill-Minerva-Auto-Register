@@ -373,6 +373,33 @@ describe('Q5 — Host / Origin / CSRF guard', () => {
     expect(calls.stop).toBe(0);
   });
 
+  it('rejects an Origin whose scheme is not the one this API is served over', async () => {
+    // Rule 2 pins `http:`. Without that, `origin.name`/`origin.port` alone would
+    // accept `Origin: https://127.0.0.1:<port>` as "same-origin" — a scheme this
+    // server never speaks (it listens without TLS).
+    const r = await send(port, {
+      method: 'POST',
+      path: '/api/scheduler/stop',
+      headers: { host: `127.0.0.1:${port}`, origin: `https://127.0.0.1:${port}` },
+    });
+    expect(r.status).toBe(403);
+    expect(calls.stop).toBe(0);
+  });
+
+  it('pins rule 2 to the port the request arrived on, so a forged Host port cannot widen it', async () => {
+    // Rule 1 checks the Host *name* only (the bound port is not known when the
+    // server is built). Rule 2 is what pins the port: it compares against the Host
+    // the request actually carried, so name-only rule 1 cannot be paired with a
+    // free-floating Origin.
+    const r = await send(port, {
+      method: 'POST',
+      path: '/api/scheduler/stop',
+      headers: { host: '127.0.0.1:9999', origin: `http://127.0.0.1:${port}` },
+    });
+    expect(r.status).toBe(403);
+    expect(calls.stop).toBe(0);
+  });
+
   it('sends X-Frame-Options and a frame-ancestors CSP on responses (clickjacking)', async () => {
     const api = await send(port, { path: '/api/health', headers: sameOriginHeaders(port) });
     expect(api.headers['x-frame-options']).toBe('DENY');
@@ -478,13 +505,17 @@ describe('Q6 / Q18 — websocket upgrade origin + payload limit', () => {
     }
   });
 
-  it('caps the inbound payload size instead of accepting unlimited frames', async () => {
+  it('caps the inbound message size at 1 MiB (ws default was 100 MiB)', async () => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/stream`, {
       headers: { origin: `http://127.0.0.1:${port}` },
     });
     try {
       await firstMessage(ws); // snapshot => the connection is live
-      // 2 MiB is well past any legitimate client frame (the UI never sends one).
+      // 2 MiB is well past any legitimate client message (the UI never sends one)
+      // and still below the pre-fix limit: `ws@8`'s WebSocketServer default is
+      // `maxPayload: 100 * 1024 * 1024` (verified: `wss.options.maxPayload` is
+      // 104857600), NOT unlimited — so this asserts the ~100x tightening, not the
+      // difference between a limit and no limit at all.
       const result = await new Promise<string>((resolve) => {
         const timer = setTimeout(() => resolve('accepted'), 4000);
         ws.on('close', (code) => {
@@ -501,8 +532,34 @@ describe('Q6 / Q18 — websocket upgrade origin + payload limit', () => {
           resolve('error');
         }
       });
-      // The old default (maxPayload: 0) accepted this frame silently.
       expect(result).not.toBe('accepted');
+    } finally {
+      ws.terminate();
+    }
+  });
+
+  it('still delivers messages that stay under the 1 MiB cap', async () => {
+    // The other half of the cap's contract: it must not break the protocol. A
+    // client ping must survive, and the server's own broadcast path is unaffected.
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/stream`, {
+      headers: { origin: `http://127.0.0.1:${port}` },
+    });
+    try {
+      await firstMessage(ws);
+      const stillOpen = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(ws.readyState === WebSocket.OPEN), 1500);
+        ws.on('close', () => {
+          clearTimeout(timer);
+          resolve(false);
+        });
+        ws.on('error', () => {
+          clearTimeout(timer);
+          resolve(false);
+        });
+        ws.send('ping');
+        ws.ping();
+      });
+      expect(stillOpen).toBe(true);
     } finally {
       ws.terminate();
     }

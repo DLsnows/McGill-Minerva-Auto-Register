@@ -22,10 +22,19 @@ const ALLOWED_HOST_NAMES = new Set(['127.0.0.1', 'localhost', '::1']);
 /** Default ports per scheme, so `http://localhost` and `localhost:80` compare equal. */
 const DEFAULT_PORTS: Record<string, string> = { 'http:': '80', 'https:': '443' };
 
-/** Hard cap on a single inbound websocket frame. The UI never sends one at all
- * (`/api/stream` is a one-way broadcast), so this only bounds abuse — it is not a
- * protocol feature. `@fastify/websocket`'s default is 0 = unlimited. */
+/** Hard cap on a single inbound websocket *message* (after fragment
+ * reassembly — `maxPayload` bounds messages, not frames). `/api/stream` is a
+ * one-way broadcast and the UI never sends anything, so this only bounds abuse;
+ * it is not a protocol feature. Note the pre-fix limit was NOT unlimited: `ws@8`
+ * defaults `maxPayload` to `100 * 1024 * 1024` (verified:
+ * `new WebSocketServer({noServer:true}).options.maxPayload` === 104857600), so
+ * this is a ~100x tightening rather than a limit appearing where there was none. */
 const MAX_WS_PAYLOAD_BYTES = 1 << 20; // 1 MiB
+
+/** The only scheme the API is served over (`main.ts` listens on plain HTTP), so an
+ * `https://` Origin cannot be this application. Pinned rather than ignored: a
+ * scheme-blind comparison would accept `Origin: https://127.0.0.1:<port>`. */
+const EXPECTED_PROTOCOL = 'http:';
 
 /** Methods that cannot change server state, so they are exempt from the
  * content-type rule. The Host/Origin rules still apply to every method — a
@@ -45,6 +54,8 @@ const ALLOWED_SEC_FETCH_SITE = new Set(['same-origin', 'none']);
 interface ParsedAuthority {
   name: string;
   port: string;
+  /** Present for `Origin` (which carries a scheme), absent for `Host`. */
+  protocol?: string;
 }
 
 /** Split an HTTP authority (`host[:port]`, `[::1]:port`) into name + port.
@@ -88,7 +99,8 @@ function parseOriginHeader(origin: string | undefined): ParsedAuthority | null {
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
   if (!url.hostname) return null;
-  return splitAuthority(url.host, DEFAULT_PORTS[url.protocol] ?? '');
+  const authority = splitAuthority(url.host, DEFAULT_PORTS[url.protocol] ?? '');
+  return authority === null ? null : { ...authority, protocol: url.protocol };
 }
 
 /** `Content-Type` without its parameters, lower-cased (`application/json; c=1`). */
@@ -182,16 +194,20 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   // the JSON-parsing routes never object. The auditor reproduced a 200 for
   // `<form method=POST enctype=text/plain action=http://127.0.0.1:4575/api/scheduler/stop-all>`.
   //
-  // Three rules, all fail-closed, all applied before routing so no handler runs
+  // Four rules, all fail-closed, all applied before routing so no handler runs
   // on a rejected request:
   //   1. `Host` must be a loopback name — this is the DNS-rebinding gate (a
   //      rebound page has an attacker-controlled `Host` even though its origin
-  //      *looks* same-origin to the browser).
-  //   2. If `Origin` is present it must be byte-for-byte our own origin. It is
-  //      deliberately optional: browsers attach it to every cross-site request
-  //      (including forms and websocket handshakes), while curl and scripts omit
-  //      it, so "absent" is not evidence of an attack. A websocket upgrade is the
-  //      exception and requires it (see below).
+  //      *looks* same-origin to the browser). Name only; see the note at the check.
+  //   2. If `Origin` is present it must be this application's own origin: scheme
+  //      `http:` plus the same host and port as the request's own `Host` header.
+  //      The scheme is pinned explicitly rather than ignored, so an
+  //      `Origin: https://127.0.0.1:<port>` is not treated as same-origin (this API
+  //      is plain HTTP only — `main.ts` listens without TLS).
+  //      `Origin` is deliberately optional: browsers attach it to every cross-site
+  //      request (including forms and websocket handshakes), while curl and scripts
+  //      omit it, so "absent" is not evidence of an attack. A websocket upgrade is
+  //      the exception and requires it (see below).
   //   3. A request that carries a body must declare `application/json`, so the
   //      `text/plain` / urlencoded form postings that CORS lets through without a
   //      preflight are refused even if an Origin is somehow forged. Body-less
@@ -199,6 +215,8 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   //      for them (`packages/web/src/lib/api.ts`), and requiring it there would
   //      break every legitimate client for no additional protection — rule 2
   //      already covers that vector.
+  //   4. On write methods, a `Sec-Fetch-Site` that is present must be `same-origin`
+  //      or `none` (see the check below).
   //
   // Why the `Origin` requirement is ASYMMETRIC between plain HTTP and the
   // websocket upgrade, on purpose (do not "unify" these two — there is a test for
@@ -232,6 +250,11 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
       return done();
     };
 
+    // Rule 1 checks the Host *name* only, deliberately: the bound port is not known
+    // at `buildServer()` time (the caller picks it), and a browser's Host/Origin are
+    // bound to the URL it actually navigated to, so an attacker cannot pair an
+    // arbitrary port with a loopback name. Rule 2 is what pins the port — it compares
+    // Origin against whatever Host the request carried, so the two can never disagree.
     const host = parseHostHeader(req.headers.host);
     if (!host || !ALLOWED_HOST_NAMES.has(host.name)) {
       return refuse(403, 'forbidden: unexpected Host header');
@@ -245,7 +268,12 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     }
     if (rawOrigin !== undefined) {
       const origin = parseOriginHeader(rawOrigin);
-      if (!origin || origin.name !== host.name || origin.port !== host.port) {
+      if (
+        !origin ||
+        origin.protocol !== EXPECTED_PROTOCOL ||
+        origin.name !== host.name ||
+        origin.port !== host.port
+      ) {
         return refuse(403, 'forbidden: cross-origin request');
       }
     }
