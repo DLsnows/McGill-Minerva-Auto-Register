@@ -108,4 +108,17 @@ describe('parseSections', () => {
 </table>`;
     expect(parseSections(headerOnly)).toEqual([]);
   });
+
+  it('reads a row-less table with a missing column as an empty result, not as drift', () => {
+    // Same rule on the other "we do not understand this page" path: an empty
+    // results table whose header lost a column still tells us there is nothing
+    // to read, so it must stay an empty result instead of erroring forever.
+    const rowLess = `
+<table class="datadisplaytable"><caption class="captiontext">Sections Found</caption>
+<tr><th class="ddheader">CRN</th><th class="ddheader">Cap</th>
+<th class="ddheader">Act</th><th class="ddheader">Rem</th>
+<th class="ddheader">WL Cap</th><th class="ddheader">WL Act</th></tr>
+</table>`;
+    expect(parseSections(rowLess)).toEqual([]);
+  });
 });

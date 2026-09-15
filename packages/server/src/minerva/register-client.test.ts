@@ -348,4 +348,18 @@ ${schedRow('1814', 'Waitlist on Jun 01, 2026')}
     expect(submitCount).toBe(2);
     expect(outcome.kind).toBe('waitlist-available');
   });
+
+  it('does not blame a first submit for an outcome read from the unchanged worksheet', async () => {
+    const page = new FakePage();
+    page.html = RESULT_CLOSED; // leftover Registration Errors row from an earlier run
+    page.onSubmit = () => {
+      page.documentReplaced = false; // the response never replaces the page
+    };
+
+    const outcome = await clientFor(page).then((c) => c.act('202701', '1814', 'REGISTER'));
+
+    // Attributing the leftover row to this submit would silently report "closed"
+    // and skip a registration that may well have gone through.
+    expect(outcome.kind).toBe('unverified');
+  });
 });

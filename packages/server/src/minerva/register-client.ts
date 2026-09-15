@@ -96,7 +96,7 @@ export class RegisterClient {
         .selectOption('LW')
         .then(() => true)
         .catch(() => false);
-      if (ok) outcome = await this.submitChanges(page, crn);
+      if (ok) outcome = await this.submitChanges(page, crn, { acceptUnchanged: true });
     }
 
     if (outcome.kind === 'error' || outcome.kind === 'unverified') {
@@ -162,8 +162,17 @@ export class RegisterClient {
    * confirmed replacement). Anything else is re-read a bounded number of times;
    * `not-found` is never returned, and a submit whose result cannot be
    * established is reported as `unverified`.
+   *
+   * `acceptUnchanged` is for the LW re-submit only: the page it submits from is
+   * itself a readable answer (the waitlist offer), so when Minerva rejects the
+   * re-submit by re-rendering it, that offer is the result. Every other submit
+   * refuses to attribute an unchanged document's outcome to itself.
    */
-  private async submitChanges(page: Page, crn: string): Promise<RegisterOutcome> {
+  private async submitChanges(
+    page: Page,
+    crn: string,
+    opts: { acceptUnchanged?: boolean } = {},
+  ): Promise<RegisterOutcome> {
     // Mark FIRST, then snapshot: the mark becomes part of the serialized document
     // we are submitting from, so a later read of that same (un-replaced) document
     // has to compare equal to the snapshot. Snapshotting first would make the two
@@ -201,11 +210,10 @@ export class RegisterClient {
       const stillSubmittedFrom = !replaced && submittedFrom !== null && html === submittedFrom;
       if (stillSubmittedFrom) {
         // Same document we submitted from, and no replacement was observed: this
-        // is a pre-submit statement, not a result. Keep re-reading — but remember
-        // a definite outcome, because a submit that legitimately changes nothing
-        // re-renders this very page and then this IS the answer (an LW re-submit
-        // Minerva rejects still shows the waitlist offer).
-        if (outcome.kind !== 'not-found') fallback = outcome;
+        // is a pre-submit statement, not a result of this submit. Keep re-reading,
+        // but remember the waitlist offer — the LW re-submit is the one submit
+        // whose own trigger page can legitimately be re-rendered as its answer.
+        if (opts.acceptUnchanged && outcome.kind === 'waitlist-available') fallback = outcome;
         lastError = 'the page still shows the worksheet we submitted from';
         continue;
       }

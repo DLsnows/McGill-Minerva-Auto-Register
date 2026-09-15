@@ -5,6 +5,20 @@ import { PageStructureError, type SectionStats } from '@autoregister/shared';
 const REQUIRED = ['CRN', 'Cap', 'Act', 'Rem', 'WL Cap', 'WL Act', 'WL Rem'] as const;
 
 /**
+ * Number of 4-5 digit CRN-looking cells in a table's markup. A table with none
+ * carries no section rows, so there is nothing we could misread — and nothing
+ * worth reporting as a page-structure problem.
+ */
+function crnCellCount(tableHtml: string): number {
+  const $ = cheerio.load(tableHtml);
+  let cells = 0;
+  $('td').each((_, td) => {
+    if (/^\d{4,5}$/.test($(td).text().trim())) cells++;
+  });
+  return cells;
+}
+
+/**
  * True when a table's markup unmistakably IS a course-sections table — a CRN
  * header plus seat columns AND at least one real CRN row — even though its
  * caption is not the one we expect. Used to tell "Minerva renamed the caption"
@@ -24,15 +38,9 @@ function looksLikeSectionsTable(tableHtml: string): boolean {
     .each((_, th) => {
       labels.push($(th).text().trim().toLowerCase().replace(/\s+/g, ' '));
     });
-  const crnCol = labels.indexOf('crn');
-  if (crnCol < 0) return false;
+  if (!labels.includes('crn')) return false;
   if (!labels.some((l) => ['cap', 'act', 'rem'].includes(l))) return false;
-  let crnRows = 0;
-  $('tr').each((_, tr) => {
-    const tds = $(tr).find('td');
-    if (tds.length > crnCol && /^\d{4,5}$/.test($(tds[crnCol]).text().trim())) crnRows++;
-  });
-  return crnRows > 0;
+  return crnCellCount(tableHtml) > 0;
 }
 
 /**
@@ -91,6 +99,10 @@ export function parseSections(html: string): SectionStats[] {
   };
   const colValues = Object.values(cols);
   if (colValues.some((c) => c < 0)) {
+    // Symmetric with the caption path: a table with no section rows has nothing
+    // we could misread, so an empty result is the honest answer — not a page
+    // structure problem that would poll forever.
+    if (crnCellCount($.html(table)) === 0) return [];
     // The table is there, we just cannot read it: name the missing columns so a
     // Minerva change is diagnosable instead of looking like a bad CRN.
     const missing = REQUIRED.filter((_, i) => colValues[i] < 0);
