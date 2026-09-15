@@ -173,24 +173,31 @@ function validateDependabotGateAgreement(dependabotDoc, branchGateDoc) {
   if (!branchGateDoc) return;
 
   // Every ecosystem entry is considered, not just `updates[0]`: adding a `github-actions`
-  // block ahead of the npm one must not silently disable this guard, and the same rule
-  // applies to any entry that targets `dev`.
-  const entries = dependabotDoc?.updates ?? [];
-  const npmEntries = entries.filter((e) => e?.['package-ecosystem'] === 'npm');
+  // block ahead of the npm one must not silently disable this guard.
+  const npmEntries = (dependabotDoc?.updates ?? []).filter(
+    (e) => e?.['package-ecosystem'] === 'npm',
+  );
 
-  // `target-branch` absent means Dependabot falls back to the default branch (`prod`), which
-  // is exactly what this repository moved away from — and it is also what makes dependency
-  // PRs unmergeable under the promotion chain.
+  // The *value* is asserted, not mere presence. A truthy-but-wrong target (`staging`,
+  // `prod`) would otherwise pass, and the `dependabot/*` reconciliation below would then be
+  // skipped — validating clean while re-introducing exactly the failure this guard exists to
+  // prevent: the branch gate only admits `dependabot/*` into `dev`, so dependency PRs opened
+  // against any other branch are born red.
+  let allTargetDev = npmEntries.length > 0;
   for (const [i, entry] of npmEntries.entries()) {
+    const target = entry['target-branch'];
+    const ok = target === 'dev';
+    allTargetDev &&= ok;
     check(
-      Boolean(entry['target-branch']),
+      ok,
       `${label} (npm entry #${i + 1})`,
-      'the npm update entry must pin `target-branch: dev`; without it Dependabot opens PRs against the default branch (`prod`), which the promotion chain rejects',
+      `the npm update entry must pin \`target-branch: dev\` (got ${target === undefined ? 'nothing — Dependabot would use the default branch `prod`' : `\`${target}\``}); the branch gate only admits \`dependabot/*\` into \`dev\`, so PRs opened against any other branch are guaranteed to fail it`,
     );
   }
 
-  const targetsDev = npmEntries.some((entry) => entry['target-branch'] === 'dev');
-  if (!targetsDev) return; // nothing to reconcile with the gate
+  // Nothing to reconcile when no npm entry targets dev (the mismatch is already reported
+  // above, so an extra "must allow dependabot/*" message would just repeat it).
+  if (!allTargetDev) return;
 
   const steps = branchGateDoc?.jobs?.['branch-gate']?.steps ?? [];
   const gateRun = steps.map((s) => s?.run ?? '').join('\n');
