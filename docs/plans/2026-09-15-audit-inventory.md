@@ -11,12 +11,12 @@
 
 这 4 条在最关键路径上，调度者用下述命令亲手确认，不是只转述审计员的结论：
 
-| 条目 | 复核命令 | 复核结果 |
-|---|---|---|
-| **Q1** tick 无 `.catch()` | `Select-String -Path packages/server/src/scheduler/scheduler.ts -Pattern 'void this\.tick\|\.finally\('` | 只命中 `314: void this.tick().finally(` —— **无 `.catch()`**，全仓无 `unhandledRejection` 处理器 |
-| **Q2** 共用单一 Playwright page | 阅读 `session-manager.ts` 的 `getPage()` | `ctx.pages().find(p => !p.isClosed())` 返回**同一个 Page** 给所有调用者；全仓 `mutex\|lock\|queue\|semaphore` **零命中**（唯一匹配是注释文本） |
-| **Q3** `error` 是死状态 | `Select-String -Path packages/server/src/api/server.ts -Pattern 'paused'` + `CourseCard.tsx` 的 `PAUSABLE\|RESUMABLE` | `server.ts:199` 只捞 `filter(t => t.status === 'paused')`；`CourseCard.tsx:22-23` 的 `PAUSABLE=['watching']` / `RESUMABLE=['paused']` **都不含 `error`** |
-| **Q4** 注册后不等待结果页 | `Select-String -Path packages/server/src/minerva/register-client.ts -Pattern 'waitForSelector\|waitForLoadState\|page.content'` | `register-client.ts:52` 直接 `page.content()`；**对照** `query-client.ts:67` 有 `waitForSelector('table.datadisplaytable', { timeout: 8000 })` —— 注册路径**没有**对应等待 |
+| 条目                            | 复核命令                                                                                                                        | 复核结果                                                                                                                                                                   |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Q1** tick 无 `.catch()`       | `Select-String -Path packages/server/src/scheduler/scheduler.ts -Pattern 'void this\.tick\|\.finally\('`                        | 只命中 `314: void this.tick().finally(` —— **无 `.catch()`**，全仓无 `unhandledRejection` 处理器                                                                           |
+| **Q2** 共用单一 Playwright page | 阅读 `session-manager.ts` 的 `getPage()`                                                                                        | `ctx.pages().find(p => !p.isClosed())` 返回**同一个 Page** 给所有调用者；全仓 `mutex\|lock\|queue\|semaphore` **零命中**（唯一匹配是注释文本）                             |
+| **Q3** `error` 是死状态         | `Select-String -Path packages/server/src/api/server.ts -Pattern 'paused'` + `CourseCard.tsx` 的 `PAUSABLE\|RESUMABLE`           | `server.ts:199` 只捞 `filter(t => t.status === 'paused')`；`CourseCard.tsx:22-23` 的 `PAUSABLE=['watching']` / `RESUMABLE=['paused']` **都不含 `error`**                   |
+| **Q4** 注册后不等待结果页       | `Select-String -Path packages/server/src/minerva/register-client.ts -Pattern 'waitForSelector\|waitForLoadState\|page.content'` | `register-client.ts:52` 直接 `page.content()`；**对照** `query-client.ts:67` 有 `waitForSelector('table.datadisplaytable', { timeout: 8000 })` —— 注册路径**没有**对应等待 |
 
 ### 与本次已实现修复的对应关系（供批准时对比）
 

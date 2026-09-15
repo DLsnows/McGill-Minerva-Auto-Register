@@ -322,13 +322,10 @@ const CASES = [
         // single `innerText()` races that fetch and fails on a slower CI even though
         // nothing is wrong. (`waitFor` also lets the failure message carry the last
         // observed text rather than just "timed out".)
-        const value = await waitFor(
-          async () => {
-            const text = (await budgetCell(label).innerText()).trim();
-            return /^\d+ \/ \d+$/.test(text) && text === expected ? text : false;
-          },
-          `budget cell "${label}" to render "${expected}" (it renders a placeholder until /api/budget resolves)`,
-        );
+        const value = await waitFor(async () => {
+          const text = (await budgetCell(label).innerText()).trim();
+          return /^\d+ \/ \d+$/.test(text) && text === expected ? text : false;
+        }, `budget cell "${label}" to render "${expected}" (it renders a placeholder until /api/budget resolves)`);
         assertEqual(value, expected, `budget cell "${label}" value`);
       }
 
