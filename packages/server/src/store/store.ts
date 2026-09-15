@@ -1,16 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type {
-  DailyOps,
-  LogEvent,
-  Settings,
-  WatchStatus,
-  WatchTarget,
-} from '@autoregister/shared';
+import type { DailyOps, LogEvent, Settings, WatchStatus, WatchTarget } from '@autoregister/shared';
 import { DEFAULT_SETTINGS } from '@autoregister/shared';
 
 const DEFAULT_MAX_EVENTS = 2000;
+
+/** Blocking sleep, for the one retry in `save()`. Kept tiny: callers are
+ * synchronous (the HTTP request / the scheduler tick), so this must stay short
+ * enough to be imperceptible while still giving a transient AV/indexer lock on
+ * the temp file time to clear. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 interface StoreData {
   targets: WatchTarget[];
@@ -67,9 +69,7 @@ export class Store {
         } catch {
           // best-effort backup; if rename fails we still start fresh
         }
-        console.error(
-          `[store] Corrupt store.json — backed up to ${corruptPath}. Starting fresh.`,
-        );
+        console.error(`[store] Corrupt store.json — backed up to ${corruptPath}. Starting fresh.`);
         console.error(`[store] Parse error:`, err instanceof Error ? err.message : String(err));
       }
     }
@@ -81,8 +81,27 @@ export class Store {
     };
   }
 
+  /** Persist atomically (write-temp + rename). A failure here used to travel all
+   * the way out of the scheduler's timer callback: `writeFileSync` throws on a
+   * full disk or a file locked by AV/an indexer, the throw escaped `appendEvent`
+   * → `Scheduler.log` → the `void tick()` chain → an unhandled rejection → the
+   * whole Node process exits (Q1). One retry absorbs the common case (a transient
+   * lock on the freshly written temp file); if it still fails we rethrow, because
+   * pretending a write succeeded would silently drop the user's state — but the
+   * caller has been made non-fatal in the meantime (`Scheduler.log` falls back to
+   * stderr, and the in-memory state still updates so the app keeps running). */
   private save(): void {
     const tmp = `${this.file}.tmp`;
+    try {
+      writeFileSync(tmp, JSON.stringify(this.data, null, 2));
+      renameSync(tmp, this.file);
+      return;
+    } catch (err) {
+      console.error(
+        `[store] Failed to persist ${this.file}: ${err instanceof Error ? err.message : String(err)} — retrying once.`,
+      );
+      sleepSync(50);
+    }
     writeFileSync(tmp, JSON.stringify(this.data, null, 2));
     renameSync(tmp, this.file);
   }

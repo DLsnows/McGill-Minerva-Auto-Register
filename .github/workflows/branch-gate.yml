@@ -1,0 +1,79 @@
+name: Branch Gate
+
+# Enforces the promotion chain and keeps the long-lived branches clean:
+#   prod    <- staging | dev
+#   staging <- dev
+#   dev     <- feat/* | feature/* | dependabot/*
+#
+# Also rejects PRs whose head lives in a fork: `github.head_ref` is only a branch name
+# (a fork's `dev` branch would otherwise satisfy the promotion rules), and fork code must
+# never be treated as an in-repo promotion. Pure shell — no dependencies, no checkout.
+#
+# `dependabot/*` is allowed into `dev` on purpose. Dependabot is configured with
+# `target-branch: dev`, so every dependency PR it opens is named
+# `dependabot/npm_and_yarn/...`. Without this rule each one would be *guaranteed* to fail
+# the gate while still triggering the full CI matrix — producing exactly the kind of
+# permanently-red, unmergeable dependency PR this repository is trying to get rid of.
+# Dependency updates are reviewed and merged by a maintainer like any other PR, and the
+# branch name already identifies them as Dependabot-authored.
+#
+# Sub-task PRs whose base is a feature branch are intentionally NOT gated here; the
+# integration PR (feat/<integration> -> dev) is.
+
+on:
+  pull_request:
+    branches: [prod, staging, dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branch-gate:
+    runs-on: ubuntu-slim
+    steps:
+      - name: Check source branch
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          # Reject fork sources FIRST. github.head_ref is only a branch name (no fork
+          # prefix), so a fork's same-named 'dev'/'staging' branch would otherwise pass
+          # the promotion gate. The head must live in this repository.
+          if [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+            echo "::error::PR head must be a branch in $THIS_REPO, not a fork ($HEAD_REPO)."
+            exit 1
+          fi
+
+          # prod <- staging | dev
+          if [ "$BASE" = "prod" ]; then
+            if [ "$HEAD" != "staging" ] && [ "$HEAD" != "dev" ]; then
+              echo "::error::Only 'staging' or 'dev' can merge into 'prod'. Got: '$HEAD'"
+              exit 1
+            fi
+          fi
+
+          # staging <- dev
+          if [ "$BASE" = "staging" ] && [ "$HEAD" != "dev" ]; then
+            echo "::error::Only 'dev' can merge into 'staging'. Got: '$HEAD'"
+            exit 1
+          fi
+
+          # dev <- feat/* | feature/* | dependabot/*
+          if [ "$BASE" = "dev" ]; then
+            case "$HEAD" in
+              feat/*|feature/*|dependabot/*) ;;
+              *)
+                echo "::error::Only 'feat/*', 'feature/*' or 'dependabot/*' branches can merge into 'dev'. Got: '$HEAD'"
+                exit 1
+                ;;
+            esac
+          fi
+
+          echo "Branch gate passed: '$HEAD' -> '$BASE'"

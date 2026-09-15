@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import i18n, { detectInitialLang, setLang } from './index';
+import i18n, { LANGS, detectInitialLang, setLang } from './index';
 
 afterEach(() => {
   localStorage.clear();
@@ -30,5 +30,59 @@ describe('i18n', () => {
   it('interpolates values', () => {
     void i18n.changeLanguage('en');
     expect(i18n.t('ticker.minSuffix', { j: 3 })).toBe('± 3 min');
+  });
+
+  it('translates every keep-awake key in all three languages', () => {
+    // The keep-awake switch must be explained identically well in zh/en/fr —
+    // a missing key would silently fall back to English.
+    const keys = [
+      'settings.keepAwakeSection',
+      'settings.keepAwake',
+      'settings.keepAwakeAria',
+      'settings.keepAwakeNoSleep',
+      'settings.keepAwakeDisplayNote',
+      'settings.keepAwakeLaptopNote',
+      'settings.keepAwakeDesktopNote',
+      'settings.keepAwakeExitNote',
+      'settings.keepAwakeStatus',
+      'settings.keepAwakeStatusActive',
+      'settings.keepAwakeStatusBattery',
+      'settings.keepAwakeStatusDisabled',
+      'settings.keepAwakeStatusUnavailable',
+      'settings.keepAwakeStatusKeeperFailed',
+      'settings.keepAwakeStatusUnsupported',
+      'settings.keepAwakeStatusPending',
+      'settings.keepAwakeStatusStarting',
+    ];
+    for (const lng of LANGS) {
+      void i18n.changeLanguage(lng);
+      for (const key of keys) {
+        const value = i18n.t(key);
+        expect(value, `${lng} is missing ${key}`).not.toBe(key);
+        expect(value.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  // The operation-speed settings are user-facing copy: every language must
+  // actually carry it (the `typeof en` dictionaries catch missing keys at
+  // compile time; this catches empty or un-interpolated strings).
+  it('carries the operation-speed settings copy in all three languages', () => {
+    const keys = [
+      'settings.pacingSection',
+      'settings.opPause',
+      'settings.opJitter',
+      'settings.pacingHint',
+      'settings.pacingRange',
+    ];
+    for (const lang of LANGS) {
+      void i18n.changeLanguage(lang);
+      for (const key of keys) {
+        const value = i18n.t(key, { min: 250, max: 60000 });
+        expect(value, `${lang} → ${key}`).not.toBe(key);
+        expect(value, `${lang} → ${key}`).not.toContain('{{');
+        expect(value.trim().length, `${lang} → ${key}`).toBeGreaterThan(0);
+      }
+    }
   });
 });

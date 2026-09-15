@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CourseCard } from './CourseCard';
 import type { WatchTarget } from '@autoregister/shared';
@@ -29,7 +29,14 @@ describe('CourseCard', () => {
 
   it('fires onToggleMode with the flipped mode', async () => {
     const onToggleMode = vi.fn();
-    render(<CourseCard target={target} onToggleMode={onToggleMode} onRun={noop} onTogglePolling={noop} />);
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={onToggleMode}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
     await userEvent.click(screen.getByRole('button', { name: /toggle mode/i }));
     expect(onToggleMode).toHaveBeenCalledWith('t1', 'auto');
   });
@@ -43,7 +50,14 @@ describe('CourseCard', () => {
 
   it('pauses a watching course (onTogglePolling → paused)', async () => {
     const onTogglePolling = vi.fn();
-    render(<CourseCard target={target} onToggleMode={noop} onRun={noop} onTogglePolling={onTogglePolling} />);
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={onTogglePolling}
+      />,
+    );
     await userEvent.click(screen.getByRole('button', { name: /pause/i }));
     expect(onTogglePolling).toHaveBeenCalledWith('t1', 'paused');
   });
@@ -51,7 +65,12 @@ describe('CourseCard', () => {
   it('resumes a paused course (onTogglePolling → watching)', async () => {
     const onTogglePolling = vi.fn();
     render(
-      <CourseCard target={{ ...target, status: 'paused' }} onToggleMode={noop} onRun={noop} onTogglePolling={onTogglePolling} />,
+      <CourseCard
+        target={{ ...target, status: 'paused' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={onTogglePolling}
+      />,
     );
     await userEvent.click(screen.getByRole('button', { name: /resume/i }));
     expect(onTogglePolling).toHaveBeenCalledWith('t1', 'watching');
@@ -59,23 +78,278 @@ describe('CourseCard', () => {
 
   it('disables Resume and Register now when not logged in (Pause stays enabled)', () => {
     const { rerender } = render(
-      <CourseCard target={{ ...target, status: 'paused' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} loggedIn={false} />,
+      <CourseCard
+        target={{ ...target, status: 'paused' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        loggedIn={false}
+      />,
     );
     expect(screen.getByRole('button', { name: /resume/i })).toBeDisabled();
 
-    rerender(<CourseCard target={target} onToggleMode={noop} onRun={noop} onTogglePolling={noop} loggedIn={false} />);
+    rerender(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        loggedIn={false}
+      />,
+    );
     expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /pause/i })).toBeEnabled();
   });
 
-  it('does NOT offer Pause/Resume for terminal states (error, registered)', () => {
+  it('does NOT offer Pause/Resume for the completed states (registered, waitlisted)', () => {
     const { rerender } = render(
-      <CourseCard target={{ ...target, status: 'error' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />,
+      <CourseCard
+        target={{ ...target, status: 'registered' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /^▶ resume$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
+    rerender(
+      <CourseCard
+        target={{ ...target, status: 'waitlisted' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
     );
     expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
-    rerender(<CourseCard target={{ ...target, status: 'registered' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />);
-    expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
+  });
+
+  // Product side (feat/ci-and-ux-overhaul) rewrote the same base test as
+  // "offers no Pause/Resume for completed states (registered), but a recovery
+  // action for error". Its assertions are kept verbatim here, as a separate
+  // block, so that no assertion from either side of the merge is lost.
+  it('offers no Pause/Resume for completed states (registered), but a recovery action for error', () => {
+    const { rerender } = render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /^▶ resume$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
+    // 'error' is recoverable — the breaker parked it, the user can revive it.
+    expect(screen.getByRole('button', { name: /resume watching/i })).toBeInTheDocument();
+
+    rerender(
+      <CourseCard
+        target={{ ...target, status: 'registered' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /^▶ resume$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /resume watching/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
+  });
+
+  // Q3/Q20: `error` used to be a one-way door — no Pause/Resume was rendered and
+  // "Register now" is disabled for non-watching targets, so the corrected CRN the
+  // error message asks for could never be retried.
+  it('offers an explicit "Resume watching" action for a breaker-stopped (error) course', async () => {
+    const onTogglePolling = vi.fn();
+    render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={onTogglePolling}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: /resume watching/i });
+    expect(btn).toBeEnabled();
+    await userEvent.click(btn);
+    expect(onTogglePolling).toHaveBeenCalledWith('t1', 'watching'); // back to watching
+  });
+
+  it('disables "Resume watching" while logged out (like the paused Resume)', () => {
+    render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        loggedIn={false}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /resume watching/i })).toBeDisabled();
+  });
+
+  // Regression: the failure breaker sets status 'error' and the card used to
+  // render no way out of it at all (no pause, no resume, no immediate run) —
+  // only deleting and re-creating the course worked.
+  it('revives an error course through the shared resume action', async () => {
+    // One button, one action: an `error` target is recoverable through the same
+    // `onTogglePolling(id, 'watching')` path as a paused one. The Dashboard routes
+    // that call to the dedicated `/resume` endpoint for both states — that is what
+    // clears the failure streak — so the card needs no second callback, and two
+    // buttons for one behaviour is how a card ends up with contradictory affordances.
+    const onTogglePolling = vi.fn();
+    render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={onTogglePolling}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /resume watching/i }));
+    expect(onTogglePolling).toHaveBeenCalledWith('t1', 'watching');
+  });
+
+  it('blocks the error recovery action when logged out', () => {
+    render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        loggedIn={false}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /resume watching/i })).toBeDisabled();
+  });
+
+  // Regression (audit Q16/Q60): a dropped manual run must be visible. Before the
+  // fix the card only knew `running`, which the Dashboard cleared as soon as the
+  // POST returned, so a rejected request left no trace on screen at all.
+  it('shows the run notice when the manual run was not accepted', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        runNotice={{ text: 'A check for this course is already running', until: Date.now() + 30_000 }}
+      />,
+    );
+    expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i);
+  });
+
+  // The notice describes a cycle that was running *at that moment*, so it may not
+  // sit on the card forever: the client cannot observe the end of that cycle
+  // reliably, so it is shown for a bounded time (review finding — a stale
+  // "already running" line ended up next to a REGISTERED badge).
+  it('clears an expired run notice', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        runNotice={{ text: 'A check for this course is already running', until: Date.now() - 1 }}
+      />,
+    );
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
+
+  it('renders no run notice by default', () => {
+    render(<CourseCard target={target} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />);
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
+
+  it('disables Register now while the manual-run cooldown is active', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        coolingUntil={Date.now() + 30_000}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+    expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in \d+s/i);
+  });
+
+  it('re-enables Register now and drops the notice once the cooldown has passed', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        coolingUntil={Date.now() - 1}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled();
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
+
+  // Review finding: the cooldown string was frozen at response time, so it
+  // outlived the window and sat next to an enabled button. It must count down
+  // and clear itself.
+  it('counts the cooldown down and clears it when it expires', () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <CourseCard
+          target={target}
+          onToggleMode={noop}
+          onRun={noop}
+          onTogglePolling={noop}
+          coolingUntil={Date.now() + 3_000}
+        />,
+      );
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 3s/i);
+      expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+
+      act(() => {
+        vi.advanceTimersByTime(2_000);
+      });
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 1s/i);
+
+      act(() => {
+        vi.advanceTimersByTime(1_100);
+      });
+      expect(screen.queryByTestId('run-notice')).toBeNull();
+      expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review finding (8th round): after an accepted run that ends in a terminal
+  // state (the course registered within the window) the card kept offering "you
+  // can try again in Ns" next to a REGISTERED badge and a disabled button —
+  // the same stale-claim-next-to-a-terminal-badge contradiction that bounds the
+  // dropped notice.
+  it('does not show a cooldown notice on a course that is no longer watched', () => {
+    render(
+      <CourseCard
+        target={{ ...target, status: 'registered', lastForcedRunAt: Date.now() }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
+
+  // The server records the window on the target when it accepts a run, so a
+  // reload (or another tab) sees the cooldown without ever hitting a rejection.
+  it('derives the cooldown from the target’s lastForcedRunAt (server truth)', () => {
+    render(
+      <CourseCard
+        target={{ ...target, lastForcedRunAt: Date.now() - 20_000 }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+    expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 40s/i);
   });
 });

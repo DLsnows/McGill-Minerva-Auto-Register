@@ -171,9 +171,15 @@ Ouvrez ensuite **http://127.0.0.1:4575** et :
    chaque champ pour de l'aide ; le **Term** est le code de session Minerva
    (Hiver = …01, Été = …05, Automne = …09, p. ex. Hiver 2027 = `202701`). La
    faculté (Faculty) est obligatoire (p. ex. `Faculty of Science`).
-3. Onglet **Settings** → intervalle de sondage et gigue, budgets quotidiens de
-   requêtes/inscriptions, canaux de notification (bureau / son / courriel — voir
-   [`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md)), et le mode **Dry-run**.
+3. Onglet **Settings** → intervalle de sondage et gigue (fréquence des
+   vérifications), **vitesse des opérations** (temps d'attente entre les actions
+   *à l'intérieur* d'une vérification), budgets quotidiens de
+   requêtes/inscriptions, canaux de notification (bureau / son) et le mode
+   **Dry-run**.
+   > **Les notifications par courriel sont temporairement indisponibles** — la
+   > case courriel et le formulaire SMTP sont masqués et le serveur force ce canal
+   > à l'arrêt. Le guide de configuration
+   > ([`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md)) est conservé pour son retour.
 4. **Dashboard** → appuyez sur **Start all** pour commencer la surveillance. (Au
    démarrage, chaque cours est **en pause**, et *Start all* est désactivé tant que
    vous n'êtes pas connecté — donc rien n'est sondé tant que vous ne le lancez pas
@@ -194,6 +200,31 @@ il enregistre plutôt `DRY-RUN: would REGISTER <CRN>` et laisse le cours en
 surveillance. Surveillez la console pour confirmer qu'il se comporte comme prévu,
 puis désactivez le dry-run pour le laisser agir pour de vrai.
 
+## Interrupteur « garder éveillé » (Windows uniquement)
+
+Les paramètres proposent l'option **« Garder ce PC éveillé pendant l'exécution
+d'AutoRegister »**, désactivée par défaut. Activez-la et la machine ne se mettra
+pas en veille tant que l'application tourne — une inscription peut s'ouvrir à
+3 h du matin, et un PC endormi ne peut rien faire.
+
+Ses limites (également indiquées dans l'interface) :
+
+- **Pas de veille, mais l'écran s'éteint toujours.** L'écran garde son
+  comportement normal ; empêcher la veille n'empêche pas son extinction.
+- **Sur un portable, l'option ne s'applique que sur secteur.** Sur batterie, le
+  PC se met en veille comme d'habitude pour préserver votre autonomie, et le
+  maintien reprend automatiquement dès que le chargeur est branché (la source
+  d'alimentation est revérifiée toutes les 60 s).
+- **Sur un ordinateur de bureau**, elle reste active tant que l'option est
+  activée.
+- **Désactiver l'option ou quitter l'application rétablit immédiatement le
+  comportement normal.** Le maintien est assuré par un processus PowerShell
+  d'arrière-plan appelant
+  `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` ; dès qu'il se
+  termine, la demande disparaît. L'application **ne modifie jamais votre plan
+  d'alimentation** (pas de `powercfg /change`).
+- Le bloc entier est masqué sur les systèmes non Windows.
+
 ## Comment ça marche
 
 - **Décision** : à partir de `cap/act/rem` et `wlcap/wlact/wlrem` → REGISTER
@@ -202,6 +233,14 @@ puis désactivez le dry-run pour le laisser agir pour de vrai.
   éviter d'épuiser le **budget de requêtes** quotidien (100 par défaut) et le
   **budget d'inscriptions** (20 par défaut) — pour paraître humain et respecter
   les limites de l'école.
+- **Vitesse des opérations** : temps d'attente entre deux actions du navigateur
+  *à l'intérieur* d'une vérification (3000 ms ± 1000 ms de gigue par défaut ;
+  environ 9 actions par vérification). C'est un réglage différent de la
+  *fréquence* des vérifications : le baisser raccourcit une vérification. **Ne le
+  réglez pas de façon agressive** : 250 ms est un plancher absolu (une valeur de 0
+  reste bloquée à 250 ms), c'est une exigence anti-détection, et cliquer à toute
+  vitesse fait traiter l'automatisation comme un robot. Les valeurs par défaut sont
+  volontairement prudentes ; descendre sous ~1500 ms n'est pas recommandé.
 - **Par cours** : `auto` inscrit/met en liste d'attente automatiquement ;
   `notify` vous avertit seulement.
 
@@ -228,7 +267,11 @@ npm run lint
 npm run typecheck
 npm run test          # Vitest (projets node et web/jsdom)
 npm run build:web     # build web de production (servi par le serveur)
+npm run keep-awake:smoke -w @autoregister/server   # Windows uniquement : lance le vrai keeper et vérifie qu'il est bien arrêté
 ```
+
+> Les tests unitaires ne lancent jamais PowerShell (spawn / source d'alimentation
+> injectés). Utilisez `keep-awake:smoke` pour vérifier le comportement réel.
 
 Monorepo Node + TypeScript (npm workspaces) : `packages/{shared,server,web}` —
 Playwright (automatisation du navigateur), Fastify + WebSocket (API), interface

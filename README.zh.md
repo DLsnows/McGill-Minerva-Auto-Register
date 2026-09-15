@@ -130,9 +130,12 @@ npm run serve
 2. **Courses** 标签页 → 添加要盯的课。把鼠标悬停在每个字段的 `?` 上看说明;
    **Term** 是 Minerva 的学期代码(Winter = …01,Summer = …05,Fall = …09,
    比如 Winter 2027 = `202701`)。Faculty 是必填的(比如 `Faculty of Science`)。
-3. **Settings** 标签页 → 轮询间隔和抖动、每日查询/注册额度、通知方式(桌面 /
-   声音 / 邮件 —— 见 [`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md))、以及
-   **Dry-run** 模式。
+3. **Settings** 标签页 → 轮询间隔和抖动(决定**多久查一次**)、**操作速度**
+   (决定**一次查询内部**每个操作之间等多久)、每日查询/注册额度、通知方式(桌面 /
+   声音)、以及 **Dry-run** 模式。
+   > **邮件通知已暂时下架** —— Email 开关和 SMTP 表单已隐藏,服务端也会强制关闭
+   > 该通道。配置指南([`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md))仍然保留,
+   > 供将来恢复时使用。
 4. **Dashboard** → 点 **Start all** 开始盯课。(启动时每门课都是**暂停**状态,
    而且在你登录之前 *Start all* 是禁用的 —— 所以不点就不会轮询。你也可以在每张
    卡片上单独 **Pause / Resume** 暂停或恢复。)实时控制台会把每次
@@ -148,12 +151,35 @@ npm run serve
 地方,改成打一条 `DRY-RUN: would REGISTER <CRN>` 的日志,并让那门课继续保持盯着。
 盯着控制台确认它的行为符合预期,然后把 dry-run 关掉,就能让它来真的了。
 
+## 不休眠开关(仅 Windows)
+
+设置页里有一个 **「运行期间不让这台电脑自动休眠」** 开关,默认关闭。打开之后,
+只要本程序在跑,电脑就不会自动进入睡眠 —— 因为抢课可能发生在深夜或凌晨,机器睡着了
+就什么都做不了。
+
+它的边界(界面上也会写清楚):
+
+- **只防休眠,不防关屏。** 显示器仍会照常关闭省电;不休眠 ≠ 不关屏。
+- **笔记本只在接着电源时生效。** 用电池时会自动放行休眠,保护你的续航;插上电源后
+  会自动恢复(程序每 60 秒检查一次电源状态)。
+- **台式机**开关打开期间全程生效。
+- **关掉开关或退出本程序后,电源行为立即恢复。** 实现方式是由一个后台 PowerShell 子进程
+  持有 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`;子进程一退出
+  这个请求就失效。**本程序不会修改你的电源计划**(不使用 `powercfg /change`)。
+- 非 Windows 系统上这个开关整块不显示。
+
 ## 工作原理
 
 - **判断**:根据 `cap/act/rem` 和 `wlcap/wlact/wlrem` → REGISTER(有空位)、
   WAITLIST(有候补名额)、或 NO-OP(不操作)。
 - **节奏**:一个基础间隔(默认 30 分钟)± 抖动,并会拉长以避免把每日**查询额度**
   (默认 100)和**注册额度**(默认 20)用光 —— 既显得像真人,也尊重学校的限制。
+- **操作速度**:一次查询**内部**,每两个浏览器操作之间等待多久(默认 3000 毫秒 ±
+  1000 毫秒抖动,一次查询大约有 9 个操作)。它和上面的「多久查一次」是两件不同的
+  事:调小它会让单次查询整体跑得更快。**不要设得过于激进** —— 250 毫秒是硬性
+  下限(即使设置成 0 也不会更快),这是反检测设计要求;把节奏打满容易让 Minerva
+  把自动化判定为机器人。默认值已经偏保守,除非你清楚风险,否则不建议调到
+  1500 毫秒以下。
 - **每门课**:`auto` 自动注册/候补;`notify` 只通知你。
 
 ## 排查问题
@@ -176,7 +202,11 @@ npm run lint
 npm run typecheck
 npm run test          # Vitest(node 与 web/jsdom 两个 project)
 npm run build:web     # 生产环境 web 构建(由服务器托管)
+npm run keep-awake:smoke -w @autoregister/server   # 仅 Windows:真跑一次不休眠 keeper 并验证进程被清理
 ```
+
+> 单元测试**不会**真的启动 PowerShell（注入假的 spawn / 电源状态读取）；
+> 需要验证真机行为时跑上面那条 `keep-awake:smoke`。
 
 Node + TypeScript 的 monorepo(npm workspaces):`packages/{shared,server,web}` ——
 Playwright(浏览器自动化)、Fastify + WebSocket(API)、React + Vite + Tailwind
