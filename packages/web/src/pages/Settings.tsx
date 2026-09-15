@@ -91,9 +91,7 @@ function NumField({
         max={max}
         step={step}
         onChange={(e) =>
-          onChange(
-            rejectEmpty && e.target.value.trim() === '' ? NaN : Number(e.target.value),
-          )
+          onChange(rejectEmpty && e.target.value.trim() === '' ? NaN : Number(e.target.value))
         }
       />
     </label>
@@ -134,23 +132,58 @@ export default function SettingsPage() {
     };
   }, []);
 
+  /**
+   * Whether the settings we were *served* carried the operation-speed fields.
+   *
+   * Captured once, from the server's payload — deliberately **not** derived from
+   * `form`. `Settings` declares both fields as required, so the type system
+   * cannot see this case, but a server older than the feature (or an intermediary
+   * serving a cached body) returns them as `undefined` at runtime. Deriving it
+   * from `form` instead would flip the flag to `false` the moment a user clears
+   * one of the inputs (`Number('')` in `NumField` with `rejectEmpty` gives `NaN`),
+   * silently skipping the range check and letting a blank pause reach the server.
+   *
+   * This is not hypothetical: it is the shape of the real defect this branch
+   * fixes, where the e2e fake backend omitted both fields, the page rendered them
+   * as blanks coerced to `0`, and *every* save was then refused behind a
+   * misleading "operation speed must be a number" — including unrelated ones.
+   */
+  const [pacingSupported, setPacingSupported] = useState(false);
+
   useEffect(() => {
     if (settings.data && !form) {
       setForm(settings.data);
+      setPacingSupported(
+        Number.isFinite(settings.data.opPauseMs) && Number.isFinite(settings.data.opJitterMs),
+      );
     }
   }, [settings.data, form]);
 
   if (!form) return <div className="empty">{t('settings.loading')}</div>;
 
+  const pacingKnown = pacingSupported;
+
   const save = async () => {
-    if (!isPacingValid(form)) {
+    if (pacingKnown && !isPacingValid(form)) {
       setErr(t('settings.pacingRange', { min: OP_PAUSE_MIN, max: OP_PAUSE_MAX }));
       setSaved(false);
       return;
     }
     setErr(undefined);
     try {
-      await api.putSettings(form);
+      // `{ ...form }` with the two pacing fields removed, rather than a whitelist of
+      // every field the server accepts: this page must keep working across branches
+      // whose `Settings` types differ (keep-awake adds `keepAwake`), and a
+      // whitelist written here would silently drop whichever field it did not know
+      // about. A rest-destructure cannot be used to omit them — it needs two unused
+      // bindings and this repo's `@typescript-eslint/no-unused-vars` has no
+      // `_`-prefix exception — so the omission is explicit instead.
+      const patch: Partial<Settings> = { ...form };
+      if (!pacingSupported) {
+        delete patch.opPauseMs;
+        delete patch.opJitterMs;
+      }
+      await api.putSettings(patch);
       // Refresh BOTH resources: the budget snapshot carries the daily limits, so
       // saving a new limit without re-reading the budget would leave the ticker
       // pairing the new limit with the old op-count. `refetch` reports (and does
@@ -287,34 +320,38 @@ export default function SettingsPage() {
         </>
       )}
 
-      <div className="col-h" style={{ marginTop: 22 }}>
-        <h2 className="serif">{t('settings.pacingSection')}</h2>
-      </div>
-      <div className="card glass">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-          <NumField
-            label={t('settings.opPause')}
-            value={form.opPauseMs}
-            min={OP_PAUSE_MIN}
-            max={OP_PAUSE_MAX}
-            step={50}
-            rejectEmpty
-            onChange={(n) => setForm({ ...form, opPauseMs: n })}
-          />
-          <NumField
-            label={t('settings.opJitter')}
-            value={form.opJitterMs}
-            min={0}
-            max={OP_PAUSE_MAX}
-            step={50}
-            rejectEmpty
-            onChange={(n) => setForm({ ...form, opJitterMs: n })}
-          />
-        </div>
-        <div style={{ color: 'var(--tx-2)', fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
-          ⏱ {t('settings.pacingHint', { min: OP_PAUSE_MIN, max: OP_PAUSE_MAX })}
-        </div>
-      </div>
+      {pacingKnown && (
+        <>
+          <div className="col-h" style={{ marginTop: 22 }}>
+            <h2 className="serif">{t('settings.pacingSection')}</h2>
+          </div>
+          <div className="card glass">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+              <NumField
+                label={t('settings.opPause')}
+                value={form.opPauseMs}
+                min={OP_PAUSE_MIN}
+                max={OP_PAUSE_MAX}
+                step={50}
+                rejectEmpty
+                onChange={(n) => setForm({ ...form, opPauseMs: n })}
+              />
+              <NumField
+                label={t('settings.opJitter')}
+                value={form.opJitterMs}
+                min={0}
+                max={OP_PAUSE_MAX}
+                step={50}
+                rejectEmpty
+                onChange={(n) => setForm({ ...form, opJitterMs: n })}
+              />
+            </div>
+            <div style={{ color: 'var(--tx-2)', fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
+              ⏱ {t('settings.pacingHint', { min: OP_PAUSE_MIN, max: OP_PAUSE_MAX })}
+            </div>
+          </div>
+        </>
+      )}
 
       {err && <div className="errbar">{err}</div>}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14 }}>

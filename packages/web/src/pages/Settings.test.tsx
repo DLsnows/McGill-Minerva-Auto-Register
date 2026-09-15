@@ -7,12 +7,12 @@ import { api } from '../lib/api';
 import { ZERO_BUDGET } from '../lib/budget-fixture';
 
 const LOADED_SETTINGS = {
-      pollIntervalMinutes: 30,
-      jitterMinutes: 3,
-      opPauseMs: 3000,
-      opJitterMs: 1000,
-      queryBudget: 100,
-      registerBudget: 20,
+  pollIntervalMinutes: 30,
+  jitterMinutes: 3,
+  opPauseMs: 3000,
+  opJitterMs: 1000,
+  queryBudget: 100,
+  registerBudget: 20,
   notify: { desktop: true, sound: true, email: false },
 };
 
@@ -94,7 +94,47 @@ describe('Settings', () => {
     );
   });
 
-  it('has no email / SMTP UI at all (feature temporarily sunset)', async () => {    mockAll();
+  it('saves an unrelated change when the server never sent the pacing fields', async () => {
+    // Claude review on #36, non-blocking note: `isPacingValid(form)` gated the
+    // *entire* save, so a `settings.data` without `opPauseMs`/`opJitterMs` (a
+    // server older than this feature, or a cached body from one) made the page
+    // refuse every change -- including an unrelated toggle -- behind a
+    // misleading "operation speed must be a number".
+    //
+    // This is not hypothetical: it is the same shape as the real defect this
+    // branch fixes, where the e2e fake backend omitted the two fields and the
+    // page rendered them as blanks that `NumField` coerced to 0. A field the
+    // server never sent is a field the page must not write.
+    mockAll();
+    const staleSettings: Record<string, unknown> = { ...LOADED_SETTINGS };
+    delete staleSettings.opPauseMs;
+    delete staleSettings.opJitterMs;
+    vi.spyOn(api, 'getSettings').mockResolvedValue(staleSettings as never);
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue(staleSettings as never);
+
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+
+    // The section is hidden rather than rendered as two blank, un-saveable inputs.
+    expect(screen.queryByLabelText('Pause between operations (ms)')).not.toBeInTheDocument();
+
+    await userEvent.clear(screen.getByLabelText('Poll interval (min)'));
+    await userEvent.type(screen.getByLabelText('Poll interval (min)'), '45');
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const body = put.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.pollIntervalMinutes, 'the real edit must reach the server').toBe(45);
+    // Crucially: no `opPauseMs: 0`, which the real schema rejects with a raw 400
+    // (`min(250)`) and which would overwrite the persisted value with a blank.
+    expect(body).not.toHaveProperty('opPauseMs');
+    expect(body).not.toHaveProperty('opJitterMs');
+    // And the misleading pacing error is not what the user is shown.
+    expect(screen.queryByText(/operation speed must be a number/i)).not.toBeInTheDocument();
+  });
+
+  it('has no email / SMTP UI at all (feature temporarily sunset)', async () => {
+    mockAll();
     renderSettings();
     await waitFor(() => screen.getByLabelText('Poll interval (min)'));
     // The toggle, the section heading and every SMTP input are gone.
@@ -228,7 +268,9 @@ describe('Settings', () => {
     await userEvent.type(jitter, '400');
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
     await waitFor(() =>
-      expect(put).toHaveBeenCalledWith(expect.objectContaining({ opPauseMs: 1500, opJitterMs: 400 })),
+      expect(put).toHaveBeenCalledWith(
+        expect.objectContaining({ opPauseMs: 1500, opJitterMs: 400 }),
+      ),
     );
   });
 
