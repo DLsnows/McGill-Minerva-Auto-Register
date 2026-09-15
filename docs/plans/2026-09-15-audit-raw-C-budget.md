@@ -77,8 +77,13 @@
   ```
   ```tsx
   // packages/web/src/pages/Settings.tsx:61-68 —— 只看 data，永远不看 error/loading
-  useEffect(() => { if (settings.data && !form) { setForm(settings.data); setEmail(settings.data.email ?? EMPTY_EMAIL); } }, [settings.data, form]);
-  if (!form) return <div className="empty">{t('settings.loading')}</div>;   // '加载设置中…'
+  useEffect(() => {
+    if (settings.data && !form) {
+      setForm(settings.data);
+      setEmail(settings.data.email ?? EMPTY_EMAIL);
+    }
+  }, [settings.data, form]);
+  if (!form) return <div className="empty">{t('settings.loading')}</div>; // '加载设置中…'
   ```
 - **验证备注**: 主体证据（错误被吞、无重试、无消费者）逐条成立，且与设计文档 §6 的显式要求冲突，维持 medium。被修正的是变体 C 的定性：不是"假成功"，而是"成功但显示不同步"。若不修掉这一处措辞，读者会以为 PUT 失败了。
 - **建议**: `refetch` 失败时保留并可重试（`refetch` 已经暴露，只要渲染出来即可），设置页与 Shell 至少渲染 `settings.error` + 「重试」按钮；ticker 在 settings/budget 有 error 时显示占位符而不是默认预算；`Settings.tsx:85` 的「已保存」应以 PUT 成功为准，并把随后的 refetch 失败单独提示。
@@ -91,7 +96,8 @@
 - **证据**:
   ```tsx
   // packages/web/src/pages/Settings.tsx:62-66
-  if (settings.data && !form) {        // 只在第一次拿到 data 时写入，之后永不 resync
+  if (settings.data && !form) {
+    // 只在第一次拿到 data 时写入，之后永不 resync
     setForm(settings.data);
     setEmail(settings.data.email ?? EMPTY_EMAIL);
   }
@@ -147,10 +153,11 @@
   ```ts
   // packages/server/src/api/server.ts:137-144
   const cadenceChanged =
-    (parsed.data.pollIntervalMinutes !== undefined && parsed.data.pollIntervalMinutes !== before.pollIntervalMinutes) ||
+    (parsed.data.pollIntervalMinutes !== undefined &&
+      parsed.data.pollIntervalMinutes !== before.pollIntervalMinutes) ||
     (parsed.data.jitterMinutes !== undefined && parsed.data.jitterMinutes !== before.jitterMinutes);
   const updated = deps.store.setSettings(parsed.data as Partial<Settings>);
-  if (cadenceChanged) deps.scheduler.rescheduleWatching?.();   // 预算变化走不到这里
+  if (cadenceChanged) deps.scheduler.rescheduleWatching?.(); // 预算变化走不到这里
   ```
 - **验证备注**: 逐行核对无误，`rescheduleWatching` 本身（`scheduler.ts:288-292`）实现正确、只是触发条件不含预算字段；`ApiScheduler.rescheduleWatching?` 是可选方法（`server.ts:29-31` 注释说明是给测试替身留的口子），不影响本判定。low 定级合适（延迟生效，无超支、无数据损坏）。
 - **建议**: 把预算字段纳入 `cadenceChanged` 判定（或比较 before/after 的预算差异），预算变化后同样调用 `rescheduleWatching()`。
@@ -165,7 +172,7 @@
   // packages/web/src/pages/Settings.tsx:83-85
   await api.putSettings({ ...form, email: form.notify.email || emailComplete ? email : undefined });
   await settings.refetch();
-  setSaved(true);        // email 分支并未真正保存，提示照样显示
+  setSaved(true); // email 分支并未真正保存，提示照样显示
   ```
 - **验证备注**: 行号有 1 行偏差（`setSaved(true)` 在 85，`catch` 在 86-89），语义完全正确；`Settings.tsx:80-82` 的注释表明"完整才持久化、避免用半截配置覆盖"是有意为之，缺的是"清空"这一显式语义，所以是 low 而非 medium。
 - **附带核实（同源、同为 low，未达新增条目门槛）**: `saved` 徽标（`Settings.tsx:59/85/156`）在保存成功后不会因后续编辑而清除——用户改完预算点保存看到「Saved ✓」，随后又改了别的字段但没有再点保存时，徽标仍在，界面在断言一份并未持久化的状态；此时离开页面会在重新挂载时静默丢弃这次编辑。它与本条同属"界面声称已保存"的一类，修法相同（编辑时清 `saved`、用服务端返回值回填表单）。

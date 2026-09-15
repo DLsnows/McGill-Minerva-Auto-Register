@@ -1,0 +1,9 @@
+# Revisions whose changes are pure formatting — exclude them from `git blame`.
+#
+# Usage (opt in per clone; GitHub also honours this file for blame on the web UI):
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Add one line per bulk-format commit, newest first.
+
+# docs/plans: reformatted so the directory could join the formatting gate (whitespace only)
+1f5e0229c9464ad17d0244e641c41ab250d73f81

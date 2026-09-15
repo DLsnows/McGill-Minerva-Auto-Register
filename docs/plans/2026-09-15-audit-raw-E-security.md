@@ -125,7 +125,7 @@
   1. **设计意图显式声明的非目标**：`docs/superpowers/specs/2026-06-02-p7-web-frontend-design.md:9`「单用户、本地运行（绑定 127.0.0.1），无需鉴权」、:121「非目标：鉴权/多用户/远程访问」，`2026-06-01-autoregister-design.md:38` 同。原报告自己也引用了这条，却仍按对外服务定级。
   2. **现代 Chrome 的 LNA 权限门控**：从 Chrome 138 可 opt-in、按官方博客「launching in Chrome 142」默认开启，公网 → 本地/回环的 `fetch()`、子资源、子框架导航请求会被 Local Network Access 权限提示拦下，且该权限**只能由安全上下文申请**（攻击者的 `http://` 页面连申请资格都没有）。这正是本条的攻击面。参见 [Chrome for Developers 公告](https://developer.chrome.com/blog/local-network-access)。
   3. **混合内容约束攻击者只能用 `http://` 页面**：官方文档写明「公网域名即使解析到本地地址也不获得混合内容豁免」，所以 https 页面 fetch `http://evil.example:4575` 会被拦，攻击者必须让用户访问一个明文 http 页面。
-  残余风险仍然真实（Firefox/Safari/旧版 Chrome 无 LNA；同机其他账号；一旦 LNA 未生效则可静默读写含 SMTP 凭据的全部状态）→ **medium**，而不是 high，更不是可忽略。
+     残余风险仍然真实（Firefox/Safari/旧版 Chrome 无 LNA；同机其他账号；一旦 LNA 未生效则可静默读写含 SMTP 凭据的全部状态）→ **medium**，而不是 high，更不是可忽略。
 - **建议（原报告的方案可用，建议加强）**: `onRequest` 钩子校验 `Host` ∈ `127.0.0.1|localhost|[::1]`（含端口），存在 `Origin` 时必须与 Host 同源否则 403；更强做法是启动时生成一次性 token 注入 `index.html`，前端所有请求带该头（对 DNS rebinding 与同机其他进程都有效）。
 
 ### [high → medium] SMTP 密码明文落盘，并以明文经 `GET/PUT /api/settings` 原样往返

@@ -4,9 +4,4 @@ node_modules
 coverage
 package-lock.json
 .github/workflows
-# Agent working documents (plans, specs, task briefs, audit inventories). Prose artifacts
-# that change often and are full of CJK text — Prettier pads Markdown table columns by
-# display width, so reflowing one rewrites hundreds of lines with zero semantic change, and
-# every later edit then conflicts. Kept out of the formatting gate, like docs/superpowers.
 docs/superpowers
-docs/plans
