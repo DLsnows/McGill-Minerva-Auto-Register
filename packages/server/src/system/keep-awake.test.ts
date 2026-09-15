@@ -730,5 +730,132 @@ describe('keep-awake', () => {
       // And the fall-through must be the AC branch, so the charged states still hold.
       expect(script).toMatch(/Write-Output 'ac'/);
     });
+
+    it('treats an undefined BatteryStatus as unknown, not as AC', async () => {
+      // 0 and 10 are documented as "undefined" — the same class of outcome as a
+      // failed query. Mapping them to `ac` held a laptop's sleep off on the strength
+      // of a reading we did not understand; only a reading we understand may justify
+      // a hold. `battery` would also be wrong: it would misreport a desktop whose
+      // firmware reports 0.
+      const script = POWER_QUERY_SCRIPT;
+      const branchFor = (codes: string) =>
+        new RegExp(
+          `@\\(${codes}\\)\\s*-contains\\s*\\$battery\\[0\\]\\.BatteryStatus\\)\\s*\\{\\s*Write-Output\\s*'([a-z]+)'`,
+        ).exec(script)?.[1];
+      expect(branchFor('1, 4, 5'), 'discharging codes').toBe('battery');
+      expect(branchFor('0, 10'), 'undefined codes').toBe('unknown');
+      // The branch must come BEFORE the AC fall-through, or it can never be reached.
+      const undefinedIdx = script.indexOf("'unknown'; exit 0 }\nWrite-Output 'ac'");
+      expect(
+        undefinedIdx,
+        'undefined-status branch must precede the AC fall-through',
+      ).toBeGreaterThan(-1);
+    });
+
+    it('re-reads the power source on every watchdog tick, not every other one', async () => {
+      // Claude review on #37: the watchdog shared `PROBE_STALE_MS` with the
+      // settings-save path, but `lastProbeAt` is stamped when the probe *finishes* —
+      // ~0.5s after the tick that started it — so the next tick measured ~59.5s and
+      // skipped its re-read. The check therefore ran every ~120s while the UI
+      // promised 60s, and a laptop unplugged just after a reading could stay held
+      // awake on battery for up to two minutes.
+      //
+      // The probe must therefore CONSUME time for this test to reproduce the defect:
+      // with an instantaneous probe the timestamp lands on the tick boundary and the
+      // old code passes. Each probe here burns PROBE_DURATION_MS of the fake clock,
+      // exactly as the real PowerShell round trip does.
+      const PROBE_DURATION_MS = 500;
+      vi.useFakeTimers();
+      const h = harness();
+      let source: PowerSource = 'ac';
+      const probe = vi.fn(async (): Promise<PowerSource> => {
+        await vi.advanceTimersByTimeAsync(PROBE_DURATION_MS);
+        return source;
+      });
+      const manager = makeManager(h, 'win32', probe);
+
+      await manager.start();
+      await flush();
+      expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
+      let reads = probe.mock.calls.length;
+
+      // Unplug. The watchdog tick fires one interval after the previous tick — which
+      // is only ~59.5s after the last probe *finished* — and must still re-read.
+      source = 'battery';
+      await vi.advanceTimersByTimeAsync(POWER_POLL_MS);
+      expect(probe.mock.calls.length, 'the tick after a completed probe must re-read').toBe(
+        reads + 1,
+      );
+      expect(manager.status()).toMatchObject({ active: false, reason: 'battery' });
+
+      // And again on the next tick, so the cadence is one read per interval rather
+      // than the ~2 intervals the shared staleness boundary produced.
+      reads = probe.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(POWER_POLL_MS);
+      expect(probe.mock.calls.length).toBe(reads + 1);
+
+      manager.stop();
+    });
+
+    it('resets the failure state when the switch is turned off, even with no keeper alive', async () => {
+      // `killChild()` used to reset `keeperFailed` behind `if (!child) return`, so
+      // when the keeper had already died on its own, toggling off and on left the
+      // switch reporting "Failed" and refusing to retry for up to 15 minutes.
+      vi.useFakeTimers();
+      const h = harness();
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      let failing = true;
+      const spawn = vi.fn(() => {
+        if (failing) throw new Error('spawn powershell.exe EPERM');
+        const child = new FakeChild();
+        h.children.push(child);
+        queueMicrotask(() => child.emitReady());
+        return child as unknown as ChildProcess;
+      });
+      const manager = createKeepAwake({
+        platform: 'win32',
+        spawn: spawn as never,
+        getPowerSource: () => 'ac',
+      });
+
+      await manager.start();
+      expect(manager.status()).toMatchObject({ reason: 'keeperFailed' });
+
+      // Switch off, then on again: the re-enable must start from a clean slate.
+      manager.stop();
+      failing = false;
+      // `start()` resolves before the keeper has confirmed its hold (that arrives on
+      // the stdout microtask and is reported by the next status read), so assert the
+      // state after the READY line has landed. The point of this test is that the
+      // retry is not deferred by the old backoff — hence the immediate re-spawn.
+      await manager.start();
+      await flush();
+      expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
+
+      manager.stop();
+    });
+
+    it('does not treat a late error from a released keeper as a failure', async () => {
+      // The `error` handler used to call `noteKeeperFailure()` even when the child was
+      // no longer current, so a deliberate release whose grace-period `kill()` then
+      // errored was recorded as `keeperFailed`.
+      vi.useFakeTimers();
+      const h = harness();
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const manager = makeManager(h, 'win32', () => 'ac');
+
+      await manager.start();
+      await flush();
+      expect(manager.status()).toMatchObject({ active: true });
+      const child = h.children[0];
+
+      manager.stop();
+      // The keeper emits a late error after we let it go.
+      child.emit('error', new Error('kill failed'));
+      expect(manager.status()).toMatchObject({ reason: 'disabled' });
+
+      await vi.advanceTimersByTimeAsync(KEEPER_EXIT_GRACE_MS);
+      expect(manager.status()).toMatchObject({ reason: 'disabled' });
+    });
   });
 });

@@ -162,16 +162,23 @@ exit 0
  * silently breaking the one guarantee this feature makes. A failure must degrade
  * to `unknown` (→ "unavailable"), never to a hold.
  *
- * `Win32_Battery.BatteryStatus`: 1 = discharging, 4 = Low, 5 = Critical. Per the
- * Win32_Battery docs 4 and 5 also mean the battery is *draining* — they are not
- * "on AC" — so all three must take the battery branch. Treating 4/5 as `ac` made a
- * laptop at 10% on battery read as "on AC", and the keeper then held the wake
- * request while the battery drained, breaking the one guarantee this feature makes
- * ("on battery the PC still sleeps as usual").
+ * `Win32_Battery.BatteryStatus`: 1 = discharging, 4 = Low, 5 = Critical; 2 = "AC
+ * (not charging)" and the rest of {3, 6, 7, 8, 9, 11} are charging/charged. Per the
+ * Win32_Battery docs, 4 and 5 also mean the battery is *draining* — they are not
+ * "on AC" — so all three take the battery branch. Treating 4/5 as `ac` made a laptop
+ * at 10% on battery read as "on AC", and the keeper then held the wake request while
+ * the battery drained, breaking the one guarantee this feature makes ("on battery
+ * the PC still sleeps as usual").
  *
- * Charging/charged states ({2, 3, 6, 7, 8, 9, 11}) and "no battery present" fall
- * through to `ac`/`desktop`; 0 and 10 mean "unknown/undefined", which the
- * `PowerManagementSupported` note below covers.
+ * 0 and 10 are documented as "undefined" — a value we could not interpret, the same
+ * class of outcome as a failed query. They map to `unknown` (→ release the hold, and
+ * refuse to start one), NOT to `ac` and NOT to `battery`: mapping them to `ac` would
+ * hold a laptop's sleep off on the strength of a reading we did not understand, and
+ * claiming `battery` would misreport a desktop whose firmware reports 0. Only a
+ * reading we actually understand is allowed to justify a hold.
+ *
+ * The remaining charged/charging codes and "no battery present" fall through to
+ * `ac`/`desktop`.
  */
 export const POWER_QUERY_SCRIPT = `
 $cimError = $null
@@ -179,6 +186,7 @@ $battery = @(Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyConti
 if ($cimError.Count -gt 0) { Write-Output 'unknown'; exit 0 }
 if ($battery.Count -eq 0) { Write-Output 'desktop'; exit 0 }
 if (@(1, 4, 5) -contains $battery[0].BatteryStatus) { Write-Output 'battery'; exit 0 }
+if (@(0, 10) -contains $battery[0].BatteryStatus) { Write-Output 'unknown'; exit 0 }
 Write-Output 'ac'
 `;
 
@@ -463,7 +471,10 @@ class KeepAwakeManager implements KeepAwake {
     // fresh reading instead of probing again.
     await this.tick();
     if (!this.timer) {
-      this.timer = setInterval(() => void this.tick(), this.intervalMs);
+      // `true`: the watchdog re-reads unconditionally, so the power source is
+      // actually re-checked once per interval (see `tick()` for why it cannot share
+      // the staleness boundary with the settings-save path).
+      this.timer = setInterval(() => void this.tick(true), this.intervalMs);
       // Never let the watchdog alone keep the process alive.
       if (typeof this.timer.unref === 'function') this.timer.unref();
     }
@@ -535,25 +546,32 @@ class KeepAwakeManager implements KeepAwake {
     }
   }
 
-  private async tick(): Promise<void> {
+  /**
+   * One round: refresh the reading if needed, then act on it.
+   *
+   * `fromWatchdog` distinguishes the two callers, which want opposite things:
+   *
+   *   * the 60s watchdog must re-read **unconditionally**, because noticing that the
+   *     charger was plugged in *is* its job. It cannot share the staleness boundary:
+   *     `lastProbeAt` is stamped when the probe *finishes*, ~0.5s after the tick that
+   *     started it, so on the next tick `now - lastProbeAt ≈ 59.5s < 60s` and the
+   *     re-read was skipped — the check silently ran every ~120s instead of the 60s
+   *     the UI promises, and a laptop unplugged just after a reading could stay held
+   *     awake on battery for up to ~2 minutes.
+   *   * `start()` must NOT re-read when a fresh reading exists, because `apply()`
+   *     calls it on *every* `PUT /api/settings` — re-probing there parked an
+   *     unrelated settings save behind a PowerShell round trip (~0.5s typically, up
+   *     to `QUERY_TIMEOUT_MS` on the slow/hung machine this feature exists to degrade
+   *     gracefully on). The single-flight in `probeOnce()` does not help: in steady
+   *     state nothing is in flight, so every save started a fresh probe.
+   *
+   * A reading that has never landed is stale by definition, so the first tick (and
+   * each `start()` on a machine whose probe keeps failing) still waits for one.
+   */
+  private async tick(fromWatchdog = false): Promise<void> {
     if (!this.isSupported()) return;
-    // Probe only when the cached reading is actually stale.
-    //
-    // This one rule covers both callers, which want opposite things:
-    //
-    //   * the 60s watchdog must re-read, because noticing that the charger was
-    //     plugged in *is* its job — its interval equals `PROBE_STALE_MS`, so every
-    //     watchdog tick sees a stale reading and probes;
-    //   * `start()` must NOT re-read when a fresh reading exists, because `apply()`
-    //     calls it on *every* `PUT /api/settings` — re-probing there parked an
-    //     unrelated settings save behind a PowerShell round trip (~0.5s typically,
-    //     up to `QUERY_TIMEOUT_MS` on the slow/hung machine this feature exists to
-    //     degrade gracefully on). The single-flight in `probeOnce()` does not help:
-    //     in steady state nothing is in flight, so every save started a fresh probe.
-    //
-    // A reading that has never landed is always stale, so the first tick (and each
-    // `start()` on a machine whose probe keeps failing) still waits for one.
-    if (this.lastProbeAt === undefined || this.now() - this.lastProbeAt >= PROBE_STALE_MS) {
+    const stale = this.lastProbeAt === undefined || this.now() - this.lastProbeAt >= PROBE_STALE_MS;
+    if (fromWatchdog || stale) {
       await this.probeOnce();
     }
     const hold = shouldHold(this.powerSource, this.settingEnabled);
@@ -636,10 +654,14 @@ class KeepAwakeManager implements KeepAwake {
     });
     child.on('error', (err) => {
       console.error('[keep-awake] keeper error:', err.message);
-      if (this.child === child) {
-        this.child = undefined;
-        this.keeperReady = false;
-      }
+      // Symmetrical with the `exit` handler below: only a failure of the child we
+      // still consider current is a keeper failure. A late error from a keeper we
+      // deliberately released (e.g. the grace-period `kill()` reporting "could not be
+      // killed" after it had already gone) used to be recorded as `keeperFailed`,
+      // mislabelling a deliberate release as a broken keeper.
+      if (this.child !== child) return;
+      this.child = undefined;
+      this.keeperReady = false;
       this.noteKeeperFailure();
     });
     child.on('exit', (code, signal) => {
@@ -676,9 +698,16 @@ class KeepAwakeManager implements KeepAwake {
     const child = this.child;
     this.child = undefined;
     this.keeperReady = false;
-    if (!child) return;
-    // We are shutting this keeper down on purpose, so its exit is not a failure.
+    // We are shutting this keeper down on purpose, so this is not a failure —
+    // and that reset must happen even when there is no child to kill. It used to
+    // sit behind `if (!child) return`, so when the keeper had already died on its
+    // own (the failed-spawn / abnormal-exit case), toggling the switch off and back
+    // on left `keeperFailed` set and `keeperRetryAt` in the future: the freshly
+    // re-enabled switch reported "Failed" and refused to retry for up to
+    // `KEEPER_RETRY_MAX_BACKOFF_MS`. An explicit re-enable should always start from
+    // a clean slate.
     this.clearKeeperFailure();
+    if (!child) return;
     try {
       child.stdin?.end();
       const timer = setTimeout(() => {
