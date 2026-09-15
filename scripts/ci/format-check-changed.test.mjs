@@ -35,7 +35,10 @@ const CONFIG = {
   printWidth: 100,
   tabWidth: 2,
 };
-const IGNORE = ['README.md'];
+// `ignored/` mirrors the real repo's ignored directories (`.github/workflows`,
+// `docs/superpowers`): a whole directory pattern, which is the shape that actually exercises
+// Prettier's ignore resolution.
+const IGNORE = ['README.md', 'ignored'];
 
 // Deliberately not Prettier-formatted (double quotes, over-long line).
 const DIRTY = [
@@ -200,18 +203,35 @@ console.log('[test-ci-scripts] format-check-changed policy');
 
 // ── E: .prettierignore'd files are skipped by Prettier itself ──────────────────────────
 {
-  // README.md is in .prettierignore and is deliberately unformatted. It is listed as a
-  // changed candidate, but Prettier honours the ignore rule and reports it clean — which is
-  // exactly why this script needs no ignore handling of its own (`git check-ignore` does not
-  // read `.prettierignore`, so a filter built on it would have been dead code anyway).
+  // The interesting case is a **brand-new** unformatted file inside an ignored directory.
+  // A modified-but-already-dirty ignored file would pass either way (it would simply be
+  // classified as pre-existing debt), so it could not tell "Prettier honours
+  // `.prettierignore`" apart from "the ignore rule is broken". A new file has no base
+  // version, so without the ignore rule it becomes a "newly added file is not formatted"
+  // violation — which is exactly the regression this scenario has to catch.
   const root = makeFixture((r) =>
-    write(r, 'README.md', '# fixture\n\nSome    unformatted     text\nmore\n'),
+    write(r, 'ignored/new-file.md', '# ignored\n\nNot    formatted\n'),
   );
   const { code, stdout, report } = runCheck(root);
   check(
-    'E. a changed .prettierignore file is skipped by Prettier, not flagged',
-    code === 0 && report?.files?.includes('README.md') && report?.violations?.length === 0,
+    'E1. a NEW unformatted file under .prettierignore is skipped, not flagged',
+    code === 0 &&
+      report?.files?.includes('ignored/new-file.md') &&
+      report?.violations?.length === 0,
     `exit=${code}, files=${JSON.stringify(report?.files)}, violations=${JSON.stringify(report?.violations)}\n${stdout}`,
+  );
+  rmSync(root, { recursive: true, force: true });
+}
+
+// ── E2: the mirror image — a NEW unformatted file NOT ignored must fail ────────────────
+{
+  // Without this, E1 would also pass if the checker simply never flagged new files at all.
+  const root = makeFixture((r) => write(r, 'src/new-file.ts', BROKEN));
+  const { code, stdout, report } = runCheck(root);
+  check(
+    'E2. the same shape of file outside .prettierignore IS flagged (E1 is a real skip)',
+    code === 1 && report?.violations?.some((v) => v.file === 'src/new-file.ts'),
+    `exit=${code}, violations=${JSON.stringify(report?.violations)}\n${stdout}`,
   );
   rmSync(root, { recursive: true, force: true });
 }

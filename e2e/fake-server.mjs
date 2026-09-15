@@ -199,13 +199,17 @@ app.addHook('onRequest', (req, _reply, done) => {
   done();
 });
 
-app.addHook('preHandler', (req, reply, done) => {
+// `async` so the fault path can short-circuit by *returning* the reply. A callback-style
+// hook that calls `reply.send()` and returns without `done()` never completes Fastify's hook
+// chain: the route handler is not dispatched, and any later `preHandler` would silently not
+// run for fault-injected routes. It happens to work because `reply.send()` flushes the
+// response and fires `onResponse` on its own — but that is not the documented idiom.
+app.addHook('preHandler', async (req, reply) => {
   const pathname = req.url.split('?')[0];
   if (FAULT_ROUTES.has(pathname)) {
-    reply.code(500).send({ error: `injected fault for ${pathname}` });
-    return;
+    return reply.code(500).send({ error: `injected fault for ${pathname}` });
   }
-  done();
+  return undefined;
 });
 
 app.addHook('onResponse', (req, reply, done) => {
