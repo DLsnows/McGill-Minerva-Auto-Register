@@ -4,11 +4,12 @@ import userEvent from '@testing-library/user-event';
 import { DataProvider } from '../lib/DataContext';
 import Courses from './Courses';
 import { api } from '../lib/api';
+import { ZERO_BUDGET } from '../lib/budget-fixture';
 
 function mockAll(targets: Awaited<ReturnType<typeof api.getTargets>>) {
   vi.spyOn(api, 'getTargets').mockResolvedValue(targets);
   vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
-  vi.spyOn(api, 'getBudget').mockResolvedValue({ query: 100, register: 20 });
+  vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
   vi.spyOn(api, 'getSettings').mockResolvedValue({
     pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
     notify: { desktop: true, sound: true, email: false },

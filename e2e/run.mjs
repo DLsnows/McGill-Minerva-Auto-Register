@@ -35,6 +35,15 @@ const EXTERNAL_URL = argValue('--url') ?? process.env.E2E_BASE_URL;
 const BASE_URL = EXTERNAL_URL ?? `http://127.0.0.1:${PORT}`;
 const ONLY = argValue('--only');
 
+// Mirrors `state` in e2e/fake-server.mjs (DEFAULT_SETTINGS + the seeded op-counts).
+// Declared here so the ticker assertion can pin the *exact* expected `used / limit`
+// text rather than merely "some digit is on screen" — the latter stays green even
+// when both budget cells render "NaN / undefined" after an /api/budget shape change.
+const FAKE_QUERY_USED = 2;
+const FAKE_REGISTER_USED = 0;
+const FAKE_QUERY_BUDGET = 100;
+const FAKE_REGISTER_BUDGET = 20;
+
 // ── skip switch ────────────────────────────────────────────────────────────────────────
 if (process.env.E2E_SKIP === '1') {
   console.log('[e2e] E2E_SKIP=1 — skipping the preview end-to-end suite.');
@@ -290,6 +299,38 @@ const CASES = [
         );
       }
       assert(/\d/.test(tickerText), `ticker should render numeric values (got "${tickerText}")`);
+
+      // Budget cells specifically: `used / limit`, both halves real numbers. A bare
+      // `/\d/` over the whole ticker passes even when these two cells render
+      // "NaN / undefined" (the watching/interval cells supply the digits), which is
+      // exactly what happened when the fake backend still served the old
+      // `{ query: <remaining>, register: <remaining> }` shape after the snapshot
+      // change. Pin the contract here instead of trusting the aggregate match.
+      // Regex (not substring) matching so "Today · Query" can't also select the
+      // "Today · Register" cell.
+      const budgetCell = (label) =>
+        page
+          .locator('.ticker .cell')
+          .filter({ has: page.locator('.k', { hasText: label }) })
+          .locator('.v');
+      for (const [label, expected] of [
+        [/^Today · Query$/i, `${FAKE_QUERY_USED} / ${FAKE_QUERY_BUDGET}`],
+        [/^Today · Register$/i, `${FAKE_REGISTER_USED} / ${FAKE_REGISTER_BUDGET}`],
+      ]) {
+        // Polled, not read once. `Ticker` renders a `— / —` placeholder until the
+        // `/api/budget` fetch resolves, and the element is already visible then, so a
+        // single `innerText()` races that fetch and fails on a slower CI even though
+        // nothing is wrong. (`waitFor` also lets the failure message carry the last
+        // observed text rather than just "timed out".)
+        const value = await waitFor(
+          async () => {
+            const text = (await budgetCell(label).innerText()).trim();
+            return /^\d+ \/ \d+$/.test(text) && text === expected ? text : false;
+          },
+          `budget cell "${label}" to render "${expected}" (it renders a placeholder until /api/budget resolves)`,
+        );
+        assertEqual(value, expected, `budget cell "${label}" value`);
+      }
 
       // The WebSocket stream is up and seeded by the fake backend's `recent` frame.
       await waitFor(

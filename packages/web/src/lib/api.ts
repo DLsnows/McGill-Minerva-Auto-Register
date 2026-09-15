@@ -1,9 +1,6 @@
-import type { LogEvent, Settings, WatchTarget } from '@autoregister/shared';
+import type { BudgetSnapshot, LogEvent, Settings, WatchTarget } from '@autoregister/shared';
 
-export interface BudgetRemaining {
-  query: number;
-  register: number;
-}
+export type { BudgetCount, BudgetSnapshot } from '@autoregister/shared';
 export type SessionStatus = 'unknown' | 'authenticated' | 'logged-out' | 'logging-in';
 export interface SessionInfo {
   status: SessionStatus;
@@ -67,5 +64,5 @@ export const api = {
 
   getEvents: (limit = 200) => req<LogEvent[]>(`/api/events?limit=${limit}`),
   clearEvents: () => req<{ ok: true }>('/api/events', { method: 'DELETE' }),
-  getBudget: () => req<BudgetRemaining>('/api/budget'),
+  getBudget: () => req<BudgetSnapshot>('/api/budget'),
 };

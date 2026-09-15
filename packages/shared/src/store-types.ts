@@ -79,6 +79,26 @@ export interface DailyOps {
   registerCount: number;
 }
 
+/** One half of a daily budget, read atomically so the three numbers can never
+ * contradict each other:
+ * - `used` is clamped to `[0, limit]` — lowering the limit below what has
+ *   already been spent reports `used = limit`, never a used-count above it.
+ * - `remaining` is therefore always `limit - used` (never negative), so a
+ *   consumer that renders `used / limit` can never show a numerator larger
+ *   than its denominator. */
+export interface BudgetCount {
+  used: number;
+  limit: number;
+  remaining: number;
+}
+
+/** A coherent snapshot of both daily budgets, taken from one read of the
+ * settings + daily op-counts (see `Budget.snapshot()` on the server). */
+export interface BudgetSnapshot {
+  query: BudgetCount;
+  register: BudgetCount;
+}
+
 export const DEFAULT_SETTINGS: Settings = {
   pollIntervalMinutes: 30,
   jitterMinutes: 3,

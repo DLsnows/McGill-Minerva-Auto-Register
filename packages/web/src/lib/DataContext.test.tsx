@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { DataProvider, useData } from './DataContext';
 import { api } from './api';
+import { ZERO_BUDGET } from './budget-fixture';
 
 function Probe() {
   const { targets, scheduler } = useData();
@@ -21,7 +22,7 @@ describe('DataProvider', () => {
       { id: 't1', term: '202701', subject: 'COMP', courseNumber: '551', targetCrn: '2347', mode: 'auto', status: 'watching', createdAt: 0 },
     ]);
     vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
-    vi.spyOn(api, 'getBudget').mockResolvedValue({ query: 100, register: 20 });
+    vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },

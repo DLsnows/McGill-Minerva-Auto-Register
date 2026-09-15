@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { DataProvider } from '../lib/DataContext';
 import Dashboard from './Dashboard';
 import { api } from '../lib/api';
+import { ZERO_BUDGET } from '../lib/budget-fixture';
 
 vi.mock('../lib/useEventStream', () => ({
   useEventStream: () => ({
@@ -16,7 +17,7 @@ vi.mock('../lib/useEventStream', () => ({
 function mockApi(targets: Awaited<ReturnType<typeof api.getTargets>>, sessionStatus: 'authenticated' | 'logged-out') {
   vi.spyOn(api, 'getTargets').mockResolvedValue(targets);
   vi.spyOn(api, 'getSession').mockResolvedValue({ status: sessionStatus });
-  vi.spyOn(api, 'getBudget').mockResolvedValue({ query: 100, register: 20 });
+  vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
   vi.spyOn(api, 'getSettings').mockResolvedValue({
     pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
     notify: { desktop: true, sound: true, email: false },
@@ -120,7 +121,7 @@ describe('Dashboard', () => {
 
   it('refetches budget + targets when a log event streams in (live update, no manual refresh)', async () => {
     const getTargets = vi.spyOn(api, 'getTargets').mockResolvedValue([]);
-    const getBudget = vi.spyOn(api, 'getBudget').mockResolvedValue({ query: 100, register: 20 });
+    const getBudget = vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
     vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
     vi.spyOn(api, 'getSettings').mockResolvedValue({
       pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,

@@ -35,7 +35,7 @@ function NumField({ label, value, onChange }: { label: string; value: number; on
 
 export default function SettingsPage() {
   const { t } = useTranslation();
-  const { settings } = useData();
+  const { settings, budget } = useData();
   const [form, setForm] = useState<Settings | null>(null);
   const [err, setErr] = useState<string>();
   const [saved, setSaved] = useState(false);
@@ -52,7 +52,23 @@ export default function SettingsPage() {
     setErr(undefined);
     try {
       await api.putSettings(form);
-      await settings.refetch();
+      // Refresh BOTH resources: the budget snapshot carries the daily limits, so
+      // saving a new limit without re-reading the budget would leave the ticker
+      // pairing the new limit with the old op-count. `refetch` reports (and does
+      // not throw) a failure, so a refresh that doesn't land is surfaced instead
+      // of silently reporting success.
+      //
+      // (The email half of the old save path is gone: notifications are sunset and
+      // the server forces `notify.email = false` regardless of what is sent.)
+      const [settingsErr, budgetErr] = await Promise.all([settings.refetch(), budget.refetch()]);
+      const failed = [settingsErr, budgetErr].find(Boolean);
+      if (failed) {
+        // The PUT already resolved, so the settings *were* persisted — saying
+        // "failed to save" here would be a lie. Report the two halves separately.
+        setSaved(false);
+        setErr(`${t('settings.savedButRefreshFailed')} ${failed.message}`);
+        return;
+      }
       setSaved(true);
     } catch (e) {
       setSaved(false);
