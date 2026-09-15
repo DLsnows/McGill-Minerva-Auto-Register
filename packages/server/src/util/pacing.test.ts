@@ -126,6 +126,49 @@ describe('humanPause', () => {
     });
   });
 
+  it('sanitizes explicit arguments, so a non-finite value cannot bypass the floor', () => {
+    // `Math.max(MIN_OP_PAUSE_MS, NaN)` is NaN and `setTimeout(fn, NaN)` fires
+    // immediately — an unsanitized argument would be the one way around the floor.
+    configurePacing({ baseMs: 3000, jitterMs: 1000 });
+    withRandom(0.5, () => {
+      const spy = vi.spyOn(globalThis, 'setTimeout');
+      try {
+        void humanPause(Number.NaN, Number.NaN);
+        // Non-finite arguments fall back to the effective runtime configuration.
+        expect(Number(spy.mock.calls.at(-1)?.[1])).toBe(3000);
+        void humanPause(Number.POSITIVE_INFINITY, 0);
+        expect(Number(spy.mock.calls.at(-1)?.[1])).toBe(3000);
+        // A finite-but-oversized argument clamps to the maximum…
+        void humanPause(10 ** 9, 0);
+        expect(Number(spy.mock.calls.at(-1)?.[1])).toBe(MAX_OP_PAUSE_MS);
+        // …and a finite negative argument clamps to 0, still landing on the floor.
+        void humanPause(-1000, 0);
+        expect(Number(spy.mock.calls.at(-1)?.[1])).toBe(MIN_OP_PAUSE_MS);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+    // Whatever the argument soup, what is scheduled stays finite and on/above the floor.
+    withRandom(0, () => {
+      const spy = vi.spyOn(globalThis, 'setTimeout');
+      try {
+        for (const [base, jitter] of [
+          [Number.NaN, 0],
+          [0, Number.NaN],
+          [-1, -1],
+          [Infinity, Infinity],
+        ] as const) {
+          void humanPause(base, jitter);
+          const delay = Number(spy.mock.calls.at(-1)?.[1]);
+          expect(Number.isFinite(delay)).toBe(true);
+          expect(delay).toBeGreaterThanOrEqual(MIN_OP_PAUSE_MS);
+        }
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
   it('ignores non-finite configuration and clamps oversized values', () => {
     configurePacing({ baseMs: 1000, jitterMs: 200 });
     configurePacing({ baseMs: Number.NaN, jitterMs: Number.POSITIVE_INFINITY });
