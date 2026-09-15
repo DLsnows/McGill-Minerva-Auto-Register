@@ -385,9 +385,14 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
 
   it('accepts the first manual run and records lastForcedRunAt', async () => {
     const { scheduler, store, watcher, target } = manualSetup();
-    // `lastForcedRunAt` is echoed on every result so the client can render the
-    // countdown from the server's clock rather than its own.
-    expect(scheduler.runTarget(target.id)).toEqual({ started: true, lastForcedRunAt: NOW });
+    // The result carries the *duration* the client anchors its countdown to, plus
+    // the start it can echo/debug with — never a value the client must subtract
+    // from its own clock.
+    expect(scheduler.runTarget(target.id)).toEqual({
+      started: true,
+      retryAfterMs: MANUAL_RUN_COOLDOWN_MS,
+      lastForcedRunAt: NOW,
+    });
     expect(store.getTarget(target.id)!.lastForcedRunAt).toBe(NOW);
     await vi.waitFor(() => expect(watcher.calls).toBe(1));
   });
@@ -396,7 +401,7 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
   // click hit Minerva for real, bounded only by the shared daily query budget.
   it('refuses a second manual run inside the cooldown and reports how long is left', async () => {
     const { scheduler, watcher, target, setClock } = manualSetup();
-    expect(scheduler.runTarget(target.id)).toEqual({ started: true, lastForcedRunAt: NOW });
+    scheduler.runTarget(target.id);
     await vi.waitFor(() => expect(watcher.calls).toBe(1));
 
     setClock(NOW + 20_000); // 20s of the 60s window elapsed
@@ -412,12 +417,13 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
 
   it('allows a manual run again once the cooldown has elapsed', async () => {
     const { scheduler, watcher, target, setClock } = manualSetup();
-    expect(scheduler.runTarget(target.id)).toEqual({ started: true, lastForcedRunAt: NOW });
+    scheduler.runTarget(target.id);
     await vi.waitFor(() => expect(watcher.calls).toBe(1));
 
     setClock(NOW + MANUAL_RUN_COOLDOWN_MS);
     expect(scheduler.runTarget(target.id)).toEqual({
       started: true,
+      retryAfterMs: MANUAL_RUN_COOLDOWN_MS,
       lastForcedRunAt: NOW + MANUAL_RUN_COOLDOWN_MS,
     });
     await vi.waitFor(() => expect(watcher.calls).toBe(2));
@@ -425,7 +431,7 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
 
   it('does not let the automatic tick loop consume or need the manual cooldown', async () => {
     const { scheduler, store, watcher, target } = manualSetup();
-    expect(scheduler.runTarget(target.id)).toEqual({ started: true, lastForcedRunAt: NOW });
+    expect(scheduler.runTarget(target.id).started).toBe(true);
     await vi.waitFor(() => expect(watcher.calls).toBe(1));
 
     // The cooldown throttles *manual* runs only: a due automatic cycle still runs.
@@ -453,7 +459,11 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
       now: () => NOW,
       random: () => 0.5,
     });
-    expect(scheduler.runTarget(t.id)).toEqual({ started: true, lastForcedRunAt: NOW });
+    expect(scheduler.runTarget(t.id)).toEqual({
+      started: true,
+      retryAfterMs: MANUAL_RUN_COOLDOWN_MS,
+      lastForcedRunAt: NOW,
+    });
     expect(scheduler.runTarget(t.id)).toEqual({
       started: false,
       reason: 'in progress',

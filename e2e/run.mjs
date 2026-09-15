@@ -434,6 +434,9 @@ const CASES = [
       await card.getByRole('button', { name: '⚡ Register now' }).click();
       const firstBody = await (await firstResponse).json();
       assertEqual(firstBody.started, true, 'first manual run should be accepted');
+      // The countdown is driven by this duration, anchored on the client's own
+      // clock — not by subtracting a server epoch from `Date.now()`.
+      assertEqual(firstBody.retryAfterMs, 60_000, 'an accepted run reports the full window');
       const notice = card.getByTestId('run-notice');
       await notice.waitFor({ timeout: 15_000 });
       assert(

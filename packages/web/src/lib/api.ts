@@ -10,9 +10,8 @@ export interface SchedulerState {
 }
 
 /** Manual-run cooldown, mirrored from `MANUAL_RUN_COOLDOWN_MS` in
- * packages/server/src/scheduler/scheduler.ts. Used only to keep the run button
- * disabled for the window the server just reported — `WatchTarget.lastForcedRunAt`
- * is the authority once targets are refetched, and the server always re-checks. */
+ * packages/server/src/scheduler/scheduler.ts. Used to place the end of the window
+ * on the client's own clock; the server enforces it and re-checks every request. */
 export const MANUAL_RUN_COOLDOWN_MS = 60_000;
 
 /** Result of `POST /api/targets/:id/run` — what *this request* did.
@@ -21,22 +20,35 @@ export const MANUAL_RUN_COOLDOWN_MS = 60_000;
  * its outcome still arrives via the event stream. `started: false` means the
  * request was dropped, and `reason` says why — the UI must show it, otherwise
  * the button just flashes and the click silently does nothing (audit Q16/Q60).
- * `reason` is an open string (the server also reports `target is <status>`), so
- * consumers fall back to a generic message for values they don't know. */
+ * `reason` is an open string (the server also reports `target is <status>`, and
+ * a future `'queued'` is reserved), so consumers must fall back to a neutral
+ * message for values they don't know. */
 export interface RunTargetResult {
   started: boolean;
   reason?: string;
-  /** Milliseconds until another manual run is accepted (present for 'cooldown'). */
+  /** How much of the manual cooldown is left: the full window on acceptance, the
+   * remainder on a `'cooldown'` rejection, 0/absent otherwise. A *duration*, so
+   * the UI anchors it to its own receive time and needs no clock agreement with
+   * the server. */
   retryAfterMs?: number;
   /** The target's `lastForcedRunAt` after this request (epoch ms, absent when it
-   * never had a forced run). The cooldown countdown is rendered from this server
-   * value, so a skewed client clock cannot stretch or shrink the window. */
+   * never had a forced run). Informational — a freshly-loaded page can show a
+   * running window without asking again. Deliberately *not* used for the
+   * countdown: subtracting the client's clock from a server epoch is exactly what
+   * makes a countdown skew-sensitive. */
   lastForcedRunAt?: number;
 }
 
-/** Milliseconds of manual-run cooldown left, from the server's `lastForcedRunAt`
- * (the cooldown window's authority, also echoed by the `/run` response) and/or a
- * locally recorded window. 0 = a forced run is allowed now. */
+/** Milliseconds of manual-run cooldown left, as an instant on the *caller's*
+ * clock — so both inputs must be local-clock instants:
+ *   - `localCoolingUntil`: end of the window estimated locally from a
+ *     `retryAfterMs` duration anchored when the response arrived (preferred, no
+ *     cross-clock arithmetic);
+ *   - `targetLastForcedRunAt`: the server's epoch for the window's start, used
+ *     only as a fallback when there is no local estimate (e.g. right after a
+ *     reload). Cross-clock skew shows up here — acceptable for a cosmetic
+ *     disable, since the server re-checks every request.
+ * 0 = a forced run is allowed now. */
 export function cooldownRemainingMs(
   targetLastForcedRunAt: number | undefined,
   localCoolingUntil: number | undefined,

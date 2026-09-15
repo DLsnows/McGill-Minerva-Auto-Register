@@ -178,19 +178,18 @@ describe('Dashboard', () => {
 
   // Review finding: with a fixed error message ("Try again in 45s") the countdown
   // was a lie, and no test caught it because the mocks fed the *wrong* response
-  // shape (no `lastForcedRunAt`) — the opposite of what the server sends. These
-  // two tests now use the real shape and read the numbers from the render.
+  // shape (no `retryAfterMs`) — the opposite of what the server sends. These two
+  // tests use the real shape and read the numbers back out of the render.
   it('tells the user the manual run was throttled, and counts the window down', async () => {
     vi.useFakeTimers();
     try {
-      const t0 = Date.now();
-      // A real rejection reports a window that already started: 45s remain.
       mockApi(watching, 'authenticated');
+      // A real rejection reports the remainder of a window that already started.
       vi.spyOn(api, 'runTarget').mockResolvedValue({
         started: false,
         reason: 'cooldown',
         retryAfterMs: 45_000,
-        lastForcedRunAt: t0 - 15_000,
+        lastForcedRunAt: Date.now() - 15_000,
       });
       renderDashboard();
       await act(async () => {
@@ -213,13 +212,15 @@ describe('Dashboard', () => {
     }
   });
 
-  it('reports an unknown drop reason honestly instead of staying silent', async () => {
+  it('reports an unknown drop reason neutrally instead of implying the worst', async () => {
     mockApi(watching, 'authenticated');
     vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'target is paused' });
     renderDashboard();
     await waitFor(() => screen.getByRole('button', { name: /register now/i }));
     await userEvent.click(screen.getByRole('button', { name: /register now/i }));
-    await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/not being watched.*target is paused/i));
+    await waitFor(() =>
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/This check was not started.*target is paused/i),
+    );
   });
 
   it('surfaces a failed run request instead of clearing the spinner silently', async () => {
@@ -233,7 +234,7 @@ describe('Dashboard', () => {
 
   it('shows an in-flight starting notice while the run request is pending', async () => {
     mockApi(watching, 'authenticated');
-    let resolveRun!: (v: { started: boolean; lastForcedRunAt: number }) => void;
+    let resolveRun!: (v: { started: boolean; retryAfterMs: number }) => void;
     vi.spyOn(api, 'runTarget').mockReturnValue(
       new Promise((r) => {
         resolveRun = r;
@@ -246,7 +247,7 @@ describe('Dashboard', () => {
     // card keeps a visible notice the whole time — no more one-frame flash.
     await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/starting a manual check/i));
     expect(screen.getByRole('button', { name: /… running/i })).toBeDisabled();
-    resolveRun({ started: true, lastForcedRunAt: Date.now() });
+    resolveRun({ started: true, retryAfterMs: 60_000 });
     // An accepted run leaves no "starting…" claim behind; the card switches to
     // the cooldown notice — the cycle announces itself in the console.
     await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/throttled to one per minute/i));
@@ -261,11 +262,18 @@ describe('Dashboard', () => {
     vi.useFakeTimers();
     try {
       mockApi(watching, 'authenticated');
-      const t0 = Date.now();
-      const runTarget = vi.spyOn(api, 'runTarget').mockResolvedValue({ started: true, lastForcedRunAt: t0 });
+      const runTarget = vi
+        .spyOn(api, 'runTarget')
+        .mockResolvedValue({ started: true, retryAfterMs: 60_000, lastForcedRunAt: Date.now() });
       renderDashboard();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0); // flush the mount fetches
+      });
+      // Let the card's slow tick go stale before the click: with the interval
+      // based refresh this used to render a nonsense "Try again in 80s" for one
+      // frame (a server epoch minus a 20s-old `now`).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
       });
       fireEvent.click(screen.getByRole('button', { name: /register now/i }));
       await act(async () => {
@@ -323,14 +331,13 @@ describe('Dashboard', () => {
   });
 
   // Review finding (2nd round): `markCooling` stored the window's *start* where an
-  // end timestamp is expected, which made the local fallback dead. The server
-  // always sends `lastForcedRunAt`, so the accepted-run case above already fails
-  // against that bug; this one pins the fallback for a response that only reports
-  // the remaining time.
-  it('falls back to the local clock when a response carries only retryAfterMs', async () => {
+  // end instant is expected, which made its countdown dead. Now it is built from
+  // the `retryAfterMs` duration, on the client's own clock.
+  it('anchors the countdown to the retryAfterMs duration it was given', async () => {
     vi.useFakeTimers();
     try {
       mockApi(watching, 'authenticated');
+      // No `lastForcedRunAt` at all: the duration must be enough on its own.
       vi.spyOn(api, 'runTarget').mockResolvedValue({
         started: false,
         reason: 'cooldown',

@@ -104,26 +104,24 @@ export default function Dashboard() {
           return next;
         });
       const drop = (notice: string) => setRunNotice((s) => ({ ...s, [id]: notice }));
-      // `coolingUntil` is an *end* timestamp. Prefer the server's start time, so
-      // the window is rendered from the clock that enforces it (client skew can
-      // neither stretch nor shrink it); a cooldown rejection that reports only
-      // the remaining time falls back to the local clock. (Review finding: this
-      // used to store the *start* time, which made the local fallback dead.)
-      const markCooling = (lastForcedRunAt: number | undefined, retryAfterMs: number) =>
-        setCoolingUntil((s) => ({
-          ...s,
-          [id]: lastForcedRunAt !== undefined ? lastForcedRunAt + MANUAL_RUN_COOLDOWN_MS : Date.now() + retryAfterMs,
-        }));
+      // `coolingUntil` is an end instant on *this* clock, so it is built from a
+      // duration (`retryAfterMs`, anchored to the moment the answer arrived)
+      // rather than from the server's `lastForcedRunAt` epoch: mixing a server
+      // epoch with `Date.now()` would make the countdown sensitive to clock skew
+      // (review finding). The server's timestamp is kept for display/debugging
+      // only, and `target.lastForcedRunAt` still covers a page reload.
+      const markCooling = (retryAfterMs: number) =>
+        setCoolingUntil((s) => ({ ...s, [id]: Date.now() + retryAfterMs }));
       setRunning((s) => new Set(s).add(id));
       drop(tr('run.starting')); // in-flight hint; replaced by the verdict below
       try {
         const res = await api.runTarget(id);
         if (res.started) {
           // Accepted: the cycle announces itself in the console. Start the
-          // cooldown from the timestamp the server just recorded, so the button
-          // is disabled for the whole window instead of letting the next click
+          // cooldown from the duration the server just reported, so the button is
+          // disabled for the whole window instead of letting the next click
           // bounce off the server (review finding).
-          markCooling(res.lastForcedRunAt, MANUAL_RUN_COOLDOWN_MS);
+          markCooling(res.retryAfterMs ?? MANUAL_RUN_COOLDOWN_MS);
           clearNotice();
           return;
         }
@@ -132,10 +130,12 @@ export default function Dashboard() {
         } else if (res.reason === 'cooldown') {
           // The notice itself is derived from the cooldown in CourseCard so it
           // counts down and disappears when the window ends.
-          markCooling(res.lastForcedRunAt, res.retryAfterMs ?? 0);
+          markCooling(res.retryAfterMs ?? 0);
           clearNotice();
         } else {
-          drop(tr('run.notWatching', { reason: res.reason ?? 'unknown' }));
+          // Unknown reason (a status change, or a future value such as 'queued'):
+          // say so neutrally instead of implying the course stopped being watched.
+          drop(tr('run.dropped', { reason: res.reason ?? 'unknown' }));
         }
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);

@@ -65,12 +65,16 @@ export interface ForcedRunResult {
    * this target; `'cooldown'` = the manual cooldown has not elapsed;
    * `'target is <status>'` = the target left the watching state. */
   reason?: string;
-  /** Milliseconds until the caller may try again (cooldown only). */
+  /** Milliseconds until the caller may try again: the remaining part of the
+   * manual cooldown, so a client can drive its countdown from a *duration*
+   * anchored to its own clock. Sent on rejections and (as the full window) on
+   * acceptance; `0`/absent means no cooldown applies to this answer. */
   retryAfterMs?: number;
   /** The target's current `lastForcedRunAt` (epoch ms, absent if it never had a
-   * forced run). The UI counts the cooldown down from this server value instead
-   * of its own clock, so a skewed client clock cannot stretch or shrink the
-   * window it renders. */
+   * forced run). Informational for the client — it lets a freshly-loaded page
+   * show that a window is still running without asking again. The countdown uses
+   * `retryAfterMs` instead, which does not mix the server's clock with the
+   * client's. */
   lastForcedRunAt?: number;
 }
 
@@ -291,7 +295,9 @@ export class Scheduler {
     void this.runOnce(id, { force: true }).catch((e) =>
       this.log('error', `Forced run failed: ${errMsg(e)}`, id),
     );
-    return { started: true, lastForcedRunAt: now };
+    // `retryAfterMs` is the full window here: a *duration* the client can anchor
+    // to its own receive time, so its countdown needs no clock agreement at all.
+    return { started: true, retryAfterMs: MANUAL_RUN_COOLDOWN_MS, lastForcedRunAt: now };
   }
 
   /** Milliseconds left of the manual-run cooldown, 0 when a forced run is allowed. */

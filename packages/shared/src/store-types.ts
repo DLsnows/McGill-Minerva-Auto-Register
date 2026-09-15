@@ -24,8 +24,10 @@ export interface WatchTarget extends CourseQuery {
    * Manual runs bypass the `nextPollAt` cadence by design, so this is the only
    * throttle on them: the server refuses another forced run until the manual
    * cooldown has elapsed (see MANUAL_RUN_COOLDOWN_MS in the scheduler). Kept on
-   * the target rather than in memory so the throttle survives a restart, and so
-   * the client can render a live countdown without guessing at the server clock. */
+   * the target rather than in memory so the throttle survives a restart, and so a
+   * freshly-loaded client can tell a window is still running. The UI counts down
+   * from the `retryAfterMs` duration the API returns, not from this epoch, to
+   * stay independent of clock skew. */
   lastForcedRunAt?: number;
   createdAt: number;
 }

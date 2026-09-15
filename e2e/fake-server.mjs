@@ -321,7 +321,9 @@ app.post('/api/targets/:id/run', (req, reply) => {
     'action',
     `[dry-run] Immediate cycle for ${target.label ?? target.targetCrn} (fake backend).`,
   );
-  return { started: true, lastForcedRunAt: at };
+  // Same shape as the real server: the duration the UI counts down from, plus
+  // the stored window start.
+  return { started: true, retryAfterMs: MANUAL_RUN_COOLDOWN_MS, lastForcedRunAt: at };
 });
 
 // --- settings ---

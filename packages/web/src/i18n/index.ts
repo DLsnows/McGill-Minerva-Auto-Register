@@ -21,7 +21,7 @@ const en = {
     inProgress: 'A check for this course is already running — its result will appear in the console.',
     cooldown: 'Manual checks are throttled to one per minute to stay human-like. Try again in {{s}}s.',
     failed: 'Could not start a check: {{reason}}',
-    notWatching: 'This course is not being watched right now ({{reason}}).',
+    dropped: 'This check was not started ({{reason}}).',
   },
   console: { liveStream: 'live stream', reconnecting: 'reconnecting…', clear: 'Clear', clearFailed: 'Failed to clear the console.' },
   form: {
@@ -99,7 +99,7 @@ const zh: typeof en = {
     inProgress: '该课程已有一轮检查正在进行 —— 结果会出现在控制台里。',
     cooldown: '手动检查已限流为每分钟一次，以保持接近真人的节奏。请在 {{s}} 秒后重试。',
     failed: '无法发起检查：{{reason}}',
-    notWatching: '该课程当前未被监控（{{reason}}）。',
+    dropped: '本次检查未启动（{{reason}}）。',
   },
   console: { liveStream: '实时', reconnecting: '重连中…', clear: '清空', clearFailed: '清空控制台失败。' },
   form: {
@@ -177,7 +177,7 @@ const fr: typeof en = {
     inProgress: 'Une vérification de ce cours est déjà en cours — son résultat apparaîtra dans la console.',
     cooldown: 'Les vérifications manuelles sont limitées à une par minute pour rester naturelles. Réessayez dans {{s}} s.',
     failed: 'Impossible de lancer une vérification : {{reason}}',
-    notWatching: 'Ce cours n’est pas surveillé actuellement ({{reason}}).',
+    dropped: 'Cette vérification n’a pas été lancée ({{reason}}).',
   },
   console: { liveStream: 'flux en direct', reconnecting: 'reconnexion…', clear: 'Effacer', clearFailed: "Échec de l'effacement de la console." },
   form: {

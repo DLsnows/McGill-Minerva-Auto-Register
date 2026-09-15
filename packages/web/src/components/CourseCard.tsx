@@ -18,10 +18,10 @@ interface Props {
    * (Q16/Q60). The cooldown verdict is derived below instead of being frozen
    * here, so it can count down and disappear. */
   runNotice?: string;
-  /** Epoch ms until which the manual-run cooldown is active, when the client has
-   * to fall back to its own clock (a cooldown rejection reports `retryAfterMs`,
-   * not a start time). The server's `target.lastForcedRunAt` — echoed by the
-   * `/run` response — takes precedence; the server always re-checks anyway. */
+  /** End of the manual-run cooldown on *this* clock, built by the Dashboard from
+   * the `retryAfterMs` duration the server reported (never by mixing the server's
+   * `lastForcedRunAt` epoch with `Date.now()`). The server enforces the window and
+   * re-checks every request, so this only avoids futile clicks. */
   coolingUntil?: number;
   /** When false (not logged in), resuming and one-click run are blocked. */
   loggedIn?: boolean;

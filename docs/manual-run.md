@@ -32,11 +32,29 @@ only makes the guard's verdict expressible.
 | `{ started: false, reason: 'target is <status>' }`     | The target is not `watching` (paused / registered / error / …).        |
 | `404 { error: 'not found' }`                           | No such target.                                                        |
 
-Every 200 body also carries **`lastForcedRunAt`** (epoch ms, omitted when the
-target never had a forced run): the start of the current cooldown window, i.e.
-the same value the store holds. The UI renders its countdown from this instead of
-from its own clock, so a skewed client clock cannot stretch or shrink the window
-it displays. An accepted run also answers `{ started: true, lastForcedRunAt: <now> }`.
+Every 200 body also carries:
+
+- **`retryAfterMs`** — how much of the manual cooldown is left (the full window on
+  acceptance, the remainder on a `'cooldown'` rejection, `0`/absent otherwise).
+  This is the value the UI counts down from: a _duration_, anchored to the moment
+  the response arrived on the client's own clock, so no clock agreement between
+  client and server is needed.
+- **`lastForcedRunAt`** — the target's stored window start (epoch ms, omitted when
+  it never had a forced run). Informational: it lets a freshly-loaded page show
+  that a window is still running without asking again.
+
+An accepted run therefore answers
+`{ started: true, retryAfterMs: 60000, lastForcedRunAt: <now> }`.
+
+**On clock skew**: the countdown is driven by `retryAfterMs`, never by
+subtracting the client's clock from a server epoch — that arithmetic would make it
+skew-sensitive. The one place a server epoch is used ([`cooldownRemainingMs`] with
+`target.lastForcedRunAt`) is a fallback for a freshly-loaded page with no local
+estimate, so a skewed clock can briefly enable the button early or late there. That
+is cosmetic only: the server re-checks every request, so the throttle itself is
+never affected.
+
+[`cooldownRemainingMs`]: ../packages/web/src/lib/api.ts
 
 `started` describes **this request**, never the outcome of the cycle. A cycle that
 ends in a registration error still answers `{ started: true }` and reports the
@@ -62,9 +80,7 @@ Consumers of this shape:
 - **Start**: when the run is _accepted_, not when it finishes, so mashing the
   button during a slow cycle cannot line up back-to-back queries.
 - **Persistence**: `WatchTarget.lastForcedRunAt` in `data/store.json`, written
-  through the normal store path. It therefore survives a restart, and the client
-  can render the remaining time without trusting its own clock against the
-  server's.
+  through the normal store path, so the throttle survives a restart.
 - **Why 1 minute**: manual runs bypass `nextPollAt` by design, so without a floor
   each click is a real Minerva query (bounded only by the shared daily query
   budget). 60s absorbs double-clicks and button-mashing while still letting a user
@@ -75,7 +91,8 @@ Consumers of this shape:
   `run.cooldown` — "Manual checks are throttled to one per minute to stay
   human-like. Try again in {{s}}s." The card shows the verdict and disables the
   button for the rest of the window; `run.cooldown` is the only place the duration
-  is stated to the user, so the two must be changed together.
+  is stated to the user, so the two must be changed together. `run.dropped` is the
+  neutral fallback for a reason the UI does not recognise.
 - **Feedback lifecycle**: the card shows `run.starting` while the POST is in
   flight, then:
   - **accepted** → the notice is dropped and the card switches to the cooldown
@@ -85,8 +102,10 @@ Consumers of this shape:
     counts down every second and disappears when the window really ends, and the
     button is disabled for exactly that window (a frozen string used to outlive
     the window and sit next to an enabled button);
-  - **in progress / other drop** → the reason stays visible until the next run.
-- **What disables the button**: the same derived value, from
-  `target.lastForcedRunAt` (server truth, also echoed by the response) falling
-  back to `retryAfterMs`-based local state. It is a UI courtesy only — the server
-  re-checks every request, so a skewed client clock can never let a run through.
+  - **in progress** → the reason stays visible until the next run;
+  - **unknown reason** → rendered as "this check was not started (<reason>)",
+    never as a guess about the course's state.
+- **What disables the button**: the same derived value — primarily the
+  `retryAfterMs` duration anchored when the answer arrived (skew-free), falling
+  back to `target.lastForcedRunAt + MANUAL_RUN_COOLDOWN_MS` when the page has no
+  local estimate. It is a UI courtesy only: the server re-checks every request.
