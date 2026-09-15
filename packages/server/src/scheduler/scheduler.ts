@@ -45,6 +45,18 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/**
+ * Why an in-flight cycle refused to continue. `paused` covers both Stop-all and a
+ * single card's Pause (both flip the status); `scheduler-stopped` is `stop()` —
+ * used by the master toggle and the standalone Stop button.
+ */
+type CancelReason = 'paused' | 'scheduler-stopped';
+
+/** Passed down a cycle so it can ask "was I cancelled while I was awaiting?". */
+interface CycleGuard {
+  generation: number;
+}
+
 /** Consecutive failed cycles a target may have before we stop watching it. Any
  * error counts: a query/parse exception, the CRN missing from the results, a
  * registration exception, or a registration error outcome. After this many
@@ -100,6 +112,19 @@ export class Scheduler {
   private readonly inFlight = new Set<string>();
   /** Per-target count of consecutive failed cycles (any error kind). */
   private readonly failureStreak = new Map<string, number>();
+  /**
+   * Bumped by `stop()`. A cycle captures the value when it starts and aborts as
+   * soon as it changes, so "Stop all"/Stop cancels *in-flight* work instead of
+   * only clearing the interval (Q9/Q14). Without this, a cycle that had already
+   * passed the status check would keep going for up to a minute — past several
+   * `humanPause()`s and a real Minerva navigation — and still submit a
+   * registration the user had just cancelled.
+   */
+  private generation = 0;
+  /** Set by `stop()`, cleared by `start()`. A running round checks it between targets so
+   * a stop mid-round does not start the remaining ones. Kept separate from the timer
+   * because a directly-invoked `tick()` has no timer and must still run. */
+  private stopRequested = false;
   /** Targets currently reporting an unrecognized results page, so a long drift
    * is announced once instead of on every poll (each `error` push notifies). */
   private readonly structureReported = new Set<string>();
@@ -123,15 +148,73 @@ export class Scheduler {
     this.sessionLostHandler?.(reason);
   }
 
+  /** Append a log event AND surface it. Never throws: the scheduler's whole job
+   * is to keep running, and a store that cannot persist (disk full, AV lock —
+   * see `Store.save`) must not take the process down with it. Falling back to
+   * stderr keeps the event visible even when the event log itself is broken. */
   private log(level: LogLevel, message: string, targetId?: string, data?: unknown): void {
-    const ev = this.deps.store.appendEvent({ level, message, targetId, data });
-    this.deps.onEvent?.(ev);
+    let ev: LogEvent;
+    try {
+      ev = this.deps.store.appendEvent({ level, message, targetId, data });
+    } catch (e) {
+      console.error(`[scheduler] ${level}: ${message} (event log unavailable: ${errMsg(e)})`);
+      return;
+    }
+    try {
+      this.deps.onEvent?.(ev);
+    } catch (e) {
+      console.error(`[scheduler] event relay failed: ${errMsg(e)}`);
+    }
+  }
+
+  /** True once this cycle's generation is stale (i.e. `stop()` ran). */
+  private isCanceled(guard: CycleGuard): boolean {
+    return guard.generation !== this.generation;
+  }
+
+  /** Say why a cycle stopped short, and drop its pending poll time so a later
+   * Resume doesn't inherit a schedule from the run that was just cancelled. */
+  private abortCycle(target: WatchTarget, reason: CancelReason): void {
+    this.deps.store.updateTarget(target.id, { nextPollAt: undefined });
+    if (reason === 'paused') {
+      this.log(
+        'info',
+        `Cycle cancelled in flight — target is no longer 'watching' (paused / stopped from the UI). No registration was submitted.`,
+        target.id,
+      );
+    } else {
+      this.log(
+        'warn',
+        `Cycle cancelled in flight — the scheduler was stopped. No registration was submitted.`,
+        target.id,
+      );
+    }
+  }
+
+  /** Forget a target's consecutive-failure streak. Called when the user supplies
+   * new input (resume after `error`, editing the query fields), so the first
+   * genuine blip after an explicit retry doesn't trip the breaker immediately. */
+  clearFailures(targetId: string): void {
+    this.failureStreak.delete(targetId);
+  }
+
+  /** Make a target due on the very next tick, instead of waiting for whatever
+   * `nextPollAt` a previous cycle wrote (which can be hours away after a budget
+   * back-off). Used by the resume / edit-recovery paths so "Resume" actually
+   * means "poll again soon" rather than "poll at some point". */
+  scheduleNow(targetId: string): void {
+    if (this.deps.store.getTarget(targetId)) {
+      this.deps.store.updateTarget(targetId, { nextPollAt: this.now() });
+    }
   }
 
   /** Run a single cycle for one target. With `{ force: true }` the auto/notify
    * mode gate is bypassed (notify-mode courses still act on an opening) — used
    * by the one-click "Register now" path. Budgets + session checks still apply.
    * A per-target in-flight guard prevents concurrent runs of the same target.
+   * Rejects only for errors the caller should surface (a watcher/actor exception
+   * is handled inside the cycle); `tick()` wraps each call so one target's
+   * failure can never starve the rest of the round.
    *
    * Returns false when the guard dropped this call (a cycle was already running)
    * so a caller can report the drop instead of pretending it was accepted. The
@@ -148,15 +231,22 @@ export class Scheduler {
     }
     this.inFlight.add(targetId);
     try {
-      await this.runCycle(targetId, opts);
+      // The `guard` is this branch's cancellation token: the cycle captures the
+      // generation it started under and aborts as soon as `stop()` bumps it (Q9/Q14).
+      // The base's boolean return is kept alongside it.
+      await this.runCycle(targetId, { ...opts, guard: { generation: this.generation } });
       return true;
     } finally {
       this.inFlight.delete(targetId);
     }
   }
 
-  private async runCycle(targetId: string, opts: { force?: boolean }): Promise<void> {
+  private async runCycle(
+    targetId: string,
+    opts: { force?: boolean; guard: CycleGuard },
+  ): Promise<void> {
     const { store, budget } = this.deps;
+    const guard = opts.guard;
     const target = store.getTarget(targetId);
     if (!target || target.status !== 'watching') return;
     const now = this.now();
@@ -190,6 +280,7 @@ export class Scheduler {
       );
       return;
     }
+    if (this.isCanceled(guard)) return this.abortCycle(target, 'scheduler-stopped');
 
     const query: CourseQuery = {
       term: target.term,
@@ -204,6 +295,15 @@ export class Scheduler {
       check = await this.deps.watcher.checkCourse(query);
     } catch (e) {
       budget.recordQuery(now);
+      // The user may have paused/stopped while the query was in flight. The failure
+      // bookkeeping below writes state (a poll time, and `error` on the third strike), so
+      // it must not run against a target the user has just parked — that is the same
+      // silent status-overwrite this change exists to remove, on the error path.
+      //
+      // This runs BEFORE the structure-drift branch on purpose: that branch logs and
+      // reschedules, which is equally wrong for a target the user just parked.
+      const aborted = this.cancelReason(targetId, guard);
+      if (aborted) return this.abortCycle(target, aborted);
       if (e instanceof PageStructureError) {
         // The results page is not the page we know how to read (renamed caption,
         // dropped column, unreadable document). That is a fact about Minerva's
@@ -229,13 +329,20 @@ export class Scheduler {
       return;
     }
     budget.recordQuery(now);
-    this.structureReported.delete(targetId); // the page is readable again
+    if (this.isCanceled(guard)) return this.abortCycle(target, 'scheduler-stopped');
+    // The query got far enough to be parsed, so the page is readable again: end any
+    // drift episode for this target (W2/Q22).
+    this.structureReported.delete(targetId);
 
     if (!check) {
       // The query ran but the target CRN isn't among this course's sections.
       // (A real network/parse failure throws above and is handled there.)
       const where = `${target.subject} ${target.courseNumber} (${target.term})`;
       const msg = `CRN ${target.targetCrn} not found in search results for ${where} — check the CRN, term, subject, course number and faculty`;
+      // Same reasoning as the query-throw branch: do not write state onto a target the
+      // user paused mid-cycle.
+      const aborted = this.cancelReason(targetId, guard);
+      if (aborted) return this.abortCycle(target, aborted);
       if (this.noteFailure(target, msg)) return;
       this.scheduleNext(target);
       return;
@@ -282,18 +389,73 @@ export class Scheduler {
       return;
     }
 
+    // Last gate before the irreversible step. The query + decision above took
+    // tens of seconds (9 humanPause()s and several navigations), which is ample
+    // time for the user to have hit Pause / Stop all. Re-read the status here and
+    // honour the cancel token: a submission that the user has already cancelled
+    // would otherwise still land — and overwrite their 'paused' back to
+    // 'registered', leaving them to drop the course by hand (Q9/Q14).
+    const cancelReason = this.cancelReason(targetId, guard);
+    if (cancelReason) return this.abortCycle(target, cancelReason);
+
     let outcome: RegisterOutcome;
     try {
       outcome = await this.deps.actor.act(target.term, target.targetCrn, action);
     } catch (e) {
       budget.recordRegister(now);
+      // The attempt reached Minerva and then threw, so a submission may well have landed
+      // even though no outcome came back. If the user paused/stopped during it, do not
+      // run the failure bookkeeping (`noteFailure` writes `error` on the third strike and
+      // `scheduleNext` writes a poll time onto a target they just parked) and do not
+      // claim "no registration was submitted" — we cannot know that here.
+      const abortedAfterAct = this.cancelReason(targetId, guard);
+      if (abortedAfterAct) {
+        this.deps.store.updateTarget(targetId, { nextPollAt: undefined });
+        this.log(
+          'warn',
+          `Cycle cancelled in flight after the registration attempt threw — check your Minerva schedule, the submission may or may not have landed. ${
+            abortedAfterAct === 'paused'
+              ? 'The course is left paused as you set it.'
+              : 'The scheduler was stopped.'
+          }`,
+          targetId,
+        );
+        return;
+      }
       if (this.noteFailure(target, `Registration attempt threw: ${errMsg(e)}`)) return;
       this.scheduleNext(target);
       return;
     }
     budget.recordRegister(now);
 
-    this.applyOutcome(target, outcome);
+    // Deliberately NOT cancelled here when `outcome` reports an actual enrolment.
+    // `act()` has already returned, so the submission happened — Minerva processed it
+    // and the user *is* registered or waitlisted. Dropping the outcome would throw away
+    // a fact: the store would keep the target `paused`, the budget would have been spent
+    // on a registration nobody records, and the stale card would invite a duplicate
+    // attempt on Resume. The gate above (`cancelReason`) genuinely prevents a
+    // submission; a gate here could only suppress *recording* one. `applyOutcome`
+    // honours the pause by not touching the status itself.
+    // `cancelReason` rather than `isCanceled`: the latter only covers the scheduler being
+    // stopped, while pausing *this* course during the submission is the more likely
+    // interaction and would otherwise be overwritten by `applyOutcome`.
+    const postActCancel = this.cancelReason(targetId, guard);
+    if (postActCancel && outcome.kind !== 'registered' && outcome.kind !== 'waitlisted') {
+      return this.abortCycle(target, postActCancel);
+    }
+
+    this.applyOutcome(target, outcome, { respectPause: postActCancel !== undefined });
+  }
+
+  /** Why the current cycle must not continue, or undefined if it may. Reads the
+   * target's status fresh: the status captured at cycle start is stale by now,
+   * because the query/decision phase above takes tens of seconds during which
+   * the user can pause this course (Q9). `stop()` bumps the generation, which
+   * covers the master "Stop all"/Stop path (Q14). */
+  private cancelReason(targetId: string, guard: CycleGuard): CancelReason | undefined {
+    if (guard.generation !== this.generation) return 'scheduler-stopped';
+    if (this.deps.store.getTarget(targetId)?.status !== 'watching') return 'paused';
+    return undefined;
   }
 
   /** Record a failed cycle for one target and log `message` at error level (with
@@ -383,25 +545,44 @@ export class Scheduler {
     const elapsed = now - target.lastForcedRunAt;
     return elapsed >= MANUAL_RUN_COOLDOWN_MS ? 0 : MANUAL_RUN_COOLDOWN_MS - Math.max(0, elapsed);
   }
-
-  private applyOutcome(target: WatchTarget, outcome: RegisterOutcome): void {
+  /**
+   * Record the result of an `act()` that already happened.
+   *
+   * `respectPause` is set when the user paused/stopped the target *during* the
+   * submission. The enrolment is then still reported — it is a fact the user needs to
+   * know, and suppressing it is what made "Stop" look like it had also un-registered
+   * them — but the target's status is left as the user set it, and no further poll is
+   * scheduled.
+   */
+  private applyOutcome(
+    target: WatchTarget,
+    outcome: RegisterOutcome,
+    opts: { respectPause?: boolean } = {},
+  ): void {
     const label = target.label ?? target.targetCrn;
+    const paused = opts.respectPause === true;
+    const pausedSuffix = ' (you paused this course while the submission was in flight)';
     switch (outcome.kind) {
       case 'registered':
         this.noteSuccess(target.id);
-        this.deps.store.updateTarget(target.id, { status: 'registered' });
-        this.log('ok', `Registered ${label}! 🎉`, target.id, outcome);
+        if (!paused) this.deps.store.updateTarget(target.id, { status: 'registered' });
+        this.log('ok', `Registered ${label}! 🎉${paused ? pausedSuffix : ''}`, target.id, outcome);
         return; // stop watching
       case 'waitlisted':
         this.noteSuccess(target.id);
-        this.deps.store.updateTarget(target.id, { status: 'waitlisted' });
-        this.log('ok', `Joined waitlist for ${label}.`, target.id, outcome);
+        if (!paused) this.deps.store.updateTarget(target.id, { status: 'waitlisted' });
+        this.log(
+          'ok',
+          `Joined waitlist for ${label}.${paused ? pausedSuffix : ''}`,
+          target.id,
+          outcome,
+        );
         return; // stop watching
       case 'waitlist-full':
       case 'closed':
         this.noteSuccess(target.id);
         this.log('info', `No action taken (${outcome.kind})`, target.id, outcome);
-        this.scheduleNext(target);
+        if (!paused) this.scheduleNext(target);
         return;
       case 'not-found':
       case 'unverified':
@@ -431,7 +612,9 @@ export class Scheduler {
           target.id,
           outcome,
         );
-        this.scheduleNext(target);
+        // `respectPause`: consistent with every other scheduling branch in this switch —
+        // a course the user parked mid-submission must not be given a fresh poll time.
+        if (!paused) this.scheduleNext(target);
         return;
       case 'error':
       default:
@@ -497,34 +680,76 @@ export class Scheduler {
   /** Thin timer loop: every `tickMs`, run cycles for due watching targets. */
   start(tickMs = 30_000): void {
     if (this.timer) return;
+    this.stopRequested = false;
     this.timer = setInterval(() => {
       if (this.ticking) return; // skip if the previous tick is still running
       this.ticking = true;
-      void this.tick().finally(() => {
-        this.ticking = false;
-      });
+      void this.tick()
+        // `.finally()` alone does not consume a rejection — the derived promise
+        // stayed unhandled, and Node ≥22 turns an unhandled rejection into a
+        // process exit (exit code 1). One target erroring used to take the API,
+        // the WebSocket and all polling down together, with the UI stuck on
+        // "reconnecting…". `tick()` already isolates each target; this is the
+        // last-resort net so nothing can escape the timer callback.
+        .catch((e) => {
+          this.log('error', `Scheduler tick failed: ${errMsg(e)}`);
+        })
+        .finally(() => {
+          this.ticking = false;
+        });
     }, tickMs);
   }
 
+  /** Stop the loop AND cancel every in-flight cycle (Q9/Q14). `clearInterval`
+   * alone left a cycle that had already started running for up to a minute —
+   * through several humanPause()s and a real Minerva navigation — so it could
+   * still submit a registration after the user pressed "Stop all". */
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.generation++;
+    this.stopRequested = true;
   }
 
   isRunning(): boolean {
     return this.timer !== null;
   }
 
-  /** Run a cycle for every watching target whose nextPollAt is due. Sequential. */
+  /** Run a cycle for every watching target whose nextPollAt is due. Sequential,
+   * and each target is isolated: an unexpected throw from one target's cycle is
+   * logged and the round continues. Without that, a single bad target would
+   * starve every later target in the same round — and, before the `.catch()`
+   * above, would have rejected `tick()` itself. */
   async tick(): Promise<void> {
     const now = this.now();
     const due = this.deps.store
       .listTargets()
       .filter((t) => t.status === 'watching' && (t.nextPollAt ?? 0) <= now);
     for (const t of due) {
-      // A `false` here means the in-flight guard dropped this cycle (the manual
-      // "Register now" path got there first) — `runOnce` already logged why.
-      await this.runOnce(t.id);
+      // The round is a snapshot taken above, so a `stop()` that lands while an earlier
+      // target is mid-cycle would otherwise still have us start every remaining target in
+      // it — each of which would run a query and only then notice the cancel token.
+      // Checking here stops the round at the point the user asked it to stop, and means a
+      // target that was never queried is not marked as polled or scheduled.
+      //
+      // Deliberately not `isRunning()`: the timer is also absent when `tick()` is invoked
+      // directly (tests, and any future manual round), which must keep working.
+      if (this.stopRequested) {
+        this.log(
+          'info',
+          'Scheduler stopped mid-round — the remaining due targets are left for the next start.',
+        );
+        return;
+      }
+      try {
+        // `runOnce` returns false when the in-flight guard dropped this cycle (the
+        // manual "Register now" path got there first) and has already logged why.
+        // Both outcomes mean "move on to the next target", so the value is not used
+        // here — the caller that needs it is the `/run` route, which reports it.
+        await this.runOnce(t.id);
+      } catch (e) {
+        this.log('error', `Cycle failed for this target: ${errMsg(e)}`, t.id);
+      }
     }
   }
 }

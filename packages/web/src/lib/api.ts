@@ -8,6 +8,16 @@ export interface SessionInfo {
 export interface SchedulerState {
   running: boolean;
 }
+/** Result of "Start all". `skipped` counts the targets the bulk action left
+ * alone (terminal states + ones the failure breaker stopped), so the UI can say
+ * what happened instead of showing an indistinguishable "nothing" (Q20). */
+export interface StartAllResult {
+  running: boolean;
+  resumed: number;
+  skipped: number;
+  errored: number;
+}
+
 /** Error code the server attaches when it refuses to start the engine because the
  * session cannot support polling (see `session-truth.ts`). */
 export const SESSION_NOT_READY = 'session-not-ready';
@@ -155,6 +165,9 @@ export const api = {
     }),
   removeTarget: (id: string) => req<{ ok: true }>(`/api/targets/${id}`, { method: 'DELETE' }),
   runTarget: (id: string) => post<RunTargetResult>(`/api/targets/${id}/run`),
+  /** Explicitly watch a paused (or breaker-stopped `error`) target again (Q3). */
+  resumeTarget: (id: string) =>
+    post<{ resumed: boolean; status: WatchTarget['status'] }>(`/api/targets/${id}/resume`),
 
   getSettings: () => req<Settings>('/api/settings'),
   putSettings: (patch: Partial<Settings>) =>
@@ -170,7 +183,7 @@ export const api = {
   getScheduler: () => req<SchedulerState>('/api/scheduler'),
   startScheduler: () => post<{ running: boolean }>('/api/scheduler/start'),
   stopScheduler: () => post<{ running: boolean }>('/api/scheduler/stop'),
-  startAll: () => post<{ running: boolean; resumed: number }>('/api/scheduler/start-all'),
+  startAll: () => post<StartAllResult>('/api/scheduler/start-all'),
   stopAll: () => post<{ running: boolean; paused: number }>('/api/scheduler/stop-all'),
 
   getEvents: (limit = 200) => req<LogEvent[]>(`/api/events?limit=${limit}`),

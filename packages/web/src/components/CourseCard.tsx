@@ -28,11 +28,15 @@ interface Props {
   loggedIn?: boolean;
 }
 
-// Only an actively-watching course can be paused, and only a paused course can
-// be resumed. 'error' and the completed states (registered / waitlisted) are
-// terminal — they cannot be resumed from here.
+// Only an actively-watching course can be paused. A paused course can be resumed,
+// and so can one the failure breaker stopped ('error'): without that, `error` was
+// a one-way door — the card offered no action, "Register now" is disabled for
+// non-watching targets, and Start all deliberately skips them, so the corrected
+// CRN the error message asks for could never actually be retried (Q3/Q20).
+// The completed states (registered / waitlisted) stay terminal: you already have
+// the seat, and silently re-watching it would only burn budget.
 const PAUSABLE: WatchStatus[] = ['watching'];
-const RESUMABLE: WatchStatus[] = ['paused'];
+const RESUMABLE: WatchStatus[] = ['paused', 'error'];
 
 export function CourseCard({
   target,
@@ -65,6 +69,7 @@ export function CourseCard({
   const canRun = target.status === 'watching';
   const canPause = PAUSABLE.includes(target.status);
   const canResume = RESUMABLE.includes(target.status);
+  const errored = canResume && target.status === 'error';
   // Derived, not stored: recomputed on every tick, so the button re-enables and
   // the notice disappears the moment the window really ends (review finding —
   // a frozen "Try again in 45s" outlived the cooldown and sat next to an
@@ -106,7 +111,7 @@ export function CourseCard({
               title={canResume && !loggedIn ? t('scheduler.loginFirst') : undefined}
               onClick={() => onTogglePolling(target.id, canPause ? 'paused' : 'watching')}
             >
-              {canPause ? t('card.pause') : t('card.resume')}
+              {canPause ? t('card.pause') : errored ? t('card.resumeWatching') : t('card.resume')}
             </button>
           )}
           <button

@@ -6,7 +6,7 @@ import websocketPlugin from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import type { WebSocket } from 'ws';
 import { z } from 'zod';
-import type { LogEvent, Settings } from '@autoregister/shared';
+import type { LogEvent, LogLevel, Settings } from '@autoregister/shared';
 import type { Budget } from '../budget/budget';
 import type { Store } from '../store/store';
 import type { ForcedRunResult } from '../scheduler/scheduler';
@@ -136,6 +136,11 @@ export interface ApiScheduler {
   /** Re-apply the poll cadence to already-scheduled targets (after a settings
    * change). Optional so lightweight test doubles can omit it. */
   rescheduleWatching?(): void;
+  /** Forget a target's consecutive-failure streak (explicit recovery, Q3).
+   * Optional so lightweight test doubles can omit it. */
+  clearFailures?(targetId: string): void;
+  /** Make a target due on the next tick. Optional, as above. */
+  scheduleNow?(targetId: string): void;
 }
 export interface ApiDeps {
   store: Store;
@@ -214,6 +219,24 @@ export function buildServer(
     if (readiness.ready) return undefined;
     return reply.code(409).send({ error: readiness.message, code: SESSION_NOT_READY, status });
   };
+
+  /** Record an API-originated state change in the app's own event log (and push it
+   * to the live console). Mutations that change what the user will be watching used
+   * to be completely silent, which is how "why did my courses stop?" became
+   * unanswerable. Never throws: logging must not be able to fail a request. */
+  function logStatus(
+    message: string,
+    targetId?: string,
+    level: LogLevel = 'info',
+    data?: unknown,
+  ): void {
+    try {
+      const ev = deps.store.appendEvent({ level, message, targetId, data });
+      broadcast(clients, ev);
+    } catch (e) {
+      console.error(`[api] ${level}: ${message} (event log unavailable: ${String(e)})`);
+    }
+  }
 
   // `.after()` (not `.catch()`) — surfacing a plugin load failure without
   // prematurely triggering `ready()`, which would reject later route registration.
@@ -371,6 +394,10 @@ export function buildServer(
   app.patch('/api/targets/:id', (req, reply) => {
     const parsed = targetPatchSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const id = (req.params as { id: string }).id;
+    // Read the prior state before the gate: the edit-recovery block below needs it,
+    // and a refused request must not have touched anything.
+    const before = deps.store.getTarget(id);
     // Setting a target to 'watching' is a promise that it will be polled — the
     // per-course "Resume" button also starts the engine right after this PATCH.
     // Without a usable session that promise cannot be kept, and the client that
@@ -382,14 +409,75 @@ export function buildServer(
       const denied = requireSession(reply);
       if (denied) return denied;
     }
-    const updated = deps.store.updateTarget((req.params as { id: string }).id, parsed.data);
+    const updated = deps.store.updateTarget(id, parsed.data);
     if (!updated) return reply.code(404).send({ error: 'not found' });
+    // Recovery on edit (Q3): a target sits in `error` because three consecutive
+    // cycles failed — for instance a typo'd CRN, or a term/subject/faculty that
+    // returned nothing. Editing those very fields is the fix the error message
+    // tells the user to make, so saving them must also drop the terminal state,
+    // otherwise the corrected query is never polled and the log's advice is a
+    // dead end. Scope: only query fields, and only out of `error` — a user who
+    // deliberately paused a course keeps it paused.
+    const queryFields = ['term', 'subject', 'courseNumber', 'targetCrn', 'faculty'] as const;
+    const queryEdited = queryFields.some((f) => f in parsed.data);
+    if (queryEdited && before?.status === 'error') {
+      deps.store.updateTarget(id, { status: 'watching' });
+      deps.scheduler.clearFailures?.(id);
+      // Also clear any stale nextPollAt (a budget back-off can be hours away) so
+      // the fixed query is actually retried soon, and start the engine: `scheduleNow`
+      // only writes a timestamp, so without this an API client that does not also POST
+      // /api/scheduler/start leaves the target 'watching' with no timer running and the
+      // recovery silently does nothing.
+      deps.scheduler.scheduleNow?.(id);
+      deps.scheduler.start();
+      logStatus('Course edited — cleared the error state, watching it again.', id, 'ok', {
+        status: 'watching',
+      });
+      return deps.store.getTarget(id);
+    }
     return updated;
   });
   app.delete('/api/targets/:id', (req) => {
     deps.store.removeTarget((req.params as { id: string }).id);
     return { ok: true };
   });
+  // Explicit recovery entry for a target the breaker stopped (Q3/Q20). Without
+  // this the `error` status was a one-way door: `runCycle` returns early for
+  // anything that isn't `watching`, so "Register now" was disabled, Pause/Resume
+  // weren't rendered, and Start all deliberately skipped it — the only way out
+  // was delete + re-add, losing the label and lastStats.
+  app.post('/api/targets/:id/resume', (req, reply) => {
+    const { id } = req.params as { id: string };
+    const target = deps.store.getTarget(id);
+    if (!target) return reply.code(404).send({ error: 'not found' });
+    if (target.status === 'watching') {
+      // Idempotent, but still make sure the engine is up: a client that calls resume on
+      // an already-watching target while the engine is stopped means "poll this", and
+      // answering `{resumed:false}` without starting anything would leave it idle. This
+      // is also what makes the route safe for the UI's double-click.
+      deps.scheduler.start();
+      return reply.send({ resumed: false, status: 'watching' });
+    }
+    if (target.status !== 'error' && target.status !== 'paused') {
+      return reply.code(409).send({
+        error: `target is ${target.status} — only 'error' or 'paused' targets can be resumed`,
+      });
+    }
+    const was = target.status;
+    deps.store.updateTarget(id, { status: 'watching' });
+    // A fresh explicit retry deserves a fresh strike count: otherwise one blip
+    // makes the target look like it failed 3 times in a row and parks it straight
+    // back in `error`, which would make the button appear to do nothing.
+    deps.scheduler.clearFailures?.(id);
+    deps.scheduler.scheduleNow?.(id);
+    // `scheduleNow` only writes a timestamp — start the engine too, or a client that
+    // resumes without also POSTing /api/scheduler/start gets a 'watching' target that
+    // never polls (the same gap the edit-recovery path above had).
+    deps.scheduler.start();
+    logStatus(`Resumed watching (was '${was}') — polling again.`, id, 'ok', { status: 'watching' });
+    return reply.send({ resumed: true, status: 'watching' });
+  });
+
   // One-click "Register now": run an immediate forced cycle for this target.
   // The response says what really happened for this request:
   //   { started: true }                                  — accepted, runs async
@@ -496,24 +584,65 @@ export function buildServer(
     deps.scheduler.stop();
     return { running: false };
   });
-  // "Start all": resume every PAUSED target (error / registered / waitlisted /
-  // stopped are intentionally left untouched), then start the engine. The
-  // readiness check runs BEFORE any target is touched, so a refused start leaves
-  // the stored state exactly as it was (no courses resumed on a dead engine).
+  // "Start all": resume every PAUSED target, then start the engine. Targets the
+  // breaker stopped ('error') and the completed ones (registered / waitlisted /
+  // stopped) are deliberately NOT auto-resumed — retrying a course that failed
+  // three times in a row, or re-watching one you are already registered in, is
+  // not something a bulk button should decide. What was broken (Q20) is that the
+  // count of those skipped courses was never reported, so "Start all" looked like
+  // it had done nothing at all. `skipped` makes the outcome legible; the card's
+  // Resume button is the explicit per-course opt-in.
+  //
+  // The session readiness check runs BEFORE any target is touched, so a refused
+  // start leaves the stored state exactly as it was (no courses resumed on a dead
+  // engine).
   app.post('/api/scheduler/start-all', (_req, reply) => {
     const denied = requireSession(reply);
     if (denied) return denied;
-    const resumed = deps.store.listTargets().filter((t) => t.status === 'paused');
-    for (const t of resumed) deps.store.updateTarget(t.id, { status: 'watching' });
+    const all = deps.store.listTargets();
+    const toResume = all.filter((t) => t.status === 'paused');
+    for (const t of toResume) deps.store.updateTarget(t.id, { status: 'watching' });
+    // Recovered targets may still carry a stale nextPollAt (a budget back-off can
+    // be hours away), which would make "resumed" a lie until it elapsed.
+    for (const t of toResume) deps.scheduler.scheduleNow?.(t.id);
     deps.scheduler.start();
-    return { running: true, resumed: resumed.length };
+    const errored = all.filter((t) => t.status === 'error').length;
+    // "Skipped" means "deliberately left alone because it is finished or failed" — NOT
+    // "everything I did not resume". `all.length - toResume.length` also counted courses
+    // that were already `watching`, i.e. actively polling, and reported them as skipped;
+    // that is precisely the claim this count exists to avoid making. A `watching` course
+    // is neither resumed nor skipped — it was already running.
+    const skipped = all.filter(
+      (t) => t.status === 'error' || t.status === 'registered' || t.status === 'waitlisted',
+    ).length;
+    logStatus(
+      `Start all: resumed ${toResume.length} course(s)` +
+        (skipped > 0
+          ? `, skipped ${skipped} (${errored} in error — use Resume on the card).`
+          : '.'),
+      undefined,
+      skipped > 0 ? 'warn' : 'ok',
+      { resumed: toResume.length, skipped, errored },
+    );
+    return { running: true, resumed: toResume.length, skipped, errored };
   });
   // "Stop all": pause every actively-watching target, then stop the engine.
+  // `scheduler.stop()` now also cancels any in-flight cycle, so nothing is
+  // submitted after this returns (Q9/Q14) — the log line makes the stop visible,
+  // matching what the cycle-level cancel event reports.
+  //
   // Deliberately NOT gated on the session: stopping must always work.
   app.post('/api/scheduler/stop-all', () => {
     const paused = deps.store.listTargets().filter((t) => t.status === 'watching');
     for (const t of paused) deps.store.updateTarget(t.id, { status: 'paused' });
     deps.scheduler.stop();
+    logStatus(
+      `Stop all: paused ${paused.length} course(s) and stopped the engine. ` +
+        `Any cycle already running was cancelled.`,
+      undefined,
+      'warn',
+      { paused: paused.length },
+    );
     return { running: false, paused: paused.length };
   });
 

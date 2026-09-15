@@ -15,6 +15,10 @@ export default function Courses() {
   // with it — a later, unrelated mutation failure must survive that read. The
   // retirement is driven by the `targets.revision` effect below.
   const [err, setErr] = useState<{ kind: 'op' | 'refresh'; message: string }>();
+  /** Non-fatal notice: the save itself succeeded but a follow-up step didn't (Q3).
+   * Deliberately separate from `err`: it is not a failure of this page's operation,
+   * so it renders in the quieter `banner` style and yields to any real error. */
+  const [warn, setWarn] = useState<string>();
   const [addKey, setAddKey] = useState(0); // bumped to remount (reset) the add form
   const list = targets.data ?? [];
   // Set when a mutation's post-write re-read fails, so the note about it can be
@@ -43,6 +47,7 @@ export default function Courses() {
   // `addTarget` does not de-duplicate.
   const run = async (op: () => Promise<unknown>): Promise<{ mutated: boolean; ok: boolean }> => {
     setErr(undefined);
+    setWarn(undefined);
     staleAtRevision.current = null;
     // Baseline captured *before* the request, not after: the revision a failed
     // re-read leaves behind is the one current now, and by the time `op()` resolves
@@ -107,6 +112,20 @@ export default function Courses() {
         label: v.label || undefined,
         mode: v.mode,
       });
+      // A course the failure breaker stopped is revived by the server on a query-field
+      // edit (Q3) — the error message tells the user to fix exactly these fields, so
+      // saving them has to actually restart the watch. Make sure the engine is up,
+      // otherwise the target flips back to 'watching' with nothing polling it.
+      const wasErrored = (targets.data ?? []).find((t) => t.id === id)?.status === 'error';
+      if (wasErrored) {
+        try {
+          await api.startScheduler();
+        } catch {
+          // Non-fatal: the save landed and the target is watching again. Say so
+          // instead of letting a broken engine look like a successful restart.
+          setWarn(tr('courses.editRestartFailed'));
+        }
+      }
       setEditing(null);
     });
 
@@ -119,6 +138,9 @@ export default function Courses() {
       </div>
       <CourseForm key={addKey} submitLabel={tr('courses.addCourse')} onSubmit={add} />
       {err && <div className="errbar">{err.message}</div>}
+      {/* Yields to `err`: a real failure is the more important message, and the two
+          would otherwise stack. */}
+      {warn && !err && <div className="banner">{warn}</div>}
 
       <div className="col-h" style={{ marginTop: 22 }}>
         <h2 className="serif">{tr('courses.managed')}</h2>

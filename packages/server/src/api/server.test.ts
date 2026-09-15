@@ -1119,6 +1119,349 @@ describe('API', () => {
     });
   });
 
+  // --- Q3/Q20: the ways out of the `error` terminal state -------------------
+
+  it('POST /api/targets/:id/resume revives an errored target, clears its streak and reschedules it', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    store.updateTarget(t.id, { status: 'error', nextPollAt: Date.now() + 6 * 3600 * 1000 });
+    const clearFailures = vi.fn();
+    const scheduleNow = vi.fn();
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+        clearFailures,
+        scheduleNow,
+      },
+    });
+    const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/resume` });
+
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({ resumed: true, status: 'watching' });
+    expect(store.getTarget(t.id)!.status).toBe('watching');
+    // Without clearing the streak one transient blip would look like 3 consecutive
+    // failures and park the target straight back in 'error' — a button that appears
+    // to do nothing.
+    expect(clearFailures).toHaveBeenCalledWith(t.id);
+    // Without this the target keeps its old (possibly hours-away) nextPollAt and
+    // "resumed" is a lie until it elapses.
+    expect(scheduleNow).toHaveBeenCalledWith(t.id);
+    // And the recovery is visible in the app's own log, not just in the response.
+    expect(store.recentEvents().some((e) => /Resumed watching/.test(e.message))).toBe(true);
+    await app2.close();
+  });
+
+  it('POST /api/targets/:id/resume also works for a paused target', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    store.updateTarget(t.id, { status: 'paused' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: makeSession(),
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+      },
+    });
+    const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/resume` });
+    expect(r.json()).toEqual({ resumed: true, status: 'watching' });
+    expect(store.getTarget(t.id)!.status).toBe('watching');
+    await app2.close();
+  });
+
+  it('POST /api/targets/:id/resume refuses the completed states and reports a missing one', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    store.updateTarget(t.id, { status: 'registered' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: makeSession(),
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+      },
+    });
+    // You already have the seat — re-watching it would only burn budget.
+    const conflict = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/resume` });
+    expect(conflict.statusCode).toBe(409);
+    expect(store.getTarget(t.id)!.status).toBe('registered');
+    expect(
+      (await app2.inject({ method: 'POST', url: '/api/targets/nope/resume' })).statusCode,
+    ).toBe(404);
+    await app2.close();
+  });
+
+  it('PATCH with corrected query fields revives an errored target (the log tells the user to do this)', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    store.updateTarget(t.id, { status: 'error' });
+    const clearFailures = vi.fn();
+    const scheduleNow = vi.fn();
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+        clearFailures,
+        scheduleNow,
+      },
+    });
+    const r = await app2.inject({
+      method: 'PATCH',
+      url: `/api/targets/${t.id}`,
+      payload: { targetCrn: '2222' },
+    });
+
+    expect(r.statusCode).toBe(200);
+    expect(r.json().status).toBe('watching'); // the corrected query is actually polled
+    expect(store.getTarget(t.id)!.targetCrn).toBe('2222');
+    expect(store.getTarget(t.id)!.status).toBe('watching');
+    expect(clearFailures).toHaveBeenCalledWith(t.id);
+    expect(scheduleNow).toHaveBeenCalledWith(t.id);
+    await app2.close();
+  });
+
+  it('PATCH of a non-query field leaves an errored target stopped', async () => {
+    // Only the fields the error message blames are treated as "I fixed it".
+    const store = new Store(dir);
+    const t = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    store.updateTarget(t.id, { status: 'error' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: makeSession(),
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+      },
+    });
+    const r = await app2.inject({
+      method: 'PATCH',
+      url: `/api/targets/${t.id}`,
+      payload: { label: 'renamed' },
+    });
+    expect(r.json().status).toBe('error');
+    expect(store.getTarget(t.id)!.label).toBe('renamed');
+    await app2.close();
+  });
+
+  it('PATCH of a query field does NOT un-pause a deliberately paused target', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    store.updateTarget(t.id, { status: 'paused' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: makeSession(),
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+      },
+    });
+    const r = await app2.inject({
+      method: 'PATCH',
+      url: `/api/targets/${t.id}`,
+      payload: { courseNumber: '552' },
+    });
+    expect(r.json().status).toBe('paused'); // user intent wins
+    await app2.close();
+  });
+
+  it('start-all reports how many courses it skipped, and why', async () => {
+    const store = new Store(dir);
+    const start = vi.fn();
+    const paused = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    const errored = store.addTarget({ ...validTarget, targetCrn: '2222' });
+    const done = store.addTarget({ ...validTarget, targetCrn: '3333' });
+    store.updateTarget(paused.id, { status: 'paused' });
+    store.updateTarget(errored.id, { status: 'error' });
+    store.updateTarget(done.id, { status: 'registered' });
+    const scheduleNow = vi.fn();
+    // Start-all reaches the engine, which now refuses to start without a ready
+    // session (Q12) — go through the real login route so the test exercises the
+    // route it means to, instead of a 409.
+    const app2 = await loggedInApp({
+      store,
+      budget: new Budget(store),
+      session: makeSession(),
+      scheduler: {
+        start,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+        scheduleNow,
+      },
+    });
+    const r = await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' });
+
+    // The old response was just `{running:true, resumed:1}` — with one errored
+    // course the user saw "resumed 0" and no explanation at all (Q20).
+    expect(r.json()).toMatchObject({ running: true, resumed: 1, skipped: 2, errored: 1 });
+    expect(store.getTarget(errored.id)!.status).toBe('error'); // still needs the explicit Resume
+    expect(store.getTarget(paused.id)!.status).toBe('watching');
+    expect(scheduleNow).toHaveBeenCalledWith(paused.id); // and is due now, not hours from now
+    expect(store.recentEvents().some((e) => /skipped 2/.test(e.message))).toBe(true);
+    expect(start).toHaveBeenCalled();
+    await app2.close();
+  });
+
+  it('start-all reports a clean run when there is nothing to skip', async () => {
+    const store = new Store(dir);
+    const a = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    store.updateTarget(a.id, { status: 'paused' });
+    const app2 = await loggedInApp({
+      store,
+      budget: new Budget(store),
+      session: makeSession(),
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+      },
+    });
+    expect(
+      (await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' })).json(),
+    ).toMatchObject({
+      resumed: 1,
+      skipped: 0,
+      errored: 0,
+    });
+    await app2.close();
+  });
+
+  it('start-all does not count already-watching courses as skipped', async () => {
+    // Review finding (pr-agent): `all.length - resumed` reported actively-watched
+    // courses as "skipped", i.e. it claimed active courses were left idle. The UI
+    // avoids calling start-all in that state, but the API has no such guard.
+    const store = new Store(dir);
+    const paused = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    store.addTarget({ ...validTarget, targetCrn: '2222' }); // already watching
+    const errored = store.addTarget({ ...validTarget, targetCrn: '3333' });
+    store.updateTarget(paused.id, { status: 'paused' });
+    store.updateTarget(errored.id, { status: 'error' });
+    const app2 = await loggedInApp({
+      store,
+      budget: new Budget(store),
+      session: makeSession(),
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+      },
+    });
+    const body = (await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' })).json();
+
+    // 1 paused (resumed) + 1 already active + 1 errored → only the errored one skipped.
+    expect(body).toMatchObject({ resumed: 1, skipped: 1, errored: 1 });
+    await app2.close();
+  });
+
+  it('resume and edit-recovery start the engine themselves', async () => {
+    // Review finding (pr-agent): `scheduleNow` only writes nextPollAt. Without
+    // starting the engine, an API client that does not also POST
+    // /api/scheduler/start leaves the target 'watching' with no timer running —
+    // the recovery silently does nothing.
+    const store = new Store(dir);
+    const a = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    const b = store.addTarget({ ...validTarget, targetCrn: '2222' });
+    store.updateTarget(a.id, { status: 'error' });
+    store.updateTarget(b.id, { status: 'error' });
+    const start = vi.fn();
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start,
+        stop: () => undefined,
+        runTarget: () => ({ started: true }),
+        isRunning: () => false,
+      },
+    });
+
+    await app2.inject({ method: 'POST', url: `/api/targets/${a.id}/resume` });
+    expect(start).toHaveBeenCalledTimes(1);
+
+    await app2.inject({
+      method: 'PATCH',
+      url: `/api/targets/${b.id}`,
+      payload: { targetCrn: '9999' },
+    });
+    expect(start).toHaveBeenCalledTimes(2);
+    await app2.close();
+  });
+
+  it('pushes scheduler status changes to the live console, not just to the store', async () => {
+    // The response body alone is not enough: the Dashboard is a stream client, and
+    // the log line is how a user reconstructs "why did everything stop?".
+    const store = new Store(dir);
+    const a = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    store.updateTarget(a.id, { status: 'error' });
+    const sent: string[] = [];
+    const clients = new Set<{ send: (d: string) => void }>();
+    clients.add({ send: (d: string) => sent.push(d) });
+    const app2 = buildServer(
+      {
+        store,
+        budget: new Budget(store),
+        session: {
+          launch: async () => undefined,
+          ensureLoggedIn: async () => undefined,
+          isLoggedIn: async () => true,
+        },
+        scheduler: {
+          start: () => undefined,
+          stop: () => undefined,
+          runTarget: () => ({ started: true }),
+          isRunning: () => false,
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      clients as any,
+    );
+    await app2.inject({ method: 'POST', url: `/api/targets/${a.id}/resume` });
+    expect(sent).toHaveLength(1);
+    expect(JSON.parse(sent[0])).toMatchObject({
+      type: 'event',
+      event: { level: 'ok', message: expect.stringContaining('Resumed watching') },
+    });
+    await app2.close();
+  });
+
   // Guards the @fastify/websocket registration-timing bug: a route declared
   // synchronously before the plugin loads silently becomes a plain GET, and the
   // upgrade 500s ("socket.on is not a function") — the client then reconnects

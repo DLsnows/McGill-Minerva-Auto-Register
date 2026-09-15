@@ -180,6 +180,109 @@ describe('Courses', () => {
     expect(del).toHaveBeenCalledWith('t1');
   });
 
+  // Q3: the server revives a breaker-stopped target when a query field is edited
+  // (that is literally what the error message tells the user to fix). Saving one
+  // must therefore also make sure the engine is running — otherwise the course
+  // flips back to "watching" with nothing polling it.
+  it('starts the scheduler after saving a correction to an errored course', async () => {
+    mockAll([
+      {
+        id: 't1',
+        label: 'COMP 551',
+        term: '202701',
+        subject: 'COMP',
+        courseNumber: '551',
+        targetCrn: '2347',
+        faculty: 'Faculty of Science',
+        mode: 'auto',
+        status: 'error',
+        createdAt: 0,
+      },
+    ]);
+    vi.spyOn(api, 'updateTarget').mockResolvedValue({} as never);
+    const startScheduler = vi.spyOn(api, 'startScheduler').mockResolvedValue({ running: true });
+    renderCourses();
+    await waitFor(() =>
+      expect(screen.getByText('COMP 551', { selector: '.title' })).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /edit/i }));
+    const editForm = screen.getByRole('button', { name: 'Save' }).closest('form')!;
+    await userEvent.clear(within(editForm).getByLabelText('Target CRN'));
+    await userEvent.type(within(editForm).getByLabelText('Target CRN'), '2222');
+    await userEvent.click(within(editForm).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(startScheduler).toHaveBeenCalled());
+  });
+
+  it('does not touch the scheduler when saving an edit to a non-errored course', async () => {
+    mockAll([
+      {
+        id: 't1',
+        label: 'COMP 551',
+        term: '202701',
+        subject: 'COMP',
+        courseNumber: '551',
+        targetCrn: '2347',
+        faculty: 'Faculty of Science',
+        mode: 'auto',
+        status: 'watching',
+        createdAt: 0,
+      },
+    ]);
+    vi.spyOn(api, 'updateTarget').mockResolvedValue({} as never);
+    const startScheduler = vi.spyOn(api, 'startScheduler').mockResolvedValue({ running: true });
+    renderCourses();
+    await waitFor(() =>
+      expect(screen.getByText('COMP 551', { selector: '.title' })).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /edit/i }));
+    const editForm = screen.getByRole('button', { name: 'Save' }).closest('form')!;
+    await userEvent.clear(within(editForm).getByLabelText('Target CRN'));
+    await userEvent.type(within(editForm).getByLabelText('Target CRN'), '2222');
+    await userEvent.click(within(editForm).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateTarget).toHaveBeenCalled());
+    expect(startScheduler).not.toHaveBeenCalled();
+  });
+
+  it('still reports success but warns when the post-save scheduler start fails', async () => {
+    mockAll([
+      {
+        id: 't1',
+        label: 'COMP 551',
+        term: '202701',
+        subject: 'COMP',
+        courseNumber: '551',
+        targetCrn: '2347',
+        faculty: 'Faculty of Science',
+        mode: 'auto',
+        status: 'error',
+        createdAt: 0,
+      },
+    ]);
+    vi.spyOn(api, 'updateTarget').mockResolvedValue({} as never);
+    vi.spyOn(api, 'startScheduler').mockRejectedValue(new Error('engine down'));
+    renderCourses();
+    await waitFor(() =>
+      expect(screen.getByText('COMP 551', { selector: '.title' })).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /edit/i }));
+    const editForm = screen.getByRole('button', { name: 'Save' }).closest('form')!;
+    await userEvent.clear(within(editForm).getByLabelText('Target CRN'));
+    await userEvent.type(within(editForm).getByLabelText('Target CRN'), '2222');
+    await userEvent.click(within(editForm).getByRole('button', { name: 'Save' }));
+
+    // The save itself succeeded, so it must not be reported as a failed save —
+    // but the broken engine has to be visible.
+    await waitFor(() =>
+      expect(screen.getByText(/starting the scheduler failed/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/engine down/)).toBeNull();
+  });
+
   /**
    * Q13 variant C, Courses page: a failed `GET /api/targets` rendered "No courses
    * yet." — indistinguishable from a genuinely empty configuration, with no retry
