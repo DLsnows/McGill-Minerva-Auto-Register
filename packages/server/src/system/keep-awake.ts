@@ -78,6 +78,17 @@ export const KEEPER_REFRESH_SECONDS = 5;
 /** How often we re-check the power source to follow AC ↔ battery changes. */
 export const POWER_POLL_MS = 60_000;
 
+/**
+ * How long a power reading stays usable before the next tick re-reads it.
+ *
+ * Equal to the watchdog interval on purpose: every watchdog tick must therefore see
+ * a stale reading and probe (that is how plugging in the charger is noticed), while
+ * the `PUT /api/settings` path — which reaches the same `tick()` on every save —
+ * reuses the cached reading instead of parking the save behind PowerShell. Both
+ * behaviours come from this one number rather than from per-caller flags.
+ */
+export const PROBE_STALE_MS = POWER_POLL_MS;
+
 /** Grace period before force-killing a keeper that did not exit on its own. */
 export const KEEPER_EXIT_GRACE_MS = 4_000;
 
@@ -227,6 +238,24 @@ export function shouldHold(powerSource: PowerSource, settingEnabled: boolean): b
   return false;
 }
 
+/**
+ * Pure decision: keep holding through a probe that could not read the source?
+ *
+ * Only when the last reading that actually landed was `desktop`. A desktop has no
+ * battery at all, so a later `unknown` cannot mean "possibly on battery" — it can
+ * only mean the probe failed, and dropping the hold would break the guarantee the
+ * UI makes for desktops over a single transient CIM error.
+ *
+ * Every other case keeps the conservative fail-safe: `ac` is a laptop that may have
+ * been unplugged, and `unknown`/`battery` carry no evidence that holding is safe.
+ */
+export function shouldKeepHoldingThroughFailure(
+  powerSource: PowerSource,
+  lastSettledSource: PowerSource,
+): boolean {
+  return powerSource === 'unknown' && lastSettledSource === 'desktop';
+}
+
 function reasonFor(
   powerSource: PowerSource,
   settingEnabled: boolean,
@@ -273,6 +302,15 @@ class KeepAwakeManager implements KeepAwake {
   /** Whether a probe has ever completed (successfully or not). Distinguishes an
    * in-flight first probe from a settled "we could not read it" outcome. */
   private probeSettled = false;
+  /** When the last probe *attempt* finished, or `undefined` if none ever did.
+   * Drives the staleness rule in `tick()`/`refreshPowerSourceIfUnknown()`: a fresh
+   * reading is reused, a stale one is re-read. Set on failure too, so a doomed probe
+   * cannot be retried once per request. */
+  private lastProbeAt: number | undefined;
+  /** The last power reading that actually landed (never set by a failed probe).
+   * Distinguishes "this is a desktop, the probe just hiccuped" from "we have never
+   * read this machine" — see `shouldKeepHoldingThroughFailure()`. */
+  private lastSource: PowerSource = 'unknown';
   /** Set when a keeper we started exited on its own; cleared when one is running. */
   private keeperFailed = false;
   /** Set once the keeper has confirmed it holds the request (its `READY` line).
@@ -295,6 +333,11 @@ class KeepAwakeManager implements KeepAwake {
     return this.platform === 'win32';
   }
 
+  /** Injectable clock, so a test can drive probe staleness without waiting 60s. */
+  private now(): number {
+    return Date.now();
+  }
+
   get keeperPid(): number | undefined {
     return this.child?.pid;
   }
@@ -315,7 +358,16 @@ class KeepAwakeManager implements KeepAwake {
    * Concurrent callers share one in-flight probe instead of stacking spawns.
    */
   refreshPowerSourceIfUnknown(): void {
-    if (!this.isSupported() || this.powerSource !== 'unknown' || this.probeInFlight) return;
+    // Bounded by the same freshness rule as `tick()`, which is what keeps this from
+    // spawning a doomed PowerShell process on every call: a *failed* probe also
+    // leaves the source 'unknown', so a plain `powerSource !== 'unknown'` check here
+    // meant that for as long as CIM kept failing, each `GET /api/power` poll (the
+    // settings page polls it every 30s) spawned another probe that could not
+    // succeed. `probeSettled` identifies "the reading landed and failed" — the case
+    // that must not retry on every poll — while still allowing a retry once the
+    // reading is stale, so a machine whose first probe failed does recover.
+    if (!this.isSupported()) return;
+    if (this.lastProbeAt !== undefined && this.now() - this.lastProbeAt < PROBE_STALE_MS) return;
     void this.probeOnce();
   }
 
@@ -332,6 +384,11 @@ class KeepAwakeManager implements KeepAwake {
   private async probePowerSource(): Promise<void> {
     try {
       this.powerSource = await this.probe();
+      // Remember the last reading that actually landed, separately from the current
+      // one: a later failed probe overwrites `powerSource` with `unknown`, and
+      // losing the fact that this is a desktop would drop a hold that is safe to
+      // keep. See `shouldKeepHoldingThroughFailure()`.
+      this.lastSource = this.powerSource;
     } catch (err) {
       console.error(
         '[keep-awake] power probe failed:',
@@ -339,8 +396,11 @@ class KeepAwakeManager implements KeepAwake {
       );
       this.powerSource = 'unknown';
     } finally {
-      // Either way the reading is settled now, so 'pending' no longer applies.
+      // Either way the reading is settled now, so 'pending' no longer applies…
       this.probeSettled = true;
+      // …and the attempt is timestamped, so a *failed* probe is not retried once per
+      // request — only once the reading goes stale (see `PROBE_STALE_MS`).
+      this.lastProbeAt = this.now();
     }
   }
 
@@ -356,13 +416,13 @@ class KeepAwakeManager implements KeepAwake {
   /**
    * Turn the switch on.
    *
-   * `tick(true)` forces a fresh reading only when none has ever landed. It must NOT
-   * probe unconditionally: `PUT /api/settings` awaits `apply()`, so re-probing on
-   * every save would park an unrelated settings save behind a PowerShell round trip
-   * (~0.5s typical, up to `QUERY_TIMEOUT_MS` when PowerShell is slow or broken — the
-   * exact machine this feature promises to degrade gracefully on). The 60s watchdog
-   * owns keeping the reading current; the first reading is the only one a caller
-   * genuinely has to wait for.
+   * Probes only while no reading has ever landed; see `tick()` for why an
+   * unconditional probe here was wrong. In short, `apply()` calls this on *every*
+   * `PUT /api/settings`, so probing each time parked an unrelated settings save
+   * behind a PowerShell round trip (~0.5s typical, up to `QUERY_TIMEOUT_MS` when
+   * PowerShell is slow or broken — the exact machine this feature promises to
+   * degrade gracefully on). The 60s watchdog owns keeping the reading current; the
+   * first reading is the only one a caller genuinely has to wait for.
    */
   async start(intervalMs = POWER_POLL_MS): Promise<KeepAwakeStatus> {
     this.settingEnabled = true;
@@ -371,7 +431,10 @@ class KeepAwakeManager implements KeepAwake {
       return this.status();
     }
     this.intervalMs = intervalMs;
-    await this.tick(true);
+    // No argument: `tick()` itself decides whether the cached reading is stale. This
+    // is the call reached from `apply()` on every settings save, so it must reuse a
+    // fresh reading instead of probing again.
+    await this.tick();
     if (!this.timer) {
       this.timer = setInterval(() => void this.tick(), this.intervalMs);
       // Never let the watchdog alone keep the process alive.
@@ -439,14 +502,39 @@ class KeepAwakeManager implements KeepAwake {
     }
   }
 
-  private async tick(probe = true): Promise<void> {
+  private async tick(): Promise<void> {
     if (!this.isSupported()) return;
-    // Only the first tick (and the watchdog) probes; see `start()` for why.
-    if (probe || this.powerSource === 'unknown') await this.probeOnce();
+    // Probe only when the cached reading is actually stale.
+    //
+    // This one rule covers both callers, which want opposite things:
+    //
+    //   * the 60s watchdog must re-read, because noticing that the charger was
+    //     plugged in *is* its job — its interval equals `PROBE_STALE_MS`, so every
+    //     watchdog tick sees a stale reading and probes;
+    //   * `start()` must NOT re-read when a fresh reading exists, because `apply()`
+    //     calls it on *every* `PUT /api/settings` — re-probing there parked an
+    //     unrelated settings save behind a PowerShell round trip (~0.5s typically,
+    //     up to `QUERY_TIMEOUT_MS` on the slow/hung machine this feature exists to
+    //     degrade gracefully on). The single-flight in `probeOnce()` does not help:
+    //     in steady state nothing is in flight, so every save started a fresh probe.
+    //
+    // A reading that has never landed is always stale, so the first tick (and each
+    // `start()` on a machine whose probe keeps failing) still waits for one.
+    if (this.lastProbeAt === undefined || this.now() - this.lastProbeAt >= PROBE_STALE_MS) {
+      await this.probeOnce();
+    }
     const hold = shouldHold(this.powerSource, this.settingEnabled);
-    if (hold && !this.child) {
+    // A transient probe failure must not drop a hold we know is safe. `unknown`
+    // normally means "cannot establish AC vs battery", and releasing is the right
+    // fail-safe — but on a machine already established as a *desktop* there is no
+    // battery to protect, so `unknown` can only mean "the probe failed", and killing
+    // the keeper would silently break the UI's "stays awake the whole time the switch
+    // is on" promise over one CIM hiccup. A laptop last seen on `ac` is deliberately
+    // NOT covered: there, `unknown` may mean the charger was pulled.
+    const keepHolding = hold || shouldKeepHoldingThroughFailure(this.powerSource, this.lastSource);
+    if (keepHolding && !this.child) {
       this.spawnKeeper();
-    } else if (!hold && this.child) {
+    } else if (!keepHolding && this.child) {
       this.killChild();
     }
     // While disabled the cached source still drives the UI wording.

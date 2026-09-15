@@ -8,10 +8,12 @@ import {
   KEEPER_REFRESH_SECONDS,
   POWER_POLL_MS,
   POWER_QUERY_SCRIPT,
+  PROBE_STALE_MS,
   createKeepAwake,
   detectPowerSource,
   parsePowerSourceOutput,
   shouldHold,
+  shouldKeepHoldingThroughFailure,
   type PowerSource,
 } from './keep-awake';
 
@@ -128,6 +130,18 @@ describe('keep-awake', () => {
       const status = await manager.start();
       expect(h.spawn).not.toHaveBeenCalled();
       expect(status).toMatchObject({ active: false, settingEnabled: true, reason: 'battery' });
+    });
+
+    it('only a desktop keeps holding through a failed probe', () => {
+      // `unknown` after a desktop reading can only mean "the probe failed" — a
+      // desktop has no battery to protect. After `ac` it can mean "unplugged".
+      expect(shouldKeepHoldingThroughFailure('unknown', 'desktop')).toBe(true);
+      expect(shouldKeepHoldingThroughFailure('unknown', 'ac')).toBe(false);
+      expect(shouldKeepHoldingThroughFailure('unknown', 'battery')).toBe(false);
+      expect(shouldKeepHoldingThroughFailure('unknown', 'unknown')).toBe(false);
+      // Only `unknown` is a failure state; a real reading always decides normally.
+      expect(shouldKeepHoldingThroughFailure('battery', 'desktop')).toBe(false);
+      expect(shouldKeepHoldingThroughFailure('ac', 'desktop')).toBe(false);
     });
 
     it('starts a keeper on AC and stops it again when switching to battery', async () => {
@@ -358,6 +372,184 @@ describe('keep-awake', () => {
       // An absent field counts as "off" — the default is opt-in.
       await manager.apply({ keepAwake: true });
       expect(await manager.apply({})).toMatchObject({ active: false });
+    });
+  });
+
+  describe('probe staleness (Claude review on #37)', () => {
+    it('does not re-probe on every settings save while the reading is fresh', async () => {
+      // `PUT /api/settings` awaits `apply()` on *every* save, and `apply()` routes to
+      // `start()` when the switch is on. Probing each time parked an unrelated save
+      // behind a PowerShell round trip: ~0.5s typical, up to QUERY_TIMEOUT_MS on the
+      // slow/hung-PowerShell machine this feature exists to degrade gracefully on.
+      const h = harness();
+      const probe = vi.fn((): PowerSource => 'ac');
+      const manager = makeManager(h, 'win32', probe);
+
+      await manager.apply({ keepAwake: true });
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(h.spawn).toHaveBeenCalledTimes(1);
+
+      // Three unrelated saves in a row: the cached reading is reused every time, and
+      // the already-holding keeper is not re-spawned either.
+      for (let i = 0; i < 3; i++) await manager.apply({ keepAwake: true });
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(h.spawn).toHaveBeenCalledTimes(1);
+
+      manager.stop();
+    });
+
+    it('re-probes once the reading goes stale, so a save still notices a replug', async () => {
+      vi.useFakeTimers();
+      const h = harness();
+      let source: PowerSource = 'ac';
+      const probe = vi.fn((): PowerSource => source);
+      const manager = makeManager(h, 'win32', probe);
+
+      await manager.apply({ keepAwake: true });
+      await flush();
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
+
+      // Unplug and let the staleness window lapse; the next save re-reads and releases.
+      source = 'battery';
+      await vi.advanceTimersByTimeAsync(PROBE_STALE_MS);
+      await manager.apply({ keepAwake: true });
+      expect(probe.mock.calls.length).toBeGreaterThan(1);
+      expect(manager.status()).toMatchObject({ active: false, reason: 'battery' });
+
+      manager.stop();
+    });
+
+    it('a failed probe is not retried on every /api/power poll', async () => {
+      // The guard used to be `powerSource !== 'unknown'`, but a *failed* probe also
+      // leaves the source 'unknown' — so on a machine where PowerShell/CIM keeps
+      // failing, each 30s poll spawned another doomed probe, forever.
+      //
+      // The failure must be ASYNC here, like the real probe: a probe that throws
+      // synchronously rejects before `probeOnce()` has stored the in-flight promise,
+      // so the old guard's `probeInFlight` check would mask the defect and the test
+      // would pass against the broken code.
+      const h = harness();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const probe = vi.fn((): Promise<PowerSource> => Promise.reject(new Error('CIM unavailable')));
+      const manager = makeManager(h, 'win32', probe);
+
+      manager.status();
+      await vi.waitFor(() => expect(errorSpy).toHaveBeenCalled());
+      // Three drains, not one: the rejected probe has to leave `probeInFlight`, which
+      // is precisely the state the old guard mistook for "never tried". Polling before
+      // that lands would be masked by the in-flight check and would pass against the
+      // broken code.
+      await flush();
+      await flush();
+      await flush();
+      const afterFirst = probe.mock.calls.length;
+      expect(afterFirst).toBe(1);
+
+      // Many polls inside the staleness window: not one further spawn.
+      for (let i = 0; i < 5; i++) manager.status();
+      await flush();
+      expect(probe).toHaveBeenCalledTimes(afterFirst);
+      expect(manager.status()).toMatchObject({ supported: true, powerSource: 'unknown' });
+    });
+
+    it('a failed probe is retried once the reading goes stale, so it can recover', async () => {
+      vi.useFakeTimers();
+      const h = harness();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      let failing = true;
+      const probe = vi.fn((): PowerSource => {
+        if (failing) throw new Error('CIM unavailable');
+        return 'battery';
+      });
+      const manager = makeManager(h, 'win32', probe);
+
+      // Two polls while failing: the first spawns the probe, the second confirms the
+      // settled-and-failed state. (Written this way rather than with a single timed
+      // flush because the probe's `finally` — which timestamps the attempt — settles
+      // across several microtasks, and the point of this test is the retry *policy*,
+      // not the microtask depth.)
+      manager.status();
+      await flush();
+      manager.status();
+      await flush();
+      expect(errorSpy).toHaveBeenCalled();
+      expect(manager.status()).toMatchObject({ supported: true, powerSource: 'unknown' });
+
+      // Bounded retry, not "never again": after the window the reading is re-attempted.
+      failing = false;
+      await vi.advanceTimersByTimeAsync(PROBE_STALE_MS);
+      manager.status();
+      await flush();
+      await flush();
+      // `powerSource` is the subject — the switch was never turned on, so `reason`
+      // stays 'disabled' however good the reading is.
+      expect(manager.status()).toMatchObject({ powerSource: 'battery' });
+      expect(probe.mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it('keeps holding a DESKTOP through a transient probe failure', async () => {
+      // The UI promises a desktop "stays awake the whole time the switch is on", and a
+      // desktop has no battery — so an `unknown` reading there can only mean the probe
+      // failed. Dropping the hold would break that promise over one CIM hiccup.
+      vi.useFakeTimers();
+      const h = harness();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      let failing = false;
+      const probe = vi.fn((): PowerSource => {
+        if (failing) throw new Error('transient CIM error');
+        return 'desktop';
+      });
+      const manager = makeManager(h, 'win32', probe);
+
+      await manager.start();
+      await flush();
+      expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
+      const child = h.children[0];
+      expect(child.stdin.end).not.toHaveBeenCalled();
+
+      // One watchdog tick lands on a failed probe.
+      failing = true;
+      await vi.advanceTimersByTimeAsync(POWER_POLL_MS);
+      expect(errorSpy).toHaveBeenCalled();
+      // Still holding: the keeper was neither released nor re-spawned.
+      expect(h.children).toHaveLength(1);
+      expect(child.stdin.end).not.toHaveBeenCalled();
+      expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
+
+      // The next reading lands again and everything is unchanged.
+      failing = false;
+      await vi.advanceTimersByTimeAsync(POWER_POLL_MS);
+      expect(h.children).toHaveLength(1);
+      expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
+
+      manager.stop();
+    });
+
+    it('still releases a LAPTOP the moment a failed probe cannot confirm AC', async () => {
+      // The deliberate other half: last seen on `ac` means "a laptop that may have been
+      // unplugged", so `unknown` must keep the conservative fail-safe and release.
+      vi.useFakeTimers();
+      const h = harness();
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      let failing = false;
+      const probe = vi.fn((): PowerSource => {
+        if (failing) throw new Error('transient CIM error');
+        return 'ac';
+      });
+      const manager = makeManager(h, 'win32', probe);
+
+      await manager.start();
+      await flush();
+      const child = h.children[0];
+      expect(manager.status()).toMatchObject({ active: true });
+
+      failing = true;
+      await vi.advanceTimersByTimeAsync(POWER_POLL_MS);
+      expect(child.stdin.end).toHaveBeenCalled();
+      expect(manager.status()).toMatchObject({ active: false, reason: 'unavailable' });
+
+      manager.stop();
     });
   });
 
