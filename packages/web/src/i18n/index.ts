@@ -6,11 +6,16 @@ export type Lang = (typeof LANGS)[number];
 
 const en = {
   nav: { dashboard: 'Dashboard', courses: 'Courses', session: 'Session', settings: 'Settings' },
+  // Shared by every page that consumes a `useResource` result (see
+  // components/ResourceError.tsx). `loadFailed` is parameterized with the
+  // resource's own name so one key covers targets/settings/budget.
+  resource: { loadFailed: 'Could not load {{name}}:', retry: 'Retry' },
   ticker: {
     watching: 'Watching', interval: 'Interval', minSuffix: '± {{j}} min',
     todayQuery: 'Today · Query', todayRegister: 'Today · Register', session: 'Session',
     sessActive: 'Active', sessLoggingIn: 'Logging in', sessLoggedOut: 'Logged out', sessUnknown: 'Unknown',
     notLoaded: '— / —',
+    settingsLabel: 'Poll cadence', budgetLabel: "Today's budget", watchingLabel: 'Watched courses',
   },
   mode: { notify: 'Notify', auto: 'Auto', toggleAria: 'toggle mode' },
   scheduler: { running: 'Watching · running', stopped: 'Watching · stopped', start: '▶ Start all', stop: '■ Stop all', loginFirst: 'Log in first' },
@@ -52,10 +57,15 @@ const en = {
     loginToStart: 'Not logged in — open the Session tab and log in before starting the engine.',
     engineRunning: 'Engine · running',
     engineStopped: 'Engine · stopped',
+    loading: 'Loading courses…',
+    loadFailedLabel: 'Course list',
   },
   courses: {
     addACourse: 'Add a course', addCourse: 'Add course', managed: 'Managed courses',
     empty: 'No courses yet.', save: 'Save', edit: 'Edit', delete: 'Delete', opFailed: 'Operation failed.',
+    loading: 'Loading courses…',
+    loadFailedLabel: 'Course list',
+    savedButRefreshFailed: 'The change was applied, but re-reading the course list failed:',
   },
   settings: {
     title: 'Settings', pollInterval: 'Poll interval (min)', jitter: 'Jitter (min)',
@@ -65,9 +75,11 @@ const en = {
     emailSection: 'Email (SMTP)', setupGuide: 'Setup guide ↗',
     smtpHost: 'SMTP host', smtpPort: 'SMTP port', smtpUser: 'SMTP user', smtpPass: 'SMTP pass', emailTo: 'Email to',
     saveSettings: 'Save settings', saved: 'Saved ✓', loading: 'Loading settings…',
+    loadFailed: 'Settings could not be loaded. Use ⟳ Retry in the bar above the ticker.',
     emailRequired: 'All email fields are required when email notifications are enabled.',
     saveFailed: 'Failed to save settings.',
     savedButRefreshFailed: 'Settings were saved, but re-reading them failed:',
+    savedButBudgetStale: 'Settings were saved, but the budget snapshot is stale — see the bar above the ticker.',
     dryRun: 'Dry-run (rehearsal) mode', dryRunAria: 'Dry-run mode',
     pacingNote: 'Jitter and a low poll frequency make the automation behave like a human — they help avoid McGill’s servers flagging unusual / bot-like activity and rate-limiting or locking the account. Keep the interval reasonably high and leave jitter on.',
   },
@@ -87,11 +99,13 @@ const en = {
 
 const zh: typeof en = {
   nav: { dashboard: '主控台', courses: '课程', session: '会话', settings: '设置' },
+  resource: { loadFailed: '无法加载{{name}}：', retry: '重试' },
   ticker: {
     watching: '监控中', interval: '间隔', minSuffix: '± {{j}} 分',
     todayQuery: '今日 · 查询', todayRegister: '今日 · 注册', session: '会话',
     sessActive: '已登录', sessLoggingIn: '登录中', sessLoggedOut: '已登出', sessUnknown: '未知',
     notLoaded: '— / —',
+    settingsLabel: '轮询节奏', budgetLabel: '今日预算', watchingLabel: '监控中的课程',
   },
   mode: { notify: '提醒', auto: '自动', toggleAria: '切换模式' },
   scheduler: { running: '监控 · 运行中', stopped: '监控 · 已停止', start: '▶ 全部启动', stop: '■ 全部停止', loginFirst: '请先登录' },
@@ -133,10 +147,15 @@ const zh: typeof en = {
     loginToStart: '未登录 —— 请先到「会话」页登录,再启动引擎。',
     engineRunning: '引擎 · 运行中',
     engineStopped: '引擎 · 已停止',
+    loading: '加载课程中…',
+    loadFailedLabel: '课程列表',
   },
   courses: {
     addACourse: '添加课程', addCourse: '添加', managed: '已管理课程',
     empty: '暂无课程。', save: '保存', edit: '编辑', delete: '删除', opFailed: '操作失败。',
+    loading: '加载课程中…',
+    loadFailedLabel: '课程列表',
+    savedButRefreshFailed: '改动已生效，但重新读取课程列表失败：',
   },
   settings: {
     title: '设置', pollInterval: '轮询间隔(分)', jitter: '抖动(分)',
@@ -146,9 +165,11 @@ const zh: typeof en = {
     emailSection: '邮件(SMTP)', setupGuide: '配置指南 ↗',
     smtpHost: 'SMTP 主机', smtpPort: 'SMTP 端口', smtpUser: 'SMTP 用户', smtpPass: 'SMTP 密码', emailTo: '收件人',
     saveSettings: '保存设置', saved: '已保存 ✓', loading: '加载设置中…',
+    loadFailed: '无法加载设置。请使用顶部 ticker 上方错误条里的 ⟳ 重试。',
     emailRequired: '启用邮件通知时,所有邮件字段均为必填。',
     saveFailed: '保存设置失败。',
     savedButRefreshFailed: '设置已保存，但重新读取失败：',
+    savedButBudgetStale: '设置已保存，但预算快照已过期 —— 见顶部 ticker 上方的错误条。',
     dryRun: 'Dry-run（演练）模式', dryRunAria: '演练模式',
     pacingNote: '抖动和较低的轮询频率让自动化更像真人操作 —— 有助于避免被 McGill 服务器判定为异常 / 机器人行为，进而被限流或锁定账号。建议保持较长的间隔并开启抖动。',
   },
@@ -168,11 +189,13 @@ const zh: typeof en = {
 
 const fr: typeof en = {
   nav: { dashboard: 'Tableau de bord', courses: 'Cours', session: 'Session', settings: 'Paramètres' },
+  resource: { loadFailed: 'Impossible de charger {{name}} :', retry: 'Réessayer' },
   ticker: {
     watching: 'Surveillance', interval: 'Intervalle', minSuffix: '± {{j}} min',
     todayQuery: "Aujourd'hui · Requêtes", todayRegister: "Aujourd'hui · Inscriptions", session: 'Session',
     sessActive: 'Actif', sessLoggingIn: 'Connexion', sessLoggedOut: 'Déconnecté', sessUnknown: 'Inconnu',
     notLoaded: '— / —',
+    settingsLabel: 'Cadence de sondage', budgetLabel: 'Budget du jour', watchingLabel: 'Cours surveillés',
   },
   mode: { notify: 'Notifier', auto: 'Auto', toggleAria: 'changer de mode' },
   scheduler: { running: 'Surveillance · active', stopped: 'Surveillance · arrêtée', start: '▶ Tout démarrer', stop: '■ Tout arrêter', loginFirst: "Connectez-vous d'abord" },
@@ -214,10 +237,15 @@ const fr: typeof en = {
     loginToStart: "Non connecté — ouvrez l'onglet Session et connectez-vous avant de démarrer le moteur.",
     engineRunning: 'Moteur · en marche',
     engineStopped: 'Moteur · arrêté',
+    loading: 'Chargement des cours…',
+    loadFailedLabel: 'Liste des cours',
   },
   courses: {
     addACourse: 'Ajouter un cours', addCourse: 'Ajouter', managed: 'Cours gérés',
     empty: 'Aucun cours.', save: 'Enregistrer', edit: 'Modifier', delete: 'Supprimer', opFailed: "Échec de l'opération.",
+    loading: 'Chargement des cours…',
+    loadFailedLabel: 'Liste des cours',
+    savedButRefreshFailed: 'La modification a été appliquée, mais la relecture de la liste des cours a échoué :',
   },
   settings: {
     title: 'Paramètres', pollInterval: 'Intervalle de sondage (min)', jitter: 'Gigue (min)',
@@ -227,9 +255,11 @@ const fr: typeof en = {
     emailSection: 'Courriel (SMTP)', setupGuide: 'Guide de configuration ↗',
     smtpHost: 'Hôte SMTP', smtpPort: 'Port SMTP', smtpUser: 'Utilisateur SMTP', smtpPass: 'Mot de passe SMTP', emailTo: 'Destinataire',
     saveSettings: 'Enregistrer', saved: 'Enregistré ✓', loading: 'Chargement des paramètres…',
+    loadFailed: 'Impossible de charger les paramètres. Utilisez ⟳ Réessayer dans la barre au-dessus du bandeau.',
     emailRequired: 'Tous les champs courriel sont requis lorsque les notifications par courriel sont activées.',
     saveFailed: "Échec de l'enregistrement des paramètres.",
     savedButRefreshFailed: 'Les paramètres ont été enregistrés, mais leur relecture a échoué :',
+    savedButBudgetStale: 'Les paramètres ont été enregistrés, mais l’instantané du budget est obsolète — voir la barre au-dessus du bandeau.',
     dryRun: 'Mode simulation (dry-run)', dryRunAria: 'Mode simulation',
     pacingNote: "La gigue et une faible fréquence de sondage rendent l'automatisation semblable à un humain — elles aident à éviter que les serveurs de McGill ne signalent une activité anormale / robotisée et limitent le débit ou verrouillent le compte. Gardez un intervalle assez élevé et laissez la gigue activée.",
   },
@@ -280,3 +310,4 @@ export function setLang(lng: Lang): void {
 }
 
 export default i18n;
+
