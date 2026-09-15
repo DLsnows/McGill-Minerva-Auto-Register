@@ -23,8 +23,8 @@
  *     what is on disk. A gate that only looked at commits would happily report green for
  *     uncommitted work — the exact failure this mode exists to prevent.
  *
- *   commit (CI) — the change set is `<base>...HEAD` and the content is read from the index:
- *     precisely the commit being pushed, which is also what CI checks out.
+ *   commit (CI) — the change set is <base>...HEAD and the content is read from
+ *     HEAD:<path>: precisely the commit being pushed, which is also what CI checks out.
  *
  * Usage:
  *   node scripts/ci/format-check-changed.mjs [--base <ref>] [--ext .ts,.tsx,...] [--list]
@@ -86,8 +86,9 @@ const MODE = BASE_COMPARE ? 'no-new-violations' : 'strict';
 //   worktree — the files on disk, including staged, unstaged and untracked changes.
 //              This is what a local `npm run gates` must check: a green light on work that
 //              has not been committed yet is worse than no gate at all.
-//   commit   — the git index (`:<path>`), i.e. exactly the commit being pushed. That is
-//              what CI checks out, so the two agree there.
+//   commit   — `HEAD:<path>`, the commit being pushed. That is what CI checks out, and it
+//              matches the `<merge-base>...HEAD` change set (the index would not, once a
+//              local run has staged edits).
 // Picked by `--mode`, or automatically: CI=true → commit, otherwise worktree.
 const CI_MODE = argValue('--mode') ?? (process.env.CI ? 'commit' : 'worktree');
 if (!['worktree', 'commit'].includes(CI_MODE)) {
@@ -219,15 +220,25 @@ function baseContent(mergeBase, relPath) {
 }
 
 /**
- * Content to validate for `relPath`, or null when there is nothing to validate (the file
- * was deleted in the worktree and still shows up as modified in the diff).
+ * Content to validate for `relPath`, or null when there is nothing to validate.
+ *
+ * In `commit` mode this reads `HEAD:<path>`, matching the change set from
+ * `<merge-base>...HEAD`. The index (`:<path>`) would be the wrong source: it agrees with
+ * HEAD only on a clean checkout, so a local `--mode commit` with staged edits would check
+ * content that does not correspond to the files the diff listed — and a staged-new file
+ * would be listed by neither. CI checks out the commit, so the two coincide there.
+ *
+ * In `worktree` mode the file on disk is the source of truth; a path that no longer exists
+ * (deleted in the working tree but still reported as modified) yields null.
  */
 function currentContent(relPath) {
   if (CI_MODE === 'commit') {
-    return execFileSync('git', ['show', `:${relPath}`], {
+    const res = spawnSync('git', ['show', `HEAD:${relPath}`], {
       cwd: REPO_ROOT,
+      encoding: 'buffer',
       maxBuffer: 64 * 1024 * 1024,
     });
+    return res.status === 0 ? res.stdout : null;
   }
   const absolute = join(REPO_ROOT, relPath);
   if (!existsSync(absolute)) return null;

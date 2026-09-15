@@ -167,15 +167,37 @@ function validateDependabot() {
  */
 function validateDependabotGateAgreement(dependabotDoc, branchGateDoc) {
   const label = '.github/dependabot.yml + .github/workflows/branch-gate.yml';
-  const target = dependabotDoc?.updates?.[0]?.['target-branch'];
-  if (target !== 'dev') return; // nothing to reconcile
+
+  // A missing branch-gate document means the YAML failed to parse, which is already
+  // reported; adding "must allow dependabot/*" here would point at the wrong cause.
+  if (!branchGateDoc) return;
+
+  // Every ecosystem entry is considered, not just `updates[0]`: adding a `github-actions`
+  // block ahead of the npm one must not silently disable this guard, and the same rule
+  // applies to any entry that targets `dev`.
+  const entries = dependabotDoc?.updates ?? [];
+  const npmEntries = entries.filter((e) => e?.['package-ecosystem'] === 'npm');
+
+  // `target-branch` absent means Dependabot falls back to the default branch (`prod`), which
+  // is exactly what this repository moved away from — and it is also what makes dependency
+  // PRs unmergeable under the promotion chain.
+  for (const [i, entry] of npmEntries.entries()) {
+    check(
+      Boolean(entry['target-branch']),
+      `${label} (npm entry #${i + 1})`,
+      'the npm update entry must pin `target-branch: dev`; without it Dependabot opens PRs against the default branch (`prod`), which the promotion chain rejects',
+    );
+  }
+
+  const targetsDev = npmEntries.some((entry) => entry['target-branch'] === 'dev');
+  if (!targetsDev) return; // nothing to reconcile with the gate
 
   const steps = branchGateDoc?.jobs?.['branch-gate']?.steps ?? [];
   const gateRun = steps.map((s) => s?.run ?? '').join('\n');
   check(
     gateRun.includes('dependabot/*'),
     label,
-    '`dependabot.yml` sets `target-branch: dev`, so branch-gate.yml must allow `dependabot/*` into `dev` (otherwise every dependency PR is guaranteed to fail the gate)',
+    '`dependabot.yml` targets `dev`, so branch-gate.yml must allow `dependabot/*` into `dev` (otherwise every dependency PR is guaranteed to fail the gate)',
   );
 }
 
