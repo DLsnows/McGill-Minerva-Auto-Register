@@ -116,8 +116,9 @@ export class RegisterClient {
 
   /**
    * Return the existing registered/waitlisted outcome when the worksheet's
-   * Current Schedule already contains `crn`, otherwise null. Reading failures
-   * are ignored (we fall through and submit as before).
+   * Current Schedule already contains `crn`, otherwise null. Unreadable or
+   * unparseable documents are ignored (we fall through and submit as before) —
+   * this check is a safety net, not the primary path.
    */
   private async readCurrentSchedule(page: Page, crn: string): Promise<RegisterOutcome | null> {
     await page
@@ -129,7 +130,12 @@ export class RegisterClient {
     } catch {
       return null;
     }
-    const outcome = parseRegisterResult(html, crn);
+    let outcome: RegisterOutcome;
+    try {
+      outcome = parseRegisterResult(html, crn);
+    } catch {
+      return null;
+    }
     return outcome.kind === 'registered' || outcome.kind === 'waitlisted' ? outcome : null;
   }
 

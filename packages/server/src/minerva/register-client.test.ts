@@ -6,6 +6,21 @@ import { SessionManager } from '../session/session-manager';
 // Real pacing is 3s ± 1s of deliberate human-like delay; irrelevant here.
 vi.mock('../util/pacing', () => ({ humanPause: async () => undefined }));
 
+/** Lets one test make the result parser throw, without changing any other test. */
+const parseHook = vi.hoisted(() => ({ throwOnNextParse: false }));
+vi.mock('./parse-register-result', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./parse-register-result')>();
+  return {
+    parseRegisterResult: (html: string, crn: string) => {
+      if (parseHook.throwOnNextParse) {
+        parseHook.throwOnNextParse = false;
+        throw new Error('parser exploded');
+      }
+      return actual.parseRegisterResult(html, crn);
+    },
+  };
+});
+
 const QUICK_ADD_URL = 'https://horizon.mcgill.ca/pban1/bwskfreg.P_AltPin';
 
 /** The Quick Add/Drop worksheet, before submitting. */
@@ -270,5 +285,18 @@ ${schedRow('1814', 'Waitlist on Jun 01, 2026')}
     // Reporting the stale page would tell the user "will reassess next cycle"
     // while the waitlist join already happened.
     expect(outcome.kind).toBe('waitlisted');
+  });
+
+  it('falls through to the submission when the worksheet cannot be parsed', async () => {
+    const page = new FakePage();
+    page.onSubmit = () => page.queueReads(RESULT_REGISTERED);
+    parseHook.throwOnNextParse = true; // the pre-submit safety-net read explodes
+
+    const outcome = await clientFor(page).then((c) => c.act('202701', '1814', 'REGISTER'));
+
+    // The safety-net check must not break act()'s "never throws on a normal
+    // Minerva error" contract: fall through and submit as before.
+    expect(submits(page)).toBe(1);
+    expect(outcome.kind).toBe('registered');
   });
 });
