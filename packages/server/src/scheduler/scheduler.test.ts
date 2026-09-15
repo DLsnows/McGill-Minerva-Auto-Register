@@ -419,6 +419,23 @@ describe('Scheduler failure attribution (Q22)', () => {
     expect(store.getTarget(target.id)!.nextPollAt!).toBeGreaterThan(NOW);
   });
 
+  it('announces a page drift once per episode instead of on every poll', async () => {
+    const { store, scheduler, target } = setupPageDrift();
+
+    for (let i = 0; i < 4; i++) await scheduler.runOnce(target.id);
+
+    // `warn`/`error` push a desktop notification: a page that stays changed must
+    // not notify on every poll for as long as the daily budget lasts.
+    expect(
+      store
+        .recentEvents()
+        .filter((e) => e.level === 'error' && /page-structure problem/i.test(e.message)),
+    ).toHaveLength(1);
+    expect(
+      store.recentEvents().filter((e) => /page-structure problem/i.test(e.message)),
+    ).toHaveLength(4);
+  });
+
   it('still stops a target whose CRN is genuinely absent from readable results', async () => {
     const store = new Store(dir);
     const scheduler = new Scheduler({

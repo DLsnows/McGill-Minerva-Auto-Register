@@ -63,6 +63,9 @@ export class Scheduler {
   private readonly inFlight = new Set<string>();
   /** Per-target count of consecutive failed cycles (any error kind). */
   private readonly failureStreak = new Map<string, number>();
+  /** Targets currently reporting an unrecognized results page, so a long drift
+   * is announced once instead of on every poll (each `error` push notifies). */
+  private readonly structureReported = new Set<string>();
 
   constructor(private readonly deps: SchedulerDeps) {
     this.now = deps.now ?? Date.now;
@@ -128,9 +131,15 @@ export class Scheduler {
         // HTML, NOT about this CRN: counting it as "CRN not found" would stop the
         // target after 3 tries for the wrong reason (audit Q22). Keep watching
         // (and keep the last known stats) and report the real cause.
+        //
+        // `warn`/`error` push a desktop notification, so announce a drift episode
+        // once per target: a page that stays changed would otherwise notify on
+        // every poll for as long as the daily budget lasts.
+        const firstReport = !this.structureReported.has(targetId);
+        this.structureReported.add(targetId);
         this.log(
-          'error',
-          `Minerva results page not recognized: ${errMsg(e)} — this is a page-structure problem, not a missing CRN; keeping the last known stats and retrying.`,
+          firstReport ? 'error' : 'info',
+          `Minerva results page not recognized: ${errMsg(e)} — this is a page-structure problem, not a missing CRN; keeping the last known stats and retrying${firstReport ? '' : ' (already reported)'}.`,
           targetId,
         );
         this.scheduleNext(target);
@@ -141,6 +150,7 @@ export class Scheduler {
       return;
     }
     budget.recordQuery(now);
+    this.structureReported.delete(targetId); // the page is readable again
 
     if (!check) {
       // The query ran but the target CRN isn't among this course's sections.

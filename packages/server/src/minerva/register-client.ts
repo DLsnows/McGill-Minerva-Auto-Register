@@ -10,9 +10,11 @@ import { parseRegisterResult } from './parse-register-result';
  * sufficient: the page we submit FROM renders them too (the worksheet shows
  * Current Schedule, the waitlist-offer page shows Registration Errors), so this
  * anchor alone can resolve against the old document — see `submitChanges`.
+ * The class matches what `parseRegisterResult` reads, so the wait can never
+ * settle on a table the parser would ignore.
  */
 export const RESULT_ANCHOR =
-  'table[summary="Current Schedule"], table[summary*="Registration Errors"]';
+  'table.datadisplaytable[summary="Current Schedule"], table.datadisplaytable[summary*="Registration Errors"]';
 
 /** Attribute planted on the document we are submitting from, so the submit can
  * be distinguished from the response that replaces it. Exported for tests, which
@@ -207,14 +209,20 @@ export class RegisterClient {
         lastError = `the result page could not be parsed: ${errMsg(e)}`;
         continue;
       }
-      const stillSubmittedFrom = !replaced && submittedFrom !== null && html === submittedFrom;
-      if (stillSubmittedFrom) {
+      // A read may only be attributed to this submit when there is evidence the
+      // response replaced the page: an observed replacement, or a snapshot to
+      // compare against. With neither (no mark planted AND an unreadable
+      // snapshot) we cannot tell, so treat the read as inconclusive instead of
+      // trusting a page that may predate the submit.
+      const cannotConfirmReplacement =
+        !replaced && (submittedFrom === null || html === submittedFrom);
+      if (cannotConfirmReplacement) {
         // Same document we submitted from, and no replacement was observed: this
         // is a pre-submit statement, not a result of this submit. Keep re-reading,
         // but remember the waitlist offer — the LW re-submit is the one submit
         // whose own trigger page can legitimately be re-rendered as its answer.
         if (opts.acceptUnchanged && outcome.kind === 'waitlist-available') fallback = outcome;
-        lastError = 'the page still shows the worksheet we submitted from';
+        lastError = 'could not confirm the page was replaced by the submission result';
         continue;
       }
       if (outcome.kind !== 'not-found') return outcome;

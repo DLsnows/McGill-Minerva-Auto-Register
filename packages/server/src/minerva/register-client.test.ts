@@ -88,6 +88,8 @@ class FakePage {
   /** Whether the "document we submit from" mark is on the CURRENT document. The
    * mark is part of the serialized HTML, exactly as it is in a real browser. */
   private marked = false;
+  /** When true, planting the mark fails (the page is busy / mid-navigation). */
+  failMark = false;
 
   queueReads(...docs: string[]): void {
     this.reads = docs;
@@ -107,6 +109,7 @@ class FakePage {
   }
   async evaluate(expression: string): Promise<void> {
     this.log.push('evaluate');
+    if (this.failMark) throw new Error('Execution context was destroyed.');
     if (expression.includes('setAttribute')) this.marked = true;
   }
   async waitForFunction(): Promise<unknown> {
@@ -360,6 +363,22 @@ ${schedRow('1814', 'Waitlist on Jun 01, 2026')}
 
     // Attributing the leftover row to this submit would silently report "closed"
     // and skip a registration that may well have gone through.
+    expect(outcome.kind).toBe('unverified');
+  });
+
+  it('does not attribute a read to the submit when it cannot tell the page changed', async () => {
+    const page = new FakePage();
+    page.html = RESULT_CLOSED; // leftover Registration Errors row from an earlier run
+    page.failMark = true; // the mark could not be planted
+    page.failReads(2); // …and neither the pre-check nor the pre-submit snapshot was readable
+    page.onSubmit = () => {
+      page.documentReplaced = false;
+    };
+
+    const outcome = await clientFor(page).then((c) => c.act('202701', '1814', 'REGISTER'));
+
+    // With no mark and no snapshot there is no evidence the response replaced the
+    // page, so an old errors row must not be reported as this submit's outcome.
     expect(outcome.kind).toBe('unverified');
   });
 });
