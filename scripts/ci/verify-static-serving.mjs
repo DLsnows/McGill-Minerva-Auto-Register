@@ -26,7 +26,11 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const WEB_DIST = join(REPO_ROOT, 'packages', 'web', 'dist');
-const PORT = Number(process.env.PORT ?? 4599);
+/** `0` = let the kernel pick a free port. Honoured unless `PORT` is set
+ * explicitly: hardcoding a port here would reintroduce the `EADDRINUSE` flake
+ * class this PR removed from `api-security.test.ts` (and which already bit the
+ * e2e suite once, since 4575 is the dev server's default). */
+const REQUESTED_PORT = Number(process.env.PORT ?? 0);
 
 if (!existsSync(join(WEB_DIST, 'index.html'))) {
   // Deliberately not shelling out to `npm run build:web`: `spawnSync` cannot run
@@ -43,9 +47,6 @@ const { buildServer } = await import('../../packages/server/src/api/server.ts');
 const { Store } = await import('../../packages/server/src/store/store.ts');
 const { Budget } = await import('../../packages/server/src/budget/budget.ts');
 const { WebSocket } = await import('ws');
-
-const BASE = `http://127.0.0.1:${PORT}`;
-const ORIGIN = BASE;
 
 const dir = mkdtempSync(join(tmpdir(), 'w3-verify-'));
 const store = new Store(dir);
@@ -86,7 +87,16 @@ function check(name, ok, detail = '') {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  — ${detail}` : ''}`);
 }
 
-await app.listen({ host: '127.0.0.1', port: PORT });
+// `app.listen()` resolves to the address it actually bound, which is the only way to
+// learn the port when `REQUESTED_PORT` is 0.
+const address = await app.listen({ host: '127.0.0.1', port: REQUESTED_PORT });
+const BASE = address.startsWith('http') ? address : `http://${address}`;
+const WS_BASE = BASE.replace(/^http/, 'ws');
+// The app's own origin, which is what the Q5/Q6 guard compares a request's `Origin`
+// against. Derived from the bound address because a random loopback port cannot be
+// assumed: a browser sends the origin it actually navigated to, so "same-origin" here
+// means exactly this URL.
+const ORIGIN = BASE;
 console.log(`[verify:static] listening on ${BASE} (static root = packages/web/dist)\n`);
 
 // ── 1. the pages the brief names, plus a deep link through the SPA fallback ─────
@@ -175,7 +185,7 @@ check(
 
 // ── 5. websocket over real TCP: hostile Origin refused, own origin accepted ────
 const hostile = await new Promise((resolve) => {
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/api/stream`, {
+  const ws = new WebSocket(`${WS_BASE}/api/stream`, {
     headers: { origin: 'http://evil.example.com' },
   });
   ws.on('open', () => {
@@ -188,7 +198,7 @@ const hostile = await new Promise((resolve) => {
 check('websocket hostile Origin refused', hostile.opened === false, JSON.stringify(hostile));
 
 const sameOrigin = await new Promise((resolve) => {
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/api/stream`, { headers: { origin: ORIGIN } });
+  const ws = new WebSocket(`${WS_BASE}/api/stream`, { headers: { origin: ORIGIN } });
   const timer = setTimeout(() => resolve({ opened: false, why: 'timeout' }), 3000);
   ws.on('message', (d) => {
     clearTimeout(timer);
