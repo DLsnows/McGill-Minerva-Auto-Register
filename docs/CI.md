@@ -147,21 +147,29 @@ npm run gates -- --base origin/dev --only lint,test
   `prettier --check --config .prettierrc.json --stdin-filepath <repo 相对路径>`。
   **必须用 `--stdin-filepath` 传真实的仓库相对路径**，这是被三个坑逼出来的做法：
   1. 把内容写到系统临时目录的副本上跑，Prettier 找不到 `.prettierrc.json`（静默用默认值：双引号、
-     80 列）→ 所有文件都被判不合规；`.prettierignore` 的 `docs/plans` 这类模式也永远匹配不上，
-     因为忽略模式是**相对忽略文件所在目录**解析的（`--ignore-path` 也救不了这一点）。
+     80 列）→ 所有文件都被判不合规；`.prettierignore` 里的目录模式（如 `docs/superpowers`）也永远
+     匹配不上，因为忽略模式是**相对忽略文件所在目录**解析的（`--ignore-path` 也救不了这一点）。
   2. 副本还会丢文件名语义：JSON 只有**名为** `package.json` 才套用其专属设置。
   3. `--stdin-filepath` 同时解决了「按 base 版本内容判定」——`git show <merge-base>:<path>` 的内容
      可以带着正确的路径/配置/忽略规则被检查。
      注意 `--stdin-filepath` 模式下 Prettier 即使 `--check` 也会把格式化结果打到 stdout，**只有退出码有意义**
      （0=合规或已忽略，1=需格式化，2=真实错误）。
-- **`docs/plans` 已加入 `.prettierignore`**：那些是智能体工作文档（plan / spec / task brief /
-  审计清单），满是 CJK 文本，而 Prettier 按显示宽度对齐 Markdown 表格列——重排一次就是几百行、
-  零语义变化的 diff，之后每次编辑还会冲突。与既有的 `docs/superpowers` 同等对待。
-  `AGENTS.md`、`README*.md`、`docs/*.md` 仍参与检查（AGENTS.md 的表格已按 Prettier 对齐一次）。
+- **`docs/plans` 与其它文件一样参与检查**（曾经一度想把它 ignore 掉，已否决）：ignore 会让
+  「报告历史债」退化成「假装历史债不存在」，而这个目录正在被智能体持续编辑 —— 被检查才能更早暴露
+  格式漂移。该目录已做过一次性格式化（CJK 表格按 Prettier 的显示宽度对齐，纯空白变化），
+  提交记录登记在 `.git-blame-ignore-revs` 里，`git blame` 可跳过它：
 
-想真正还这笔债：单独开一个 `chore/format-repo` PR 跑 `npm run format`，在 `.git-blame-ignore-revs` 里
-登记该 commit，然后把 `ci.yml` 的 prettier 步骤换成全量 `npm run format:check`（或保留本脚本并加
-`--no-base-compare`）。
+  ```bash
+  git config blame.ignoreRevsFile .git-blame-ignore-revs   # 每个 clone 各做一次
+  ```
+
+  仅 `docs/superpowers`（仓库早期就 ignore 的既有决定）与 `.github/workflows`、构建产物仍在
+  `.prettierignore` 里。`AGENTS.md`、`README*.md`、`docs/*.md` 全部参与检查。
+
+想真正还清剩下的债（当前 `npm run format:check` 仍有 **38 个文件**不过是，绝大多数是
+`packages/**` 下的产品代码）：单独开一个 `chore/format-repo` PR 跑 `npm run format`，把该 commit 加进
+`.git-blame-ignore-revs`，然后把 `ci.yml` 的 prettier 步骤换成全量 `npm run format:check`
+（或保留本脚本并加 `--no-base-compare`）。
 
 ## preview e2e（`preview-e2e.yml`）
 
@@ -197,6 +205,30 @@ npm run gates -- --base origin/dev --only lint,test
   Playwright 默认缓存。
 - 逃生阀：`E2E_SKIP=1 npm run e2e` 直接跳过（退出码 0）；`E2E_ALLOW_SKIP=1` 在缺浏览器时降级为
   "跳过并记一笔"。**CI 上不使用这两个变量**——CI 必须真跑。
+
+### 怎么验证 e2e 的安全网还有效（`E2E_FAULT_ROUTES`）
+
+一个不能被验证的断言等于没有断言。假后端因此提供了一个故障注入入口：
+
+```bash
+E2E_FAULT_ROUTES=/api/budget npm run e2e              # 指定路由一律返回 500（逗号分隔多个）
+E2E_FAULT_ROUTES=/api/settings,/api/targets npm run e2e
+```
+
+用途是**验证「坏掉的端点会让用例变红」这件事本身**，而不是日常跑法（CI 不设置这个变量）。
+预期结果：
+
+- `/api/budget` 返 500 →
+  `✗ home-renders — unexpected browser errors: console.error: Failed to load resource: the server responded with a status of 500 ...`
+  —— 这同时证明了收窄后的控制台过滤不再吞掉 API 错误。
+- 想验证「端点压根没被请求」那一层，把某条用例 `endpoints` 里的路径改成一个不存在的路径，
+  应当得到：
+  `endpoint coverage failed: expected >=1 call(s) to /api/does-not-exist, saw 0 (ledger: {...})`
+  —— 失败信息会打印完整 ledger，便于对照真实调用次数。
+
+`endpoints` 里的数字都是**最小值**（`≥N`），每个 `N` 旁边的注释写明了它的来源（例如
+`add-course` 的 `/api/targets ≥2` = 初次加载 1 次 + 提交后 refetch 1 次）。这样下一个人不必猜，
+也就不会改错。
 
 ## Lighthouse（`lighthouse.yml`）
 

@@ -183,7 +183,16 @@ const CASES = [
   {
     name: 'home-renders',
     title: 'Home renders title + ticker with no console errors',
-    // Endpoints the dashboard must have talked to, with a minimum call count.
+    // Endpoints the dashboard must have talked to, with a minimum call count. The counts are
+    // *minimums*, not exact matches, so an extra fetch won't fail the case — but each one is
+    // justified here, because "why ≥3?" is otherwise unanswerable for the next reader:
+    //   targets 1   — DataProvider's initial GET; renders the watched-course list
+    //   settings 1  — DataProvider's initial GET; drives the ticker interval + budgets
+    //   budget 1    — DataProvider's initial GET; drives the ticker counters
+    //   session 1   — DataProvider's initial GET; drives the ticker session cell
+    //   scheduler 1 — DataProvider's initial GET; the engine's running state
+    // These can legitimately grow (the dashboard live-refetches budget/targets when a stream
+    // event arrives); the assertion is that they never shrink or disappear.
     endpoints: {
       '/api/targets': 1,
       '/api/settings': 1,
@@ -245,6 +254,9 @@ const CASES = [
   {
     name: 'add-course',
     title: 'Courses page — adding a course shows it in the list',
+    // targets ≥2: the initial list GET (1) plus Courses.tsx's refetch after a successful
+    // add (1). settings ≥1: DataProvider's shared GET. If the post-add refetch ever stops
+    // happening, the list would silently not show the new course.
     endpoints: { '/api/targets': 2, '/api/settings': 1 },
     async run({ page, errors }) {
       await page.goto(`${BASE_URL}/courses`, { waitUntil: 'domcontentloaded' });
@@ -281,7 +293,10 @@ const CASES = [
   {
     name: 'settings-persist',
     title: 'Settings page — poll interval saves and survives a reload',
-    // The save must actually PUT (not just flip local state) and re-read after the reload.
+    // settings ≥4: initial GET (1) + the PUT that saves the new interval (1) + the
+    // explicit refetch Settings.tsx performs after a successful save (1) + the GET after
+    // the page reload (1). Fewer than 4 means the save never reached the server, or the
+    // reload did not re-read it — i.e. the value shown afterwards is stale local state.
     endpoints: { '/api/settings': 4 },
     async run({ page, errors }) {
       const NEW_INTERVAL = 17;
@@ -319,6 +334,9 @@ const CASES = [
   {
     name: 'language-switch',
     title: 'Language switch — zh → en → fr each render the nav copy',
+    // targets ≥1: the initial DataProvider GET. Language switching is purely client-side,
+    // so this exists to prove the page really loaded the app shell rather than to check
+    // any i18n-specific traffic.
     endpoints: { '/api/targets': 1 },
     async run({ page, errors }) {
       const languageButton = (label) => page.getByRole('button', { name: label, exact: true });
