@@ -73,10 +73,10 @@ npm run gates -- --base origin/dev --only lint,test
 
 所以判定口径是 **「不得新引入格式违规」**（`scripts/ci/format-check-changed.mjs`）：
 
-| 文件状态 | 判定 |
-|---|---|
-| base 上**不存在**（新增文件） | 必须格式干净 |
-| base 上存在，且 base 版本**干净** | 必须保持干净 |
+| 文件状态                              | 判定                                                                       |
+| ------------------------------------- | -------------------------------------------------------------------------- |
+| base 上**不存在**（新增文件）         | 必须格式干净                                                               |
+| base 上存在，且 base 版本**干净**     | 必须保持干净                                                               |
 | base 上存在，且 base 版本**本来就脏** | 记为 **pre-existing debt**，**不阻塞**，但会在输出与 JSON 报告里列出文件名 |
 
 - 具体做法：对每个改动文件，先 `git show <base>:<path>` 取出 base 版本，写到保持目录结构与**原文件名**
@@ -181,14 +181,14 @@ branch gate 拦下**。这是有意的：依赖升级应当由维护者审阅后
 
 ## 故障排查
 
-| 现象                                                          | 原因 / 处理                                                                                   |
-| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| 子支线 PR 上没有任何 CI                                       | 按设计如此（base 不是长期分支，四个 workflow 的 `branches` 都不含 `feat/**`）。跑 `npm run gates` |
-| `format:check:changed` 报 `could not resolve a base revision` | 浅克隆或缺 `origin/*`。`fetch-depth: 0` 已配好；本地执行 `git fetch origin` 或 `--base <ref>` |
-| `format:check:changed` 打印 `pre-existing formatting debt`     | 正常：这些文件在 base 上就不过 prettier，**不阻塞**。不要在本 PR 里顺手格式化它们             |
-| `format:check:changed` 报 `newly-introduced formatting violations` | 本次改动把某个原本干净的文件写脏了（或新增了脏文件）→ `npx prettier --write <列出的文件>` |
-| preview e2e 报 `Executable doesn't exist`                     | 本地缺版本匹配的 Chromium：`npm run e2e:install`                                              |
-| preview e2e 报 `web build not found`                          | 先 `npm run build:web`（`npm run e2e` 已经串了这一步）                                        |
-| Lighthouse 报 `Chrome` 找不到                                 | CI 用 `ubuntu-latest`（自带 Chrome）；本地用 `LH_CHROME_PATH` / `CHROME_PATH` 指定            |
-| Lighthouse 某路由显示「report 已写出但退出码非 0」            | chrome-launcher 清理临时 profile 的竞态（Windows 常见）。报告仍然有效，评论里会标注降级       |
-| 想重跑 Lighthouse / e2e                                       | 它们只在 `opened` 触发 → 开新 PR，或本地 `npm run lighthouse` / `npm run e2e`                 |
+| 现象                                                               | 原因 / 处理                                                                                       |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| 子支线 PR 上没有任何 CI                                            | 按设计如此（base 不是长期分支，四个 workflow 的 `branches` 都不含 `feat/**`）。跑 `npm run gates` |
+| `format:check:changed` 报 `could not resolve a base revision`      | 浅克隆或缺 `origin/*`。`fetch-depth: 0` 已配好；本地执行 `git fetch origin` 或 `--base <ref>`     |
+| `format:check:changed` 打印 `pre-existing formatting debt`         | 正常：这些文件在 base 上就不过 prettier，**不阻塞**。不要在本 PR 里顺手格式化它们                 |
+| `format:check:changed` 报 `newly-introduced formatting violations` | 本次改动把某个原本干净的文件写脏了（或新增了脏文件）→ `npx prettier --write <列出的文件>`         |
+| preview e2e 报 `Executable doesn't exist`                          | 本地缺版本匹配的 Chromium：`npm run e2e:install`                                                  |
+| preview e2e 报 `web build not found`                               | 先 `npm run build:web`（`npm run e2e` 已经串了这一步）                                            |
+| Lighthouse 报 `Chrome` 找不到                                      | CI 用 `ubuntu-latest`（自带 Chrome）；本地用 `LH_CHROME_PATH` / `CHROME_PATH` 指定                |
+| Lighthouse 某路由显示「report 已写出但退出码非 0」                 | chrome-launcher 清理临时 profile 的竞态（Windows 常见）。报告仍然有效，评论里会标注降级           |
+| 想重跑 Lighthouse / e2e                                            | 它们只在 `opened` 触发 → 开新 PR，或本地 `npm run lighthouse` / `npm run e2e`                     |

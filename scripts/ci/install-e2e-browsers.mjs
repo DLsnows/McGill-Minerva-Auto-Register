@@ -20,12 +20,19 @@ const isWindows = process.platform === 'win32';
 // On Windows `npx` is a `.cmd` shim, and spawning a `.cmd` without a shell throws EINVAL
 // (Node's CVE-2024-27980 hardening). Going through the shell is what makes this work on
 // both platforms; the arguments are fixed strings, so nothing user-supplied is parsed.
-const result = spawnSync('npx', ['playwright', 'install', ...process.argv.slice(2), 'chromium'], {
-  cwd: fileURLToPath(new URL('..', import.meta.url)),
-  env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browsersPath },
-  stdio: 'inherit',
-  shell: isWindows,
-});
+// The command line is assembled explicitly because passing an args array together with
+// `shell: true` is deprecated (DEP0190).
+const cliArgs = ['playwright', 'install', ...process.argv.slice(2), 'chromium'];
+const result = spawnSync(
+  isWindows ? ['npx', ...cliArgs].join(' ') : 'npx',
+  isWindows ? [] : cliArgs,
+  {
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browsersPath },
+    stdio: 'inherit',
+    shell: isWindows,
+  },
+);
 
 if (result.error) {
   console.error(`[e2e:install] failed to run playwright: ${result.error.message}`);

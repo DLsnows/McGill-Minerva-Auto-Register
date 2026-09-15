@@ -8,10 +8,15 @@
  * what proves the branch is green before it is handed over.
  *
  * Usage:
- *   npm run gates                      # lint → typecheck → prettier(changed) → test → build:web
- *   npm run gates -- --base origin/dev # diff against an explicit base for the prettier step
- *   npm run gates -- --e2e             # also run the preview end-to-end suite
- *   npm run gates -- --only lint,test  # run a subset (comma-separated gate ids)
+ *   npm run gates                       # lint → typecheck → prettier(changed) → test → build:web
+ *   npm run gates -- --e2e              # also run the preview end-to-end suite
+ *   npm run gates -- --only lint,test   # run a subset (comma-separated gate ids)
+ *   BASE_REF=origin/dev npm run gates   # explicit base for the prettier step
+ *
+ * NOTE on `--base`: npm 11 parses `--base <value>` itself (it looks like an npm config
+ * flag), so `npm run gates -- --base origin/dev` reaches this script as a bare positional
+ * and leaks `npm_config_base` into every child process. Both spellings are accepted here —
+ * the positional form repairs the npm behaviour — but `BASE_REF=...` is the documented one.
  *
  * Every gate runs even after an earlier one fails, so one invocation reports the complete
  * picture. Exit code is 1 if any gate failed.
@@ -22,10 +27,16 @@ import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const isWindows = process.platform === 'win32';
 
 function argValue(flag) {
   const i = process.argv.indexOf(flag);
   return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : undefined;
+}
+
+/** First bare positional argument (npm turns `--base x` into just `x`). */
+function positionalArg() {
+  return process.argv.slice(2).find((arg) => !arg.startsWith('-'));
 }
 
 const BASE_CANDIDATES = [
@@ -50,7 +61,7 @@ function resolveBaseRef(explicit) {
   return null;
 }
 
-const baseRef = resolveBaseRef(argValue('--base'));
+const baseRef = resolveBaseRef(argValue('--base') ?? positionalArg());
 
 const GATES = [
   {
@@ -92,7 +103,11 @@ const GATES = [
   },
 ];
 
-const only = argValue('--only')
+const only = (
+  argValue('--only') ??
+  // npm parses `--only a,b` itself as well, leaving a bare positional behind.
+  process.argv.slice(2).find((arg) => arg.includes(','))
+)
   ?.split(',')
   .map((s) => s.trim())
   .filter(Boolean);
@@ -100,11 +115,21 @@ const only = argValue('--only')
 function runGate(gate) {
   return new Promise((resolve) => {
     const [cmd, args] = gate.command;
-    const child = spawn(cmd, args, {
-      cwd: REPO_ROOT,
-      stdio: 'inherit',
-      shell: process.platform === 'win32',
-    });
+    // Scrub npm's own `npm_config_base` (left behind by `npm run gates -- --base <ref>`,
+    // which npm parses as a config flag) so it cannot leak into child npm invocations and
+    // make them warn. The resolved `baseRef` is passed down explicitly instead.
+    const env = { ...process.env };
+    delete env.npm_config_base;
+    if (baseRef) env.BASE_REF = baseRef;
+
+    // On Windows `npm` is a `.cmd` shim, so it must go through a shell — but passing an
+    // args array *with* `shell: true` is deprecated (DEP0190: args are concatenated, not
+    // escaped). Building the command line explicitly avoids the warning and keeps the
+    // escaping obvious; there is no user input in these fixed command strings.
+    const child = isWindows
+      ? spawn([cmd, ...args].join(' '), { cwd: REPO_ROOT, stdio: 'inherit', shell: true, env })
+      : spawn(cmd, args, { cwd: REPO_ROOT, stdio: 'inherit', env });
+
     const started = Date.now();
     child.on('error', (err) =>
       resolve({ gate, ok: false, ms: Date.now() - started, error: err.message }),
