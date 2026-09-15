@@ -6,9 +6,15 @@ import Dashboard from './Dashboard';
 import { api } from '../lib/api';
 import { ZERO_BUDGET } from '../lib/budget-fixture';
 
+// Mutable so a test can push a new event: the Dashboard refetches its targets
+// whenever a new event id arrives, which is the real path a completed cycle takes
+// to update the cards (and to retire a stale "already running" notice).
+const stream = {
+  events: [{ id: 'e', ts: Date.now(), level: 'info', message: 'hello-console' }],
+};
 vi.mock('../lib/useEventStream', () => ({
   useEventStream: () => ({
-    events: [{ id: 'e', ts: Date.now(), level: 'info', message: 'hello-console' }],
+    events: stream.events,
     connected: true,
     clear: () => {},
   }),
@@ -173,6 +179,34 @@ describe('Dashboard', () => {
       expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  // Review finding (5th round): the "already running" notice was written once and
+  // never retired, so once the cycle finished the card showed it next to a fresh
+  // "last poll just now" — two lines contradicting each other.
+  it('retires the "already running" notice once the cycle it described has finished', async () => {
+    mockApi(watching, 'authenticated');
+    vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'in progress' });
+    const getTargets = vi.spyOn(api, 'getTargets').mockResolvedValue(watching);
+    const { rerender } = renderDashboard();
+    await waitFor(() => screen.getByRole('button', { name: /register now/i }));
+    await userEvent.click(screen.getByRole('button', { name: /register now/i }));
+    await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i));
+
+    // A new stream event → the Dashboard refetches targets, and the target now
+    // reports a poll that happened after the drop: the drop is history.
+    getTargets.mockResolvedValue([{ ...watching[0], lastPolledAt: Date.now() }]);
+    stream.events = [...stream.events, { id: 'e2', ts: Date.now(), level: 'info', message: 'cycle done' }];
+    try {
+      rerender(
+        <DataProvider>
+          <Dashboard />
+        </DataProvider>,
+      );
+      await waitFor(() => expect(screen.queryByTestId('run-notice')).toBeNull());
+    } finally {
+      stream.events = stream.events.slice(0, 1);
     }
   });
 

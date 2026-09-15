@@ -17,6 +17,9 @@ export default function Dashboard() {
    * is deliberately not stored here — it is derived from `coolingUntil` /
    * `target.lastForcedRunAt` in CourseCard so it counts down and clears. */
   const [runNotice, setRunNotice] = useState<Record<string, string>>({});
+  /** `lastPolledAt` at the moment each notice was written, used to retire a
+   * dropped-run notice once the cycle it was about has actually finished. */
+  const [noticeAtPoll, setNoticeAtPoll] = useState<Record<string, number | undefined>>({});
   const [coolingUntil, setCoolingUntil] = useState<Record<string, number>>({});
   const [schedErr, setSchedErr] = useState<string>();
   const [clearErr, setClearErr] = useState<string>();
@@ -46,6 +49,29 @@ export default function Dashboard() {
     void budgetRef.current.refetch();
     void targetsRef.current.refetch();
   }, [lastEventId]);
+
+  // A dropped "in progress" notice describes a cycle that was running *at that
+  // moment*, so it must not outlive it: once a refetch shows the target has been
+  // polled since the drop, the cycle finished and the notice is stale — leaving
+  // it would contradict the card's own "last poll just now" line (review finding).
+  useEffect(() => {
+    const list = targets.data;
+    if (!list) return;
+    setRunNotice((s) => {
+      const next: Record<string, string> = {};
+      let changed = false;
+      for (const [id, notice] of Object.entries(s)) {
+        // `undefined` means the target had never been polled when the drop was
+        // reported, so *any* recorded poll is newer than the notice.
+        const atDrop = noticeAtPoll[id];
+        const polledAt = list.find((t) => t.id === id)?.lastPolledAt;
+        const stale = polledAt !== undefined && (atDrop === undefined || polledAt > atDrop);
+        if (stale) changed = true;
+        else next[id] = notice;
+      }
+      return changed ? next : s;
+    });
+  }, [targets.data, noticeAtPoll]);
 
   const onToggleMode = useCallback(async (id: string, next: WatchMode) => {
     await api.updateTarget(id, { mode: next });
@@ -103,7 +129,15 @@ export default function Dashboard() {
           delete next[id];
           return next;
         });
-      const drop = (notice: string) => setRunNotice((s) => ({ ...s, [id]: notice }));
+      const drop = (notice: string) => {
+        setRunNotice((s) => ({ ...s, [id]: notice }));
+        // Remember how far this target had been polled when we wrote the notice,
+        // so the effect above can retire it once a later cycle lands.
+        setNoticeAtPoll((s) => ({
+          ...s,
+          [id]: targetsRef.current.data?.find((t) => t.id === id)?.lastPolledAt,
+        }));
+      };
       // `coolingUntil` is an end instant on *this* clock, so it is built from a
       // duration (`retryAfterMs`, anchored to the moment the answer arrived)
       // rather than from the server's `lastForcedRunAt` epoch: mixing a server
