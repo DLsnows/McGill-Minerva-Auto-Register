@@ -9,20 +9,44 @@ import {
 import { classifySession } from './session-status';
 import type { SessionStatus } from './types';
 
+/** Launches the persistent context; injectable so tests never start Chromium. */
+export type ContextLauncher = () => Promise<BrowserContext>;
+
+const launchChromium: ContextLauncher = () =>
+  chromium.launchPersistentContext(PROFILE_DIR, {
+    headless: false,
+    viewport: { width: 1280, height: 900 },
+  });
+
 /**
  * Owns a persistent, headful Chromium context whose cookies survive restarts.
  * The student logs in once (Duo) in the launched window; later phases reuse it.
+ *
+ * ## One page, one operation at a time
+ *
+ * There is exactly ONE page (see `getPage`), and every Minerva flow drives it by
+ * navigating, selecting, filling and clicking. Minerva's Quick Add/Drop submits
+ * the WHOLE worksheet, so two flows sharing that page can submit each other's
+ * CRNs — a real "registered the wrong course" path (audit Q2).
+ *
+ * `runExclusive()` is therefore the ONLY way to touch the page: it serializes
+ * complete operations (a whole search, a whole registration, a login, a status
+ * probe) in FIFO order over one process-wide queue. Queued callers wait their
+ * turn — they are never dropped.
  */
 export class SessionManager {
   private context: BrowserContext | null = null;
+  /** Resolves when the currently running operation releases the page. */
+  private tail: Promise<void> = Promise.resolve();
+  /** Operations running or waiting for their turn (observability + tests). */
+  private pending = 0;
+
+  constructor(private readonly launchContext: ContextLauncher = launchChromium) {}
 
   /** Launch (or relaunch) the persistent browser context. */
   async launch(): Promise<void> {
     if (this.context) return;
-    this.context = await chromium.launchPersistentContext(PROFILE_DIR, {
-      headless: false,
-      viewport: { width: 1280, height: 900 },
-    });
+    this.context = await this.launchContext();
     // If the context is closed externally (crash, user closes window), drop the
     // stale reference so a later launch() re-creates it instead of silently
     // no-opping and failing later in getPage().
@@ -36,11 +60,44 @@ export class SessionManager {
     return this.context;
   }
 
-  /** Get a working (non-closed) page, reusing an existing one if present. */
-  async getPage(): Promise<Page> {
+  /** Get a working (non-closed) page, reusing an existing one if present.
+   * Private on purpose: callers must go through `runExclusive()` so they cannot
+   * hold the shared page while another operation drives it. */
+  private async getPage(): Promise<Page> {
     const ctx = this.requireContext();
     const existing = ctx.pages().find((p) => !p.isClosed());
     return existing ?? (await ctx.newPage());
+  }
+
+  /** Number of browser operations currently queued or running. */
+  get queueDepth(): number {
+    return this.pending;
+  }
+
+  /**
+   * Run one COMPLETE browser operation with exclusive use of the shared page.
+   * Operations run strictly one after another, in call order; a failing
+   * operation releases the queue for the next one.
+   *
+   * Everything that touches the page must be inside a single `fn` — do NOT call
+   * another `runExclusive` from within `fn` (it would wait for itself), and do
+   * not split one logical flow into several `runExclusive` calls (another flow
+   * could interleave between them, which is exactly the bug this prevents).
+   */
+  async runExclusive<T>(fn: (page: Page) => Promise<T>): Promise<T> {
+    this.pending++;
+    const previous = this.tail;
+    let release!: () => void;
+    this.tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      await previous; // wait for our turn
+      return await fn(await this.getPage());
+    } finally {
+      this.pending--;
+      release();
+    }
   }
 
   /** Classify session from the page's CURRENT location — does NOT navigate. */
@@ -54,9 +111,10 @@ export class SessionManager {
    * checks when NOT in the middle of a manual login.
    */
   async checkStatus(): Promise<SessionStatus> {
-    const page = await this.getPage();
-    await page.goto(PROTECTED_PROBE_URL, { waitUntil: 'domcontentloaded' });
-    return this.readStatus(page);
+    return this.runExclusive(async (page) => {
+      await page.goto(PROTECTED_PROBE_URL, { waitUntil: 'domcontentloaded' });
+      return this.readStatus(page);
+    });
   }
 
   /** True if currently authenticated (navigates to probe). */
@@ -69,9 +127,15 @@ export class SessionManager {
    * login redirect), then waits PASSIVELY — re-reading the page without
    * navigating — so the user's manual Duo login is never interrupted. Success is
    * detected when the post-login redirect lands back on an authenticated page.
+   *
+   * The whole flow holds the session queue: a query or registration must never
+   * navigate the page out from under a login in progress.
    */
   async ensureLoggedIn(onPrompt?: () => void): Promise<void> {
-    const page = await this.getPage();
+    return this.runExclusive((page) => this.ensureLoggedInOnPage(page, onPrompt));
+  }
+
+  private async ensureLoggedInOnPage(page: Page, onPrompt?: () => void): Promise<void> {
     await page.goto(PROTECTED_PROBE_URL, { waitUntil: 'domcontentloaded' });
     if ((await this.readStatus(page)) === 'authenticated') return;
 

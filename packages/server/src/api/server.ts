@@ -27,6 +27,100 @@ export const SESSION_NOT_READY = 'session-not-ready';
  * 'logged-out' while still in progress — the session flow resolves first. */
 const LOGIN_TIMEOUT_MS = 360_000;
 
+/** Hostnames the local API answers to. Anything else is a DNS-rebinding Host. */
+const ALLOWED_HOST_NAMES = new Set(['127.0.0.1', 'localhost', '::1']);
+
+/** Default ports per scheme, so `http://localhost` and `localhost:80` compare equal. */
+const DEFAULT_PORTS: Record<string, string> = { 'http:': '80', 'https:': '443' };
+
+/** Hard cap on a single inbound websocket *message* (after fragment
+ * reassembly — `maxPayload` bounds messages, not frames). `/api/stream` is a
+ * one-way broadcast and the UI never sends anything, so this only bounds abuse;
+ * it is not a protocol feature. Note the pre-fix limit was NOT unlimited: `ws@8`
+ * defaults `maxPayload` to `100 * 1024 * 1024` (verified:
+ * `new WebSocketServer({noServer:true}).options.maxPayload` === 104857600), so
+ * this is a ~100x tightening rather than a limit appearing where there was none. */
+const MAX_WS_PAYLOAD_BYTES = 1 << 20; // 1 MiB
+
+/** The only scheme the API is served over (`main.ts` listens on plain HTTP), so an
+ * `https://` Origin cannot be this application. Pinned rather than ignored: a
+ * scheme-blind comparison would accept `Origin: https://127.0.0.1:<port>`. */
+const EXPECTED_PROTOCOL = 'http:';
+
+/** Methods that cannot change server state, so they are exempt from the
+ * content-type rule. The Host/Origin rules still apply to every method — a
+ * DNS-rebound `GET /api/settings` is exactly the leak we are closing. */
+const READ_ONLY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/** `Sec-Fetch-Site` values that can only come from a request the browser itself
+ * made on behalf of *this* page: `same-origin` (the UI's own fetches) and `none`
+ * (a user-typed URL / bookmark — no initiator to forge the header). A cross-site
+ * form submission or `sendBeacon` reports `cross-site`, and a script cannot lie
+ * about it: the Fetch spec makes every `Sec-Fetch-*` header a forbidden header
+ * name, so `fetch(..., { headers: { 'sec-fetch-site': 'same-origin' } })` is
+ * stripped by the browser before the request leaves. This is a third, independent
+ * signal on top of `Origin` — see the asymmetry note on the hook. */
+const ALLOWED_SEC_FETCH_SITE = new Set(['same-origin', 'none']);
+
+interface ParsedAuthority {
+  name: string;
+  port: string;
+  /** Present for `Origin` (which carries a scheme), absent for `Host`. */
+  protocol?: string;
+}
+
+/** Split an HTTP authority (`host[:port]`, `[::1]:port`) into name + port.
+ * Bracket handling matters: the `[::1]:4575` form must not be read as name `[`. */
+function splitAuthority(authority: string, defaultPort: string): ParsedAuthority | null {
+  const value = authority.trim();
+  if (!value) return null;
+  if (value.startsWith('[')) {
+    const end = value.indexOf(']');
+    if (end < 0) return null;
+    const rest = value.slice(end + 1);
+    if (rest !== '' && !rest.startsWith(':')) return null;
+    return { name: value.slice(1, end).toLowerCase(), port: rest.slice(1) || defaultPort };
+  }
+  const idx = value.lastIndexOf(':');
+  // More than one colon and no brackets = a malformed (or smuggling) authority.
+  if (idx < 0) return { name: value.toLowerCase(), port: defaultPort };
+  if (value.indexOf(':') !== idx) return null;
+  const port = value.slice(idx + 1);
+  if (!/^\d+$/.test(port)) return null;
+  return { name: value.slice(0, idx).toLowerCase(), port };
+}
+
+/** Parse a `Host` header (always carrying the served port when non-default). */
+function parseHostHeader(host: string | undefined): ParsedAuthority | null {
+  if (host === undefined) return null;
+  return splitAuthority(host, '80');
+}
+
+/** Parse an `Origin` header. `null` (an opaque origin from a sandboxed frame or a
+ * `data:`/`file:` document) and anything unparseable resolve to `null` = refused. */
+function parseOriginHeader(origin: string | undefined): ParsedAuthority | null {
+  if (origin === undefined) return null;
+  const value = origin.trim();
+  if (!value || value === 'null') return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  if (!url.hostname) return null;
+  const authority = splitAuthority(url.host, DEFAULT_PORTS[url.protocol] ?? '');
+  return authority === null ? null : { ...authority, protocol: url.protocol };
+}
+
+/** `Content-Type` without its parameters, lower-cased (`application/json; c=1`). */
+function mediaType(contentType: string | undefined): string | null {
+  if (contentType === undefined) return null;
+  const semi = contentType.indexOf(';');
+  return (semi < 0 ? contentType : contentType.slice(0, semi)).trim().toLowerCase();
+}
+
 export interface ApiSession {
   launch(): Promise<void>;
   ensureLoggedIn(onPrompt?: () => void): Promise<void>;
@@ -146,8 +240,146 @@ export function buildServer(
 
   // `.after()` (not `.catch()`) — surfacing a plugin load failure without
   // prematurely triggering `ready()`, which would reject later route registration.
-  app.register(websocketPlugin).after((err) => {
+  // `maxPayload` replaces the `ws@8` `WebSocketServer` default of 100 MiB (not 0 /
+  // unlimited — see `MAX_WS_PAYLOAD_BYTES`): `/api/stream` is a one-way broadcast and
+  // the UI never sends a frame, so this only bounds abuse.
+  app.register(websocketPlugin, { options: { maxPayload: MAX_WS_PAYLOAD_BYTES } }).after((err) => {
     if (err) console.error('[api] WebSocket plugin failed to load:', err);
+  });
+
+  // --- local-API source validation (Q5 / Q6, audit 2026-09-15) ---
+  //
+  // The API is unauthenticated by design (single-user, loopback-only), which is
+  // only safe if it is also unreachable from anything except its own UI. Before
+  // this hook a web page the user merely *visited* could drive it: the five
+  // body-less POSTs (`/api/scheduler/*`, `/api/session/login`) and a
+  // `text/plain` form post are CORS-simple requests, so no preflight happens and
+  // the JSON-parsing routes never object. The auditor reproduced a 200 for
+  // `<form method=POST enctype=text/plain action=http://127.0.0.1:4575/api/scheduler/stop-all>`.
+  //
+  // Four rules, all fail-closed, all applied before routing so no handler runs
+  // on a rejected request:
+  //   1. `Host` must be a loopback name — this is the DNS-rebinding gate (a
+  //      rebound page has an attacker-controlled `Host` even though its origin
+  //      *looks* same-origin to the browser). Name only; see the note at the check.
+  //   2. If `Origin` is present it must be this application's own origin: scheme
+  //      `http:` plus the same host and port as the request's own `Host` header.
+  //      The scheme is pinned explicitly rather than ignored, so an
+  //      `Origin: https://127.0.0.1:<port>` is not treated as same-origin (this API
+  //      is plain HTTP only — `main.ts` listens without TLS).
+  //      `Origin` is deliberately optional: browsers attach it to every cross-site
+  //      request (including forms and websocket handshakes), while curl and scripts
+  //      omit it, so "absent" is not evidence of an attack. A websocket upgrade is
+  //      the exception and requires it (see below).
+  //   3. A request that carries a body must declare `application/json`, so the
+  //      `text/plain` / urlencoded form postings that CORS lets through without a
+  //      preflight are refused even if an Origin is somehow forged. Body-less
+  //      requests are exempt because the UI's helper omits the header entirely
+  //      for them (`packages/web/src/lib/api.ts`), and requiring it there would
+  //      break every legitimate client for no additional protection — rule 2
+  //      already covers that vector.
+  //   4. On write methods, a `Sec-Fetch-Site` that is present must be `same-origin`
+  //      or `none` (see the check below).
+  //
+  // Why the `Origin` requirement is ASYMMETRIC between plain HTTP and the
+  // websocket upgrade, on purpose (do not "unify" these two — there is a test for
+  // each half):
+  //   * Plain HTTP must keep accepting requests with no `Origin`. Node's `fetch`
+  //     does not send one, and `e2e/run.mjs` drives the API with it (the `/`
+  //     readiness probe and the `/api/__requests` ledger probe), as do curl and
+  //     every CLI script. Every browser-originated cross-site attack *does* carry
+  //     an `Origin`, so "present but different" is the case that matters here —
+  //     and it is refused.
+  //   * A websocket upgrade must require it. A browser always sends `Origin` on a
+  //     handshake (the spec forbids omitting it for `ws:`/`wss:`), so its absence
+  //     proves the peer is not this application's page. Nothing in this repo opens
+  //     a raw websocket, so nothing legitimate is lost.
+  //   * Non-browser clients can forge any header, including a valid-looking
+  //     `Origin`, so allowing the absent case costs nothing against them either
+  //     way; rule 1 is what stops those.
+  app.addHook('onRequest', (req, reply, done) => {
+    // `request.ws` is set by @fastify/websocket's own onRequest hook (registered
+    // before this one, so it always runs first) and is true exactly when this HTTP
+    // request is a websocket upgrade rather than an ordinary request.
+    const isUpgrade = req.ws === true;
+
+    /** Refuse, and say why in the server log — a silently 403-ing local API is
+     * indistinguishable from a broken one when the user is the one debugging it.
+     * Nothing here is echoed beyond method/path/reason, so it cannot be used as a
+     * reflection oracle. */
+    const refuse = (code: number, error: string) => {
+      console.warn(`[api] ${req.method} ${req.url} refused (${code}): ${error}`);
+      // `reply.send()` alone is Fastify's documented early-response pattern from a
+      // hook. Calling `done()` *as well* let the request continue into
+      // `preParsing`/`preValidation` after it had already been answered: the result
+      // was still correct only because `reply.sent` short-circuits those stages, so
+      // every refused request paid for body parsing and schema validation it could
+      // not use, and the correctness leaned on that internal guard.
+      void reply.code(code).send({ error });
+      return;
+    };
+
+    // Rule 1 checks the Host *name* only, deliberately: the bound port is not known
+    // at `buildServer()` time (the caller picks it), and a browser's Host/Origin are
+    // bound to the URL it actually navigated to, so an attacker cannot pair an
+    // arbitrary port with a loopback name. Rule 2 is what pins the port — it compares
+    // Origin against whatever Host the request carried, so the two can never disagree.
+    const host = parseHostHeader(req.headers.host);
+    if (!host || !ALLOWED_HOST_NAMES.has(host.name)) {
+      return refuse(403, 'forbidden: unexpected Host header');
+    }
+
+    const rawOrigin = req.headers.origin;
+    if (isUpgrade && rawOrigin === undefined) {
+      // A browser always sends Origin on a websocket handshake, so its absence
+      // means the peer is not the app's own page.
+      return refuse(403, 'forbidden: websocket upgrade without Origin');
+    }
+    if (rawOrigin !== undefined) {
+      const origin = parseOriginHeader(rawOrigin);
+      if (
+        !origin ||
+        origin.protocol !== EXPECTED_PROTOCOL ||
+        origin.name !== host.name ||
+        origin.port !== host.port
+      ) {
+        return refuse(403, 'forbidden: cross-origin request');
+      }
+    }
+
+    // Rule 4 (defence in depth, and the one signal a page cannot fake): when the
+    // browser tells us where the request came from, believe it. Only write methods
+    // are checked — a `Sec-Fetch-Site: cross-site` GET can only read responses the
+    // same-origin policy already hides. Absent → allowed, so Node/curl are
+    // unaffected (they never send `Sec-Fetch-*`); present → must be same-origin or
+    // `none`. `same-site` is refused because for a loopback literal there is no
+    // meaningful "same site" other than the exact origin.
+    const site = req.headers['sec-fetch-site'];
+    if (!READ_ONLY_METHODS.has(req.method) && typeof site === 'string' && site !== '') {
+      if (!ALLOWED_SEC_FETCH_SITE.has(site.toLowerCase())) {
+        return refuse(403, 'forbidden: cross-site request (Sec-Fetch-Site)');
+      }
+    }
+
+    const declaresBody =
+      req.headers['transfer-encoding'] !== undefined ||
+      (req.headers['content-length'] !== undefined && Number(req.headers['content-length']) > 0);
+    if (!READ_ONLY_METHODS.has(req.method) && declaresBody) {
+      const type = mediaType(req.headers['content-type']);
+      if (type !== 'application/json') {
+        return refuse(415, 'unsupported media type: expected application/json');
+      }
+    }
+    return done();
+  });
+
+  // Clickjacking: the local UI must never be frameable by another site. Applied to
+  // every response (API included) — it costs nothing there and means a future
+  // route cannot forget it.
+  app.addHook('onSend', (_req, reply, payload, done) => {
+    void reply.header('X-Frame-Options', 'DENY');
+    void reply.header('Content-Security-Policy', "frame-ancestors 'none'");
+    done(null, payload);
   });
 
   app.get('/api/health', () => ({ ok: true }));
