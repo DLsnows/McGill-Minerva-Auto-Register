@@ -32,6 +32,16 @@ const MAX_WS_PAYLOAD_BYTES = 1 << 20; // 1 MiB
  * DNS-rebound `GET /api/settings` is exactly the leak we are closing. */
 const READ_ONLY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+/** `Sec-Fetch-Site` values that can only come from a request the browser itself
+ * made on behalf of *this* page: `same-origin` (the UI's own fetches) and `none`
+ * (a user-typed URL / bookmark — no initiator to forge the header). A cross-site
+ * form submission or `sendBeacon` reports `cross-site`, and a script cannot lie
+ * about it: the Fetch spec makes every `Sec-Fetch-*` header a forbidden header
+ * name, so `fetch(..., { headers: { 'sec-fetch-site': 'same-origin' } })` is
+ * stripped by the browser before the request leaves. This is a third, independent
+ * signal on top of `Origin` — see the asymmetry note on the hook. */
+const ALLOWED_SEC_FETCH_SITE = new Set(['same-origin', 'none']);
+
 interface ParsedAuthority {
   name: string;
   port: string;
@@ -189,6 +199,23 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   //      for them (`packages/web/src/lib/api.ts`), and requiring it there would
   //      break every legitimate client for no additional protection — rule 2
   //      already covers that vector.
+  //
+  // Why the `Origin` requirement is ASYMMETRIC between plain HTTP and the
+  // websocket upgrade, on purpose (do not "unify" these two — there is a test for
+  // each half):
+  //   * Plain HTTP must keep accepting requests with no `Origin`. Node's `fetch`
+  //     does not send one, and `e2e/run.mjs` drives the API with it (the `/`
+  //     readiness probe and the `/api/__requests` ledger probe), as do curl and
+  //     every CLI script. Every browser-originated cross-site attack *does* carry
+  //     an `Origin`, so "present but different" is the case that matters here —
+  //     and it is refused.
+  //   * A websocket upgrade must require it. A browser always sends `Origin` on a
+  //     handshake (the spec forbids omitting it for `ws:`/`wss:`), so its absence
+  //     proves the peer is not this application's page. Nothing in this repo opens
+  //     a raw websocket, so nothing legitimate is lost.
+  //   * Non-browser clients can forge any header, including a valid-looking
+  //     `Origin`, so allowing the absent case costs nothing against them either
+  //     way; rule 1 is what stops those.
   app.addHook('onRequest', (req, reply, done) => {
     // `request.ws` is set by @fastify/websocket's own onRequest hook (registered
     // before this one, so it always runs first) and is true exactly when this HTTP
@@ -220,6 +247,20 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
       const origin = parseOriginHeader(rawOrigin);
       if (!origin || origin.name !== host.name || origin.port !== host.port) {
         return refuse(403, 'forbidden: cross-origin request');
+      }
+    }
+
+    // Rule 4 (defence in depth, and the one signal a page cannot fake): when the
+    // browser tells us where the request came from, believe it. Only write methods
+    // are checked — a `Sec-Fetch-Site: cross-site` GET can only read responses the
+    // same-origin policy already hides. Absent → allowed, so Node/curl are
+    // unaffected (they never send `Sec-Fetch-*`); present → must be same-origin or
+    // `none`. `same-site` is refused because for a loopback literal there is no
+    // meaningful "same site" other than the exact origin.
+    const site = req.headers['sec-fetch-site'];
+    if (!READ_ONLY_METHODS.has(req.method) && typeof site === 'string' && site !== '') {
+      if (!ALLOWED_SEC_FETCH_SITE.has(site.toLowerCase())) {
+        return refuse(403, 'forbidden: cross-site request (Sec-Fetch-Site)');
       }
     }
 

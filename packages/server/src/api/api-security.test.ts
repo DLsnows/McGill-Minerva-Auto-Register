@@ -324,9 +324,27 @@ describe('Q5 — Host / Origin / CSRF guard', () => {
     expect(v6.status).toBe(200);
   });
 
-  it('allows a request with no Origin header (curl, scripts, the e2e harness)', async () => {
-    const r = await send(port, { path: '/api/health', headers: { host: `127.0.0.1:${port}` } });
-    expect(r.status).toBe(200);
+  it('allows a plain HTTP request with no Origin header (Node fetch / curl / CLI send none)', async () => {
+    // One half of an INTENTIONAL asymmetry between plain HTTP and the websocket
+    // upgrade; the other half is the "no Origin at all" websocket case below. The
+    // asymmetry is load-bearing in both directions:
+    //   - `e2e/run.mjs` drives the API with Node's `fetch`, which sends no
+    //     `Origin` (readiness probe + ledger probe). Requiring it here would take
+    //     the whole e2e suite down.
+    //   - every browser-originated cross-site attack DOES send `Origin`, and that
+    //     case is refused (see the tests above).
+    // If someone "unifies" the two sides, exactly one of these two tests must go
+    // red — that is the point of pinning both.
+    const read = await send(port, { path: '/api/health', headers: { host: `127.0.0.1:${port}` } });
+    expect(read.status).toBe(200);
+
+    const write = await send(port, {
+      method: 'POST',
+      path: '/api/scheduler/stop',
+      headers: { host: `127.0.0.1:${port}` },
+    });
+    expect(write.status).toBe(200);
+    expect(calls.stop).toBe(1);
   });
 
   it('rejects an Origin whose host matches a loopback alias but not the request Host', async () => {
@@ -356,6 +374,62 @@ describe('Q5 — Host / Origin / CSRF guard', () => {
     expect(api.headers['x-frame-options']).toBe('DENY');
     expect(String(api.headers['content-security-policy'])).toContain("frame-ancestors 'none'");
   });
+
+  // --- rule 4: `Sec-Fetch-Site`, the signal a page cannot forge ---------------
+
+  it('rejects a write whose Sec-Fetch-Site says cross-site', async () => {
+    // A cross-site form post reports `cross-site`. The value is a forbidden header
+    // name, so page script cannot set it to `same-origin` — this is the one signal
+    // that survives a fully forged Origin.
+    const r = await send(port, {
+      method: 'POST',
+      path: '/api/scheduler/stop-all',
+      headers: { ...sameOriginHeaders(port), 'sec-fetch-site': 'cross-site' },
+    });
+    expect(r.status).toBe(403);
+    expect(calls.stop).toBe(0);
+  });
+
+  it('rejects a write whose Sec-Fetch-Site says same-site (no such site for a loopback literal)', async () => {
+    const r = await send(port, {
+      method: 'POST',
+      path: '/api/scheduler/stop',
+      headers: { ...sameOriginHeaders(port), 'sec-fetch-site': 'same-site' },
+    });
+    expect(r.status).toBe(403);
+    expect(calls.stop).toBe(0);
+  });
+
+  it('allows a write whose Sec-Fetch-Site is same-origin or none', async () => {
+    for (const site of ['same-origin', 'none']) {
+      const r = await send(port, {
+        method: 'POST',
+        path: '/api/scheduler/start',
+        headers: { ...sameOriginHeaders(port), 'sec-fetch-site': site },
+      });
+      expect(r.status).toBe(200);
+    }
+    expect(calls.start).toBe(2);
+  });
+
+  it('allows a write with no Sec-Fetch-Site at all (Node, curl and CLI send none)', async () => {
+    // "Present → validate, absent → allow": non-browser clients never send the
+    // header, and they can forge every header anyway, so this stays permissive.
+    const r = await send(port, {
+      method: 'POST',
+      path: '/api/scheduler/start',
+      headers: { ...sameOriginHeaders(port) },
+    });
+    expect(r.status).toBe(200);
+  });
+
+  it('does not apply Sec-Fetch-Site to reads (a cross-site GET is already blinded by CORS)', async () => {
+    const r = await send(port, {
+      path: '/api/health',
+      headers: { ...sameOriginHeaders(port), 'sec-fetch-site': 'cross-site' },
+    });
+    expect(r.status).toBe(200);
+  });
 });
 
 describe('Q6 / Q18 — websocket upgrade origin + payload limit', () => {
@@ -372,11 +446,15 @@ describe('Q6 / Q18 — websocket upgrade origin + payload limit', () => {
     expect(r.opened).toBe(false);
   });
 
-  it('refuses a handshake with no Origin at all', async () => {
-    // Unlike HTTP (where a missing Origin only means "not a browser"), a browser
-    // always sends Origin on a websocket handshake, so its absence is a signal.
+  it('refuses a handshake with no Origin at all (the strict half of the HTTP/WS asymmetry)', async () => {
+    // Unlike plain HTTP — where a missing Origin only means "not a browser" and
+    // must stay allowed (see the Node-fetch test above) — a browser ALWAYS sends
+    // Origin on a websocket handshake, so its absence proves the peer is not this
+    // application's page. Nothing here opens a raw websocket, so nothing
+    // legitimate is lost.
     const r = await tryUpgrade(port, undefined);
     expect(r.opened).toBe(false);
+    expect(r.status).toBe(403);
   });
 
   it('accepts the application origin and still delivers the recent-events snapshot', async () => {
