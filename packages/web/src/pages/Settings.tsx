@@ -57,12 +57,16 @@ function NumField({
         aria-label={label}
         type="number"
         style={inputStyle}
-        // A cleared / half-typed input becomes NaN — show it empty instead of "NaN".
+        // Show an unresolved value as empty rather than "NaN" / "Infinity".
         value={Number.isFinite(value) ? value : ''}
         min={min}
         max={max}
         step={step}
-        onChange={(e) => onChange(Number(e.target.value))}
+        // `Number('')` is 0, not NaN — so a cleared field used to snap straight back to
+        // "0", which is exactly the silently-stored zero the pacing validation exists to
+        // prevent (and it contradicted this comment). Map the empty string to NaN so the
+        // field stays empty and `isPacingValid` / the zod schema reject the save.
+        onChange={(e) => onChange(e.target.value.trim() === '' ? NaN : Number(e.target.value))}
       />
     </label>
   );

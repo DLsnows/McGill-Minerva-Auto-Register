@@ -109,8 +109,12 @@ export function jitterOffset(baseMs: number, jitterMs: number): number {
   // tests (it is not `Object.is`-equal to 0). Normalise on the way out.
   const normalise = (n: number): number => (n === 0 ? 0 : n);
   const low = Math.max(-jitterMs, MIN_OP_PAUSE_MS - baseMs);
-  // Unreachable when `low <= jitterMs` (always true: `low <= 0 <= jitterMs`), but kept so
-  // the function is total rather than trusting the caller.
+  // Not dead code, and the comment here used to claim it was. `low <= 0` only holds while
+  // `baseMs >= MIN_OP_PAUSE_MS`; when the base is *below* the floor (`humanPause(0, …)`,
+  // a hand-edited `store.json` — both reachable), `MIN - base` is positive, so `low` can
+  // reach `MIN_OP_PAUSE_MS`. If the jitter does not cover that gap either, there is no
+  // draw that both respects the jitter and clears the floor, and a constant offset is the
+  // only honest answer: the pause sits on the floor rather than being illegal.
   if (low >= jitterMs) return normalise(low);
   return normalise(low + Math.random() * (jitterMs - low));
 }

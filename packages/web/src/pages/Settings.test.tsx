@@ -192,7 +192,12 @@ describe('Settings', () => {
     const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
     renderSettings();
     const pause = await screen.findByLabelText('Pause between operations (ms)');
-    await userEvent.clear(pause); // an empty number input reads back as 0
+    await userEvent.clear(pause);
+    // `Number('')` is 0, so the naive handler made this snap back to a visible "0" the
+    // moment the user cleared it — the silently-stored zero this validation exists to
+    // prevent, and a contradiction of the field's own comment. The empty string now maps
+    // to NaN, so the field stays empty.
+    expect(pause).toHaveValue(null);
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
     expect(put).not.toHaveBeenCalled();
     expect(screen.getByText(/nothing was saved/i).textContent).toContain('250–60000 ms');
