@@ -151,7 +151,8 @@ const en = {
     keepAwakeStatusKeeperFailed:
       'Failed — the sleep-prevention helper could not run (is PowerShell allowed on this PC?)',
     keepAwakeStatusUnsupported: 'Not supported on this system',
-    keepAwakeStatusPending: 'Starting…',
+    keepAwakeStatusPending: 'Not ready yet — reading the power source…',
+    keepAwakeStatusStarting: 'Starting the sleep-prevention helper…',
   },
   session: {
     title: 'Session',
@@ -317,7 +318,8 @@ const zh: typeof en = {
     keepAwakeStatusKeeperFailed:
       '失败 —— 防休眠辅助进程无法运行（请检查本机是否允许运行 PowerShell）',
     keepAwakeStatusUnsupported: '本系统不支持',
-    keepAwakeStatusPending: '启动中…',
+    keepAwakeStatusPending: '尚未就绪 —— 正在读取电源状态…',
+    keepAwakeStatusStarting: '正在启动防休眠辅助进程…',
   },
   session: {
     title: '会话',
@@ -497,7 +499,8 @@ const fr: typeof en = {
     keepAwakeStatusKeeperFailed:
       'Échec — l’assistant anti-veille n’a pas pu démarrer (PowerShell est-il autorisé sur ce PC ?)',
     keepAwakeStatusUnsupported: 'Non pris en charge sur ce système',
-    keepAwakeStatusPending: 'Démarrage…',
+    keepAwakeStatusPending: 'Pas encore prêt — lecture de la source d’alimentation…',
+    keepAwakeStatusStarting: 'Démarrage de l’assistant anti-veille…',
   },
   session: {
     title: 'Session',

@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import {
+  KEEPER_EXIT_GRACE_MS,
+  KEEPER_READY,
   KEEPER_REFRESH_SECONDS,
   POWER_POLL_MS,
   POWER_QUERY_SCRIPT,
@@ -17,30 +20,43 @@ class FakeChild extends EventEmitter {
   pid = 4242;
   killed = false;
   unref = vi.fn();
-  stdout = new EventEmitter();
-  stderr = new EventEmitter();
+  /** A real Readable, so `setEncoding`/`on('data')` behave exactly as with a pipe. */
+  stdout = new Readable({ read() {} });
+  stderr = new Readable({ read() {} });
   stdin = { end: vi.fn(), destroy: vi.fn(), write: vi.fn() };
   kill = vi.fn(() => {
     this.killed = true;
     return true;
   });
+
+  /** Emulate the keeper reaching the point where it holds the wake request. */
+  emitReady(): void {
+    this.stdout.push(KEEPER_READY);
+  }
 }
 
 interface Harness {
   children: FakeChild[];
   spawn: ReturnType<typeof vi.fn>;
+  /** Set to false to keep a spawned keeper from confirming its hold, so the
+   * spawn→READY window can be inspected. */
+  autoReady: boolean;
 }
 
 function harness(): Harness {
-  const children: FakeChild[] = [];
-  return {
-    children,
+  const h: Harness = {
+    children: [],
+    autoReady: true,
     spawn: vi.fn(() => {
       const child = new FakeChild();
-      children.push(child);
+      h.children.push(child);
+      // The real keeper prints READY asynchronously right after it holds the request;
+      // without emulating that, every `start()` would return before the hold exists.
+      if (h.autoReady) queueMicrotask(() => child.emitReady());
       return child as unknown as ChildProcess;
     }),
   };
+  return h;
 }
 
 function makeManager(
@@ -59,6 +75,19 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
+
+/** Let buffered stream data (the fake keeper's `READY`) actually reach its
+ * `data` listener — a real pipe delivers it asynchronously too.
+ *
+ * `setImmediate` is faked whenever fake timers are on, so awaiting it there would
+ * hang forever; advance the fake clock instead. */
+const flush = async () => {
+  if (vi.isFakeTimers()) {
+    await vi.advanceTimersByTimeAsync(0);
+    return;
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+};
 
 describe('keep-awake', () => {
   describe('platform support', () => {
@@ -104,6 +133,9 @@ describe('keep-awake', () => {
     it('starts a keeper on AC and stops it again when switching to battery', async () => {
       vi.useFakeTimers();
       const h = harness();
+      // Hold the keeper at "spawned but not confirmed yet" so the spawn→READY window
+      // can be asserted before the hold is reported.
+      h.autoReady = false;
       let source: PowerSource = 'battery';
       const manager = makeManager(h, 'win32', () => source);
 
@@ -113,8 +145,13 @@ describe('keep-awake', () => {
       source = 'ac';
       await vi.advanceTimersByTimeAsync(POWER_POLL_MS);
       expect(h.spawn).toHaveBeenCalledTimes(1);
-      expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
       const child = h.children[0];
+      // Spawning alone is NOT a hold — the keeper has not confirmed yet, and this
+      // must not read as a failure either.
+      expect(manager.status()).toMatchObject({ active: false, reason: 'starting' });
+      child.emitReady();
+      await flush();
+      expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
 
       // Unplug: the hold is released (stdin closed, then killed after the grace period).
       source = 'battery';
@@ -213,16 +250,22 @@ describe('keep-awake', () => {
       manager.stop();
     });
 
-    it('stop() terminates the keeper child (cooperative EOF + force kill)', async () => {
+    it('stop() releases the hold cooperatively, force-killing only after the grace period', async () => {
+      vi.useFakeTimers();
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
       await manager.start();
       const child = h.children[0];
 
       const status = manager.stop();
+      // Same graceful path on EVERY release, including this main "switch off" one:
+      // stdin closes first and the forced kill is only a fallback.
       expect(child.stdin.end).toHaveBeenCalled();
-      expect(child.kill).toHaveBeenCalled();
+      expect(child.kill).not.toHaveBeenCalled();
       expect(status).toMatchObject({ active: false, settingEnabled: false, reason: 'disabled' });
+
+      await vi.advanceTimersByTimeAsync(KEEPER_EXIT_GRACE_MS);
+      expect(child.kill).toHaveBeenCalled();
     });
 
     it('stop() is idempotent and does not throw without a child', async () => {
@@ -242,7 +285,11 @@ describe('keep-awake', () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
       await manager.start();
+      await flush();
+      expect(manager.status().active).toBe(true);
       manager.stop();
+      // Only the (unref'd) grace-period fallback may remain — the 60s watchdog is gone.
+      await vi.advanceTimersByTimeAsync(KEEPER_EXIT_GRACE_MS);
       expect(vi.getTimerCount()).toBe(0);
     });
 
@@ -271,6 +318,7 @@ describe('keep-awake', () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
       await manager.start();
+      await flush();
       expect(manager.status().active).toBe(true);
       h.children[0].emit('exit', 0, null);
       expect(manager.status().active).toBe(false);
@@ -295,10 +343,11 @@ describe('keep-awake', () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
 
-      expect(await manager.apply({ keepAwake: true })).toMatchObject({
-        active: true,
-        settingEnabled: true,
-      });
+      // `apply({keepAwake:true})` resolves once the hold exists (the keeper confirms
+      // asynchronously, so the first tick's status is awaited through the READY line).
+      await manager.apply({ keepAwake: true });
+      await flush();
+      expect(manager.status()).toMatchObject({ active: true, settingEnabled: true });
       expect(h.spawn).toHaveBeenCalledTimes(1);
 
       expect(await manager.apply({ keepAwake: false })).toMatchObject({
@@ -368,6 +417,7 @@ describe('keep-awake', () => {
       const h = harness();
       const manager = makeManager(h, 'win32', () => 'ac');
       await manager.start();
+      await flush();
       expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
 
       // `Add-Type` blocked by execution policy ⇒ the keeper exits 3 by itself.

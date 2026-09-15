@@ -19,6 +19,7 @@ const KEEP_AWAKE_REASON_KEY: Record<PowerStatus['reason'], string> = {
   keeperFailed: 'settings.keepAwakeStatusKeeperFailed',
   unsupported: 'settings.keepAwakeStatusUnsupported',
   pending: 'settings.keepAwakeStatusPending',
+  starting: 'settings.keepAwakeStatusStarting',
 };
 
 const noteStyle = { color: 'var(--tx-2)', fontSize: 12, lineHeight: 1.6 } as const;

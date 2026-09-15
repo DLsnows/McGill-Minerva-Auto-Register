@@ -52,6 +52,7 @@ describe('i18n', () => {
       'settings.keepAwakeStatusKeeperFailed',
       'settings.keepAwakeStatusUnsupported',
       'settings.keepAwakeStatusPending',
+      'settings.keepAwakeStatusStarting',
     ];
     for (const lng of LANGS) {
       void i18n.changeLanguage(lng);

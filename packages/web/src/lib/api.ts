@@ -12,7 +12,14 @@ export interface SchedulerState {
 /** Windows-only keep-awake state (see `GET /api/power`). */
 export type PowerSource = 'ac' | 'battery' | 'desktop' | 'unknown';
 export type KeepAwakeReason =
-  'active' | 'battery' | 'disabled' | 'unsupported' | 'unavailable' | 'keeperFailed' | 'pending';
+  | 'active'
+  | 'battery'
+  | 'disabled'
+  | 'unsupported'
+  | 'unavailable'
+  | 'keeperFailed'
+  | 'pending'
+  | 'starting';
 export interface PowerStatus {
   supported: boolean;
   /** The persisted setting. */
