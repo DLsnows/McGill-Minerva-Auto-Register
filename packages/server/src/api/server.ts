@@ -6,9 +6,11 @@ import fastifyStatic from '@fastify/static';
 import type { WebSocket } from 'ws';
 import { z } from 'zod';
 import type { LogEvent, Settings } from '@autoregister/shared';
+import { MAX_OP_PAUSE_MS, MIN_OP_PAUSE_MS } from '@autoregister/shared';
 import type { Budget } from '../budget/budget';
 import type { KeepAwakeReason, KeepAwakeStatus, PowerSource } from '../system/keep-awake';
 import type { Store } from '../store/store';
+import { applyPacingSettings } from '../util/pacing';
 
 /** Safety net for a login that hangs outside the session flow's own control
  * (e.g. `launch()` never resolving). Must exceed the SessionManager's internal
@@ -101,10 +103,26 @@ const emailSchema = z.object({
   to: z.string().min(1),
 });
 
-const settingsSchema = z
+/**
+ * Exported for `fake-settings-contract.test.ts` only. Adding a setting to this
+ * schema without teaching `e2e/fake-settings.mjs` about it has silently broken
+ * the e2e saved-settings flow three times now (the budget snapshot in #35, the
+ * `/resume` contract in #34, operation speed in #36), each time because the fake
+ * is a hand-maintained parallel copy of a contract nobody re-derived. The
+ * contract test derives the fake's obligations from *this* schema instead, so a
+ * new bounded field without a fake counterpart fails `npm test` rather than
+ * surfacing as a mystery e2e timeout.
+ */
+export const settingsSchema = z
   .object({
     pollIntervalMinutes: z.number().min(1),
     jitterMinutes: z.number().min(0),
+    // Operation speed (inside one poll). Enforced server-side so a hand-rolled
+    // request can't push the automation below the 250ms anti-detection floor —
+    // the UI clamp alone is not a guarantee. z.number() already rejects NaN and
+    // ±Infinity; min/max reject out-of-range and negative values.
+    opPauseMs: z.number().min(MIN_OP_PAUSE_MS).max(MAX_OP_PAUSE_MS),
+    opJitterMs: z.number().min(0).max(MAX_OP_PAUSE_MS),
     queryBudget: z.number().min(1),
     registerBudget: z.number().min(0),
     notify: z.object({ desktop: z.boolean(), sound: z.boolean(), email: z.boolean() }),
@@ -269,6 +287,9 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     // stale client, a hand-rolled curl, a restored backup) is overridden here.
     // Restoring the feature means deleting this override; the notifier, the
     // `EmailConfig` type and docs/EMAIL_SETUP.md all stay in place for that.
+    const pacingChanged =
+      (parsed.data.opPauseMs !== undefined && parsed.data.opPauseMs !== before.opPauseMs) ||
+      (parsed.data.opJitterMs !== undefined && parsed.data.opJitterMs !== before.opJitterMs);
     const patch: Partial<Settings> = {
       ...parsed.data,
       notify: { ...before.notify, ...parsed.data.notify, email: false },
@@ -282,6 +303,10 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     // Awaited because the first tick probes the power source asynchronously — doing
     // this synchronously used to stall the event loop for the whole server.
     if (deps.keepAwake) await deps.keepAwake.apply(updated);
+    // Same idea for the operation speed: `humanPause()` reads the runtime config
+    // on every call, so a changed value applies from the next browser operation on.
+    // Uses `updated` (the persisted merge) so unchanged fields keep their value.
+    if (pacingChanged) applyPacingSettings(updated);
     return updated;
   });
 

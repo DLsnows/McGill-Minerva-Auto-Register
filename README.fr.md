@@ -171,7 +171,9 @@ Ouvrez ensuite **http://127.0.0.1:4575** et :
    chaque champ pour de l'aide ; le **Term** est le code de session Minerva
    (Hiver = …01, Été = …05, Automne = …09, p. ex. Hiver 2027 = `202701`). La
    faculté (Faculty) est obligatoire (p. ex. `Faculty of Science`).
-3. Onglet **Settings** → intervalle de sondage et gigue, budgets quotidiens de
+3. Onglet **Settings** → intervalle de sondage et gigue (fréquence des
+   vérifications), **vitesse des opérations** (temps d'attente entre les actions
+   *à l'intérieur* d'une vérification), budgets quotidiens de
    requêtes/inscriptions, canaux de notification (bureau / son) et le mode
    **Dry-run**.
    > **Les notifications par courriel sont temporairement indisponibles** — la
@@ -231,6 +233,14 @@ Ses limites (également indiquées dans l'interface) :
   éviter d'épuiser le **budget de requêtes** quotidien (100 par défaut) et le
   **budget d'inscriptions** (20 par défaut) — pour paraître humain et respecter
   les limites de l'école.
+- **Vitesse des opérations** : temps d'attente entre deux actions du navigateur
+  *à l'intérieur* d'une vérification (3000 ms ± 1000 ms de gigue par défaut ;
+  environ 9 actions par vérification). C'est un réglage différent de la
+  *fréquence* des vérifications : le baisser raccourcit une vérification. **Ne le
+  réglez pas de façon agressive** : 250 ms est un plancher absolu (une valeur de 0
+  reste bloquée à 250 ms), c'est une exigence anti-détection, et cliquer à toute
+  vitesse fait traiter l'automatisation comme un robot. Les valeurs par défaut sont
+  volontairement prudentes ; descendre sous ~1500 ms n'est pas recommandé.
 - **Par cours** : `auto` inscrit/met en liste d'attente automatiquement ;
   `notify` vous avertit seulement.
 

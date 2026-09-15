@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { MAX_OP_PAUSE_MS, MIN_OP_PAUSE_MS } from '@autoregister/shared';
 import type { Settings } from '@autoregister/shared';
 import { api, type PowerStatus } from '../lib/api';
 import { useData } from '../lib/DataContext';
@@ -29,6 +30,22 @@ const noteStyle = { color: 'var(--tx-2)', fontSize: 12, lineHeight: 1.6 } as con
  * while the page is open (a laptop unplugged mid-session flips to "on battery"). */
 const POWER_POLL_MS = 30_000;
 
+/** Operation-speed bounds, shared with the server schema (single source of truth). */
+const OP_PAUSE_MIN = MIN_OP_PAUSE_MS;
+const OP_PAUSE_MAX = MAX_OP_PAUSE_MS;
+
+/** The operation-speed fields are only accepted in range — never save garbage. */
+function isPacingValid(form: Pick<Settings, 'opPauseMs' | 'opJitterMs'>): boolean {
+  return (
+    Number.isFinite(form.opPauseMs) &&
+    form.opPauseMs >= OP_PAUSE_MIN &&
+    form.opPauseMs <= OP_PAUSE_MAX &&
+    Number.isFinite(form.opJitterMs) &&
+    form.opJitterMs >= 0 &&
+    form.opJitterMs <= OP_PAUSE_MAX
+  );
+}
+
 const inputStyle = {
   padding: 8,
   borderRadius: 8,
@@ -41,10 +58,25 @@ function NumField({
   label,
   value,
   onChange,
+  min,
+  max,
+  step,
+  rejectEmpty = false,
 }: {
   label: string;
   value: number;
   onChange: (n: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  /** Treat a cleared field as an unsettled value (`NaN`) instead of `0`.
+   *
+   * Opt-in, and deliberately not the default: `Number('')` is `0`, and for a field whose
+   * server bound is `min(0)` clearing it is a perfectly good way to store `0`. Applying
+   * the coercion to every numeric input silently turned that into `NaN` -> `null` -> a
+   * raw 400 for `jitterMinutes` and `registerBudget`. Only the two operation-speed fields
+   * want it, because they have their own friendly range guard (`isPacingValid`). */
+  rejectEmpty?: boolean;
 }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
@@ -53,8 +85,16 @@ function NumField({
         aria-label={label}
         type="number"
         style={inputStyle}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        // Show an unsettled value as empty rather than "NaN" / "Infinity".
+        value={Number.isFinite(value) ? value : ''}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(e) =>
+          onChange(
+            rejectEmpty && e.target.value.trim() === '' ? NaN : Number(e.target.value),
+          )
+        }
       />
     </label>
   );
@@ -103,6 +143,11 @@ export default function SettingsPage() {
   if (!form) return <div className="empty">{t('settings.loading')}</div>;
 
   const save = async () => {
+    if (!isPacingValid(form)) {
+      setErr(t('settings.pacingRange', { min: OP_PAUSE_MIN, max: OP_PAUSE_MAX }));
+      setSaved(false);
+      return;
+    }
     setErr(undefined);
     try {
       await api.putSettings(form);
@@ -241,6 +286,35 @@ export default function SettingsPage() {
           </div>
         </>
       )}
+
+      <div className="col-h" style={{ marginTop: 22 }}>
+        <h2 className="serif">{t('settings.pacingSection')}</h2>
+      </div>
+      <div className="card glass">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+          <NumField
+            label={t('settings.opPause')}
+            value={form.opPauseMs}
+            min={OP_PAUSE_MIN}
+            max={OP_PAUSE_MAX}
+            step={50}
+            rejectEmpty
+            onChange={(n) => setForm({ ...form, opPauseMs: n })}
+          />
+          <NumField
+            label={t('settings.opJitter')}
+            value={form.opJitterMs}
+            min={0}
+            max={OP_PAUSE_MAX}
+            step={50}
+            rejectEmpty
+            onChange={(n) => setForm({ ...form, opJitterMs: n })}
+          />
+        </div>
+        <div style={{ color: 'var(--tx-2)', fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
+          ⏱ {t('settings.pacingHint', { min: OP_PAUSE_MIN, max: OP_PAUSE_MAX })}
+        </div>
+      </div>
 
       {err && <div className="errbar">{err}</div>}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14 }}>

@@ -24,7 +24,7 @@ describe('DataProvider', () => {
     vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
     vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
     vi.spyOn(api, 'getSettings').mockResolvedValue({
-      pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
+      pollIntervalMinutes: 30, jitterMinutes: 3, opPauseMs: 3000, opJitterMs: 1000, queryBudget: 100, registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
     });
     vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: true });

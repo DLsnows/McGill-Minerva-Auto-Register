@@ -151,8 +151,10 @@ Then open **http://127.0.0.1:4575** and:
 2. **Courses** tab → add the course(s) to watch. Hover the `?` on each field for
    help; the **Term** is the Minerva term code (Winter = …01, Summer = …05,
    Fall = …09, e.g. Winter 2027 = `202701`). Faculty is required (e.g. `Faculty of Science`).
-3. **Settings** tab → poll interval & jitter, daily query/register budgets,
-   notification channels (desktop / sound) and **Dry-run** mode.
+3. **Settings** tab → poll interval & jitter (how *often* a course is checked),
+   **operation speed** (how long each action waits *inside* one check), daily
+   query/register budgets, notification channels (desktop / sound) and **Dry-run**
+   mode.
    > **Email notifications are temporarily unavailable** — the Email toggle and
    > SMTP form are hidden and the server forces the channel off. The setup guide
    > ([`docs/EMAIL_SETUP.md`](docs/EMAIL_SETUP.md)) is kept for when it returns.
@@ -201,6 +203,13 @@ Its boundaries (stated in the UI too):
 - **Pacing**: a base interval (default 30 min) ± jitter, stretched to keep the
   daily **query budget** (default 100) and **register budget** (default 20) from
   running out — to look human and respect school limits.
+- **Operation speed**: how long each browser action waits *inside* one check
+  (default 3000 ms ± 1000 ms of jitter; a check performs ~9 actions). This is a
+  different dial from *how often* a course is checked — lowering it makes a single
+  check finish sooner. **Don't set it aggressively**: 250 ms is a hard floor (a
+  setting of 0 is still clamped), it is an anti-detection requirement, and
+  clicking flat-out is what gets the automation treated as a bot. The defaults are
+  deliberately conservative; going below ~1500 ms is not recommended.
 - **Per course**: `auto` registers/waitlists automatically; `notify` only alerts you.
 
 ## Troubleshooting

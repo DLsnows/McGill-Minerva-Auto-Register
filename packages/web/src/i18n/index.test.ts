@@ -63,4 +63,26 @@ describe('i18n', () => {
       }
     }
   });
+
+  // The operation-speed settings are user-facing copy: every language must
+  // actually carry it (the `typeof en` dictionaries catch missing keys at
+  // compile time; this catches empty or un-interpolated strings).
+  it('carries the operation-speed settings copy in all three languages', () => {
+    const keys = [
+      'settings.pacingSection',
+      'settings.opPause',
+      'settings.opJitter',
+      'settings.pacingHint',
+      'settings.pacingRange',
+    ];
+    for (const lang of LANGS) {
+      void i18n.changeLanguage(lang);
+      for (const key of keys) {
+        const value = i18n.t(key, { min: 250, max: 60000 });
+        expect(value, `${lang} → ${key}`).not.toBe(key);
+        expect(value, `${lang} → ${key}`).not.toContain('{{');
+        expect(value.trim().length, `${lang} → ${key}`).toBeGreaterThan(0);
+      }
+    }
+  });
 });

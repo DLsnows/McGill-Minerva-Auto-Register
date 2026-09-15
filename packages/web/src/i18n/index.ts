@@ -137,6 +137,13 @@ const en = {
     dryRunAria: 'Dry-run mode',
     pacingNote:
       'Jitter and a low poll frequency make the automation behave like a human — they help avoid McGill’s servers flagging unusual / bot-like activity and rate-limiting or locking the account. Keep the interval reasonably high and leave jitter on.',
+    pacingSection: 'Operation speed (inside one poll)',
+    opPause: 'Pause between operations (ms)',
+    opJitter: 'Operation jitter (± ms)',
+    pacingHint:
+      'How long to wait between each browser action inside a single course check, in milliseconds. This is not the poll interval above — that one decides how often a course is checked. One check performs about 9 actions, so a smaller pause finishes the whole cycle sooner. Keep it at {{min}} ms or more: a human-like pace is what keeps McGill’s servers from treating the automation as a bot. Allowed range: {{min}}–{{max}} ms.',
+    pacingRange:
+      'Operation speed must be a number — pause {{min}}–{{max}} ms, jitter 0–{{max}} ms. Nothing was saved.',
     keepAwakeSection: 'Power (Windows)',
     keepAwake: 'Keep this PC awake while AutoRegister runs',
     keepAwakeAria: 'Keep this PC awake',
@@ -312,6 +319,12 @@ const zh: typeof en = {
     dryRunAria: '演练模式',
     pacingNote:
       '抖动和较低的轮询频率让自动化更像真人操作 —— 有助于避免被 McGill 服务器判定为异常 / 机器人行为，进而被限流或锁定账号。建议保持较长的间隔并开启抖动。',
+    pacingSection: '操作速度（单次查询内部）',
+    opPause: '操作间隔（毫秒）',
+    opJitter: '操作抖动（± 毫秒）',
+    pacingHint:
+      '在一次课程查询的内部，每两个浏览器操作之间等多久，单位毫秒。这和上面的「轮询间隔」不是一回事 —— 轮询间隔决定多久查一次课程。一次查询大约有 9 个操作，间隔越小整个周期结束得越快。建议不要低于 {{min}} 毫秒：贴近真人的节奏才能避免被 McGill 服务器当成机器人。允许范围：{{min}}–{{max}} 毫秒。',
+    pacingRange: '操作速度必须填数字：操作间隔 {{min}}–{{max}} 毫秒，抖动 0–{{max}} 毫秒。未保存。',
     keepAwakeSection: '电源（Windows）',
     keepAwake: '运行期间不让这台电脑自动休眠',
     keepAwakeAria: '保持电脑不休眠',
@@ -494,6 +507,13 @@ const fr: typeof en = {
     dryRunAria: 'Mode simulation',
     pacingNote:
       "La gigue et une faible fréquence de sondage rendent l'automatisation semblable à un humain — elles aident à éviter que les serveurs de McGill ne signalent une activité anormale / robotisée et limitent le débit ou verrouillent le compte. Gardez un intervalle assez élevé et laissez la gigue activée.",
+    pacingSection: 'Vitesse des opérations (dans un seul sondage)',
+    opPause: 'Pause entre les opérations (ms)',
+    opJitter: 'Gigue des opérations (± ms)',
+    pacingHint:
+      "Temps d'attente entre deux actions du navigateur à l'intérieur d'une vérification de cours, en millisecondes. Ce n'est pas l'intervalle de sondage ci-dessus — celui-ci détermine la fréquence des vérifications. Une vérification effectue environ 9 actions : une pause plus courte termine donc le cycle plus vite. Restez à {{min}} ms ou plus : un rythme humain évite que les serveurs de McGill ne traitent l'automatisation comme un robot. Plage autorisée : {{min}}–{{max}} ms.",
+    pacingRange:
+      "La vitesse des opérations doit être un nombre — pause {{min}}–{{max}} ms, gigue 0–{{max}} ms. Rien n'a été enregistré.",
     keepAwakeSection: 'Alimentation (Windows)',
     keepAwake: 'Garder ce PC éveillé pendant l’exécution d’AutoRegister',
     keepAwakeAria: 'Garder ce PC éveillé',
