@@ -43,19 +43,63 @@ if (!bash) {
   process.exit(0);
 }
 
-/** The `run:` body of the gate step, read from the workflow so it cannot drift. */
-function gateScript() {
+/**
+ * The gate step, read from the workflow so nothing can drift:
+ *   - `run` is the shell that actually executes in CI;
+ *   - `env` is how GitHub wires the `${{ ... }}` expressions into that shell.
+ *
+ * The env mapping is asserted, not assumed. An earlier version of this test only read
+ * `run` — but `run` already refers to `$BASE` / `$HEAD` / …, so the test passed even though
+ * the `${{ }}` substitutions it performed matched nothing (the expressions live in `env`,
+ * not in `run`). Renaming an env key would have silently stopped the test from exercising
+ * the real wiring. Now the mapping is checked against the names the harness injects, and
+ * the expressions are resolved *through* it.
+ */
+const ENV_WIRING = {
+  BASE: 'github.base_ref',
+  HEAD: 'github.head_ref',
+  HEAD_REPO: 'github.event.pull_request.head.repo.full_name',
+  THIS_REPO: 'github.repository',
+};
+
+function gateStep() {
   const doc = load(readFileSync(WORKFLOW, 'utf8'));
   const steps = doc?.jobs?.['branch-gate']?.steps ?? [];
   const step = steps.find((s) => s.name === 'Check source branch');
   if (!step?.run)
     throw new Error('could not find the "Check source branch" step in branch-gate.yml');
-  // Replace the GitHub expressions with the env vars the test sets.
-  return step.run
-    .replaceAll('${{ github.base_ref }}', '${BASE}')
-    .replaceAll('${{ github.head_ref }}', '${HEAD}')
-    .replaceAll('${{ github.event.pull_request.head.repo.full_name }}', '${HEAD_REPO}')
-    .replaceAll('${{ github.repository }}', '${THIS_REPO}');
+  return step;
+}
+
+/** Fails loudly if the workflow's env wiring no longer matches what this test injects. */
+function assertEnvWiring(step) {
+  const env = step.env ?? {};
+  const problems = [];
+  for (const [key, expression] of Object.entries(ENV_WIRING)) {
+    const actual = String(env[key] ?? '');
+    if (!actual.includes(expression)) {
+      problems.push(
+        `env.${key} should reference \${{ ${expression} }}, got ${actual || '(missing)'}`,
+      );
+    }
+  }
+  if (problems.length) {
+    console.error('[test-ci-scripts] branch-gate.yml env wiring changed:');
+    for (const p of problems) console.error(`  - ${p}`);
+    console.error(
+      '[test-ci-scripts] update ENV_WIRING and runGate() together, otherwise this test stops exercising the real gate.',
+    );
+    process.exit(1);
+  }
+}
+
+/** The `run:` body with each expression replaced by the variable the harness exports. */
+function gateScript(step) {
+  let script = step.run;
+  for (const [key, expression] of Object.entries(ENV_WIRING)) {
+    script = script.replaceAll(`\${{ ${expression} }}`, `\${${key}}`);
+  }
+  return script;
 }
 
 function runGate(script, base, head, headRepo = THIS_REPO) {
@@ -109,10 +153,13 @@ const CASES = [
   ['staging', 'dev', FORK, 1, "fork's `dev` cannot be promoted to staging"],
 ];
 
-const script = gateScript();
+const step = gateStep();
+assertEnvWiring(step);
+const script = gateScript(step);
 const failures = [];
 console.log('[test-ci-scripts] branch-gate promotion rules');
 console.log(`  (executing the step extracted from ${WORKFLOW.replace(REPO_ROOT, '')})`);
+console.log(`  (env wiring verified: ${Object.keys(ENV_WIRING).join(', ')})`);
 
 for (const [base, head, headRepo, expected, why] of CASES) {
   const { code, out } = runGate(script, base, head, headRepo);

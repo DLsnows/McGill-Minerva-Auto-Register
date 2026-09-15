@@ -113,20 +113,18 @@ async function waitFor(fn, label, timeoutMs = 10_000) {
  * "Failed to load resource" and every `net::ERR_`, which also swallowed the exact symptom
  * of a broken backend (`/api/targets` returning 500 renders as "Failed to load resource:
  * the server responded with a status of 500") — the app could be completely broken and the
- * "no console errors" assertion would still pass. Only resources that genuinely cannot load
- * in this environment are dropped now:
- *   - the Google Fonts stylesheet (index.html loads it; the runner has no external network);
- *   - the favicon (the fixture build ships none);
- *   - `net::ERR_*` connection-level failures for those same external hosts.
- * API failures are never ignored: `/api/*` responses are asserted directly.
+ * "no console errors" assertion would still pass.
+ *
+ * What is tolerated, and how it is scoped:
+ *   - the Google Fonts stylesheet (index.html loads it; the runner has no external network)
+ *     and the favicon (the fixture build ships none) — matched by *host/filename*;
+ *   - connection-level `net::ERR_*` failures — but only for an external host (see
+ *     `isExternalFailure`). A `net::ERR_CONNECTION_REFUSED` on `/api/*` is a real failure
+ *     and must not be swallowed; the coverage assertions would catch it as a count of 0,
+ *     but the sentinel should not be lying about it either.
  */
-const IGNORED_CONSOLE = [
-  /fonts\.googleapis\.com/i,
-  /fonts\.gstatic\.com/i,
-  /favicon/i,
-  // Connection-level failures for the external font origin (DNS/offline runner).
-  /net::ERR_(NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|CONNECTION_(REFUSED|RESET|CLOSED)|TIMED_OUT|ADDRESS_UNREACHABLE|CERT_|SSL_)/i,
-];
+const IGNORED_CONSOLE = [/fonts\.googleapis\.com/i, /fonts\.gstatic\.com/i, /favicon/i];
+const EXTERNAL_HOST = /^https?:\/\/(?:fonts\.googleapis\.com|fonts\.gstatic\.com)\//i;
 
 function watchConsole(page) {
   const errors = [];
@@ -134,47 +132,95 @@ function watchConsole(page) {
     if (msg.type() !== 'error') return;
     const text = msg.text();
     if (IGNORED_CONSOLE.some((re) => re.test(text))) return;
+    // Chrome prints only the file name for some resource failures, so fall back to
+    // "connection-level failure attributed to an external origin" rather than dropping the
+    // message outright. An API connection failure carries no external host, so it stays.
+    if (/net::ERR_/i.test(text) && EXTERNAL_HOST.test(text)) return;
     errors.push(`console.error: ${text}`);
   });
   page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`));
+  // A connection-level failure that never reaches the console would otherwise be silent.
+  // Only genuine network errors count — `net::ERR_ABORTED` is what a normal cancelled or
+  // superseded request looks like, and it is not an app failure.
+  page.on('requestfailed', (request) => {
+    const url = request.url();
+    const errorText = request.failure()?.errorText ?? '';
+    if (EXTERNAL_HOST.test(url)) return;
+    if (!errorText.startsWith('net::ERR_') || errorText === 'net::ERR_ABORTED') return;
+    errors.push(`requestfailed: ${url} (${errorText})`);
+  });
   return errors;
 }
 
 // ── endpoint coverage ─────────────────────────────────────────────────────────────────
-/** What the fake backend was asked for during one test case. */
-async function fetchLedger(page) {
-  return page.evaluate(async () => {
-    const res = await fetch('/api/__requests');
-    return res.json();
-  });
+/**
+ * Absolute per-route counters from the fake backend, at the moment of the call.
+ *
+ * Called from the *runner* rather than from the page: a baseline is needed before a case
+ * has navigated anywhere, and a page-level fetch from `about:blank` cannot resolve a
+ * relative URL. The probe endpoint exists for the runner's benefit.
+ */
+async function fetchLedger() {
+  const res = await fetch(`${BASE_URL}/api/__requests`);
+  if (!res.ok) throw new Error(`coverage probe failed: GET /api/__requests returned ${res.status}`);
+  return res.json();
+}
+
+function deltaCount(before, after, route) {
+  return Math.max(0, (after.routes?.[route]?.count ?? 0) - (before.routes?.[route]?.count ?? 0));
+}
+
+/** Failure statuses a route produced *within* this window (counts are cumulative). */
+function deltaFailures(before, after, route) {
+  const seen = before.routes?.[route]?.statuses ?? {};
+  const now = after.routes?.[route]?.statuses ?? {};
+  return Object.entries(now)
+    .filter(([status, count]) => status >= 400 && count > (seen[status] ?? 0))
+    .map(([status]) => Number(status));
+}
+
+function renderDelta(before, after) {
+  return Object.fromEntries(
+    Object.keys(after.routes ?? {})
+      .map((route) => [route, deltaCount(before, after, route)])
+      .filter(([, count]) => count > 0),
+  );
 }
 
 /**
- * Asserts the API calls a case depends on: every listed route must have been called at
- * least `min` times, no `/api/*` call may have returned 4xx/5xx, and the fake backend must
- * have produced no 5xx at all. This is the assertion that fails loudly when the frontend
- * silently stops talking to an endpoint, or when an endpoint starts erroring.
+ * Asserts the API calls a case depends on, scoped to *that case*.
+ *
+ * The ledger itself is cumulative (the fake backend outlives every case), so both
+ * assertions work on a before/after diff taken around the case:
+ *   - `>= N` means "this case issued at least N calls", which a cumulative counter could
+ *     not express — an earlier case's traffic would satisfy a later case's minimum;
+ *   - a 5xx is only charged to the case that caused it, so one broken endpoint no longer
+ *     re-fails every subsequent case with the same message.
+ * Plus the probe itself: `/api/__requests` is the one call the runner makes, so it proves
+ * the fake backend is still answering rather than silently down.
  */
-async function assertEndpoints(page, expected) {
-  const ledger = await fetchLedger(page);
+async function assertEndpoints(expected, before) {
+  const after = await fetchLedger();
   const problems = [];
 
+  if ((after.probeCalls ?? 0) - (before.probeCalls ?? 0) < 1) {
+    problems.push('the fake backend did not answer the coverage probe (/api/__requests)');
+  }
   for (const [route, min] of Object.entries(expected)) {
-    const count = ledger.routes?.[route]?.count ?? 0;
+    const count = deltaCount(before, after, route);
     if (count < min) problems.push(`expected >=${min} call(s) to ${route}, saw ${count}`);
   }
-  for (const [route, entry] of Object.entries(ledger.routes ?? {})) {
-    if (entry.failures?.length) {
-      problems.push(`${route} returned ${[...new Set(entry.failures)].join('/')}`);
-    }
+  for (const route of Object.keys(after.routes ?? {})) {
+    const failures = deltaFailures(before, after, route);
+    if (failures.length) problems.push(`${route} returned ${[...new Set(failures)].join('/')}`);
   }
-  if (ledger.serverErrors?.length) {
-    problems.push(`fake backend produced 5xx: ${ledger.serverErrors.join(', ')}`);
-  }
+  const newServerErrors = after.serverErrors.length - before.serverErrors.length;
+  if (newServerErrors > 0)
+    problems.push(`fake backend produced ${newServerErrors} new 5xx response(s)`);
 
   assert(
     problems.length === 0,
-    `endpoint coverage failed: ${problems.join('; ')} (ledger: ${JSON.stringify(ledger.routes)})`,
+    `endpoint coverage failed: ${problems.join('; ')} (this case: ${JSON.stringify(renderDelta(before, after))})`,
   );
 }
 
@@ -534,13 +580,17 @@ async function main() {
     await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
     const page = await context.newPage();
     const errors = watchConsole(page);
+    // Snapshot the cumulative ledger before the case runs so its coverage assertions can be
+    // scoped to this case's own traffic (see assertEndpoints). At this point the page is
+    // still `about:blank`, so the snapshot cannot include this case's traffic.
+    const ledgerBefore = await fetchLedger();
     const result = { name: testCase.name, title: testCase.title, status: 'passed', durationMs: 0 };
     try {
       await testCase.run({ page, context, errors });
       // Runs after the case's own assertions so the ledger has seen every call the case
       // makes — including the ones triggered by a page reload.
       if (testCase.endpoints) {
-        await assertEndpoints(page, testCase.endpoints);
+        await assertEndpoints(testCase.endpoints, ledgerBefore);
         result.endpoints = testCase.endpoints;
       }
       console.log(`  ✓ ${testCase.name} — ${testCase.title}`);

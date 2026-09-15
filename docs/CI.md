@@ -184,15 +184,28 @@ npm run gates -- --base origin/dev --only lint,test
 - **覆盖的用例**（`e2e/run.mjs`）：首页标题/ticker/控制台无报错、课程页添加课程后出现在列表、
   设置页改轮询间隔并保存后重新加载仍是新值、语言切换 zh → en → fr 各自渲染导航文案。
 - **两条独立的判定**，缺一不可：
-  1. **端点覆盖断言**（主判据）。假后端用 `onRequest` / `onResponse` 钩子把**每个端点的调用次数与
-     状态码**记进 ledger，通过 `GET /api/__requests` 暴露；每条用例在自身断言之后校验
-     「我依赖的端点被调用过 ≥N 次」且「任何 `/api/*` 都没有 4xx/5xx」且「假后端没有产生任何 5xx」。
+  1. **端点覆盖断言**（主判据）。假后端用 `onRequest` / `onResponse` 钩子把**每个 API 端点的调用
+     次数与状态码**记进 ledger，通过 `GET /api/__requests` 暴露；每条用例在自身断言之后校验
+     「我依赖的端点被调用过 ≥N 次」且「本次用例没有让任何端点返回 4xx/5xx」。
      这条能抓到「某端点压根没被请求」和「端点开始报错」两类问题——只看控制台是抓不到前者的。
-     动态路径按模板归并（`/api/targets/:id`、`/api/targets/:id/run`），否则计数会被 id 打散。
+     三个实现要点：
+     - **ledger 只记录 `/api/*`**：静态资源由同一个进程托管，若把 `/favicon.ico` 的 404 也算进来，
+       每个用例都会因为一个无关资源而变红——这与「忽略列表容忍缺 favicon」自相矛盾。
+     - **计数按「每条用例的增量」判定，不是累计值**：ledger 活在整个服务进程里，而假后端在所有用例
+       之间复用。若用累计值，① 一个坏端点会把它之前的流量算到之后的每条用例上，级联重复报错；
+       ② `≥N` 会被更早用例的流量满足（`language-switch` 的 `/api/targets ≥1` 永远为真）。
+       所以 runner 在每条用例前、后用 `GET /api/__requests` 各取一次快照并做差
+       （失败信息里打印的就是「本次用例」的增量，便于对照）。
+     - **动态路径按模板归并**（`/api/targets/:id`、`/api/targets/:id/run`），否则计数被 id 打散。
+     - 探针自身也计入（`probeCalls`）：假后端如果挂了，所有差值都会是 0，那会伪装成「用例没调端点」，
+       所以「探针有没有被应答」要单独断言。
   2. **控制台哨兵**（辅助判据）。忽略列表**只**覆盖本环境里真正无法加载的外部资源：
-     Google Fonts 样式表（`index.html` 引用它，runner 没有外网）、favicon，以及这些外部源的
-     `net::ERR_*` 连接层失败。**不再忽略**通用的 `Failed to load resource` —— 后端返回 500 时
-     Chromium 报的正是这一句，早先的宽泛忽略会让「无控制台报错」在应用完全损坏时照样通过。
+     Google Fonts 样式表（`index.html` 引用它，runner 没有外网）与 favicon——按**主机名/文件名**匹配；
+     以及**指向这些外部主机**的 `net::ERR_*` 连接层失败。**不再忽略**通用的 `Failed to load resource`
+     （后端返 500 时 Chromium 报的正是这一句），也**不忽略 `/api/*` 的连接失败**
+     （`net::ERR_CONNECTION_REFUSED` 不含外部主机名，因此会正常报出）。
+     另外监听 `requestfailed`：只把真正的网络错误（`net::ERR_*` 且非 `ERR_ABORTED`）算作失败——
+     `ERR_ABORTED` 是正常的请求被取代/取消，不是应用缺陷。
 - **这套安全网本身是可测的**：`E2E_FAULT_ROUTES=/api/budget npm run e2e` 会让指定路由返回 500，
   用来验证「端点坏掉时用例真的会失败」。实测两个负向场景都会红：
   - `/api/budget` 返 500 → `console.error: Failed to load resource: the server responded with a status of 500`；
@@ -317,6 +330,9 @@ esac
 
 - `scripts/ci/branch-gate.test.mjs` —— 从 workflow YAML 里**提取真实的 shell 步骤**并用 bash 执行，
   跑 17 个 (base, head, 来源仓库) 组合（含 `dependabot/*` → `dev` 必须通过、`dependabot/*` → `prod` 必须拒绝）。
+  它同时**断言 workflow 的 `env:` 接线**（`BASE`/`HEAD`/`HEAD_REPO`/`THIS_REPO` 各自对应哪个
+  `${{ ... }}` 表达式）：`run:` 里只有 `$BASE` 这类变量名，表达式在 `env:` 里，只读 `run:` 的话
+  「替换表达式」其实什么都没替换，测试会假绿；改了 `env` 的键名会被这一断言当场逮住。
 - `scripts/ci/validate-workflows.mjs` —— 静态断言：只要 `dependabot.yml` 的 `target-branch` 是 `dev`，
   `branch-gate.yml` 就必须出现 `dependabot/*`。
 

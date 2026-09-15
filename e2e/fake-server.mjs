@@ -97,11 +97,15 @@ const REQUIRED_TARGET_FIELDS = ['term', 'subject', 'courseNumber', 'targetCrn', 
  * and it also catches the opposite failure ("this endpoint was never called at all"), which
  * an error-only assertion can never see.
  *
- * `/api/__requests` and `/api/health` are excluded so the bookkeeping endpoint and the
- * readiness probe don't pollute the counts.
+ * `/api/__requests` and `/api/health` are not routes the frontend calls, so they are kept
+ * out of the per-route map; the coverage probe still has to prove it was served, so its
+ * count is reported separately as `probeCalls`.
  */
+
+/** The two paths that exist for the test harness, not for the app. */
+const HARNESS_PATHS = new Set(['/api/__requests', '/api/health']);
 const requestLedger = new Map();
-const EXCLUDED_FROM_LEDGER = new Set(['/api/__requests', '/api/health']);
+let harnessCalls = 0;
 
 /** Paths that carry an id — counted under their route template so counts stay meaningful. */
 const DYNAMIC_ROUTE_TEMPLATES = [
@@ -116,10 +120,25 @@ function ledgerKeyFor(pathname) {
   return pathname;
 }
 
+/**
+ * Records only API traffic. Static assets are served by this same process, so without the
+ * `/api/` filter a 404 on e.g. `/favicon.ico` would enter the ledger and trip the suite's
+ * "no route failed" assertion — contradicting the whole point of a ledger that exists to
+ * judge the *API contract*. The console sentinel deliberately tolerates a missing favicon
+ * too; the two signals should agree.
+ */
+function isLedgerRoute(pathname) {
+  return pathname.startsWith('/api/') && !HARNESS_PATHS.has(pathname);
+}
+
 function recordRequest(req) {
   // GitHub-hosted Actions masks the query string in `req.url`, so never parse it.
   const pathname = req.url.split('?')[0];
-  if (EXCLUDED_FROM_LEDGER.has(pathname)) return;
+  if (HARNESS_PATHS.has(pathname)) {
+    harnessCalls += 1;
+    return;
+  }
+  if (!isLedgerRoute(pathname)) return;
   const key = ledgerKeyFor(pathname);
   const entry = requestLedger.get(key) ?? { count: 0, statuses: {}, failures: [] };
   entry.count += 1;
@@ -128,7 +147,7 @@ function recordRequest(req) {
 
 function recordResponse(req, reply) {
   const pathname = req.url.split('?')[0];
-  if (EXCLUDED_FROM_LEDGER.has(pathname)) return;
+  if (!isLedgerRoute(pathname)) return;
   const key = ledgerKeyFor(pathname);
   const status = reply.statusCode;
   const entry = requestLedger.get(key) ?? { count: 0, statuses: {}, failures: [] };
@@ -137,7 +156,14 @@ function recordResponse(req, reply) {
   requestLedger.set(key, entry);
 }
 
-/** Snapshot for the test runner: counts + failure statuses per route. */
+/**
+ * Snapshot for the test runner: absolute counts + failure statuses per API route.
+ *
+ * Absolute, not per-case: `e2e/run.mjs` diffs two snapshots around each case so that a
+ * broken endpoint does not cascade into every later case, and so an `>= N` minimum can
+ * only be satisfied by the case's *own* traffic (a cumulative ledger would let an earlier
+ * case silently satisfy a later case's assertion).
+ */
 function ledgerSnapshot() {
   const routes = {};
   for (const [route, entry] of requestLedger) {
@@ -145,6 +171,10 @@ function ledgerSnapshot() {
   }
   return {
     routes,
+    // Monotonic counter for the harness paths, so the runner can prove the probe itself was
+    // served (a down or wedged fake backend would otherwise make every route's delta 0 and
+    // read as "the case never called it").
+    probeCalls: harnessCalls,
     serverErrors: [...requestLedger].flatMap(([, e]) => e.failures.filter((s) => s >= 500)),
   };
 }
