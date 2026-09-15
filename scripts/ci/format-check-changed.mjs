@@ -17,23 +17,31 @@
  *
  * Usage:
  *   node scripts/ci/format-check-changed.mjs [--base <ref>] [--ext .ts,.tsx,...] [--list]
- *                                            [--no-base-compare]
+ *                                            [--repo <dir>] [--no-base-compare]
  * Env:
  *   BASE_REF          base revision/branch (wins over --base)
  *   CI_REPORT_PATH    write a JSON report (new violations + pre-existing debt) here
  *
  * Exit codes: 0 = no newly-introduced violations (pre-existing debt is still reported),
  * 1 = a newly-introduced violation, or a hard failure (unresolvable base, Prettier crash).
+ *
+ * `--repo` exists so `format-check-changed.test.mjs` can run this exact script against a
+ * throwaway fixture repository instead of committing probe files here.
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const CONFIG_PATH = `${REPO_ROOT}.prettierrc.json`;
+function argValue(flag) {
+  const i = process.argv.indexOf(flag);
+  return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : undefined;
+}
+
+const REPO_ROOT = resolve(argValue('--repo') ?? fileURLToPath(new URL('../../', import.meta.url)));
+const CONFIG_PATH = join(REPO_ROOT, '.prettierrc.json');
 const SCRATCH_ROOT = join(tmpdir(), `format-check-changed-${process.pid}`);
 
 const DEFAULT_EXTENSIONS = [
@@ -59,11 +67,6 @@ const BASE_CANDIDATES = [
   'HEAD~1',
 ];
 const DIFF_FILTER = 'ACMR'; // Added, Copied, Modified, Renamed — deleted files have nothing to format.
-
-function argValue(flag) {
-  const i = process.argv.indexOf(flag);
-  return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : undefined;
-}
 
 const BASE_COMPARE = !process.argv.includes('--no-base-compare');
 const MODE = BASE_COMPARE ? 'no-new-violations' : 'strict';
@@ -102,11 +105,12 @@ function changedFiles(baseRef) {
     .filter(Boolean);
 }
 
-/** True when the path is excluded by .prettierignore (or any other gitignore-style rule). */
-function isIgnored(path) {
-  const res = spawnSync('git', ['check-ignore', '--quiet', '--', path], { cwd: REPO_ROOT });
-  return res.status === 0;
-}
+// NOTE: there is deliberately no `.prettierignore` filter here. `git check-ignore` only
+// consults git's own ignore chain — it does NOT read `.prettierignore` — so filtering with
+// it is dead code that silently excludes nothing. Prettier itself honours `.prettierignore`
+// even when handed explicit file paths (verified: a path under `.github/workflows`, which
+// `.prettierignore` lists, is skipped and the run still exits 0), so the ignore rules are
+// applied where they belong.
 
 /**
  * Writes `content` to a scratch file preserving the repo-relative directory shape and the
@@ -186,9 +190,7 @@ function main() {
     process.exit(1);
   }
 
-  const files = changed
-    .filter((f) => extensions.some((ext) => f.endsWith(ext)))
-    .filter((f) => !isIgnored(f));
+  const files = changed.filter((f) => extensions.some((ext) => f.endsWith(ext)));
 
   console.log(
     `[format:check:changed] base=${baseRef}, mode=${MODE}, ${changed.length} changed path(s), ${files.length} to check`,

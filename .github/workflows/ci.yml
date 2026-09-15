@@ -103,6 +103,16 @@ jobs:
           set -o pipefail
           npm run format:check:changed 2>&1 | tee format-output.txt
 
+      # The prettier policy above is subtle enough to be worth guarding: this asserts the
+      # A/B/C/D/E scenarios (new violation fails, pre-existing debt passes, new file fails,
+      # clean passes, ignored file skipped) against a throwaway fixture repository.
+      - name: CI script policy tests
+        id: script-tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run test:ci-scripts 2>&1 | tee ci-scripts-output.txt
+
       - name: Build sticky comment section
         if: always()
         run: |
@@ -127,6 +137,11 @@ jobs:
               echo "| Prettier (new violations only) | :white_check_mark: passed |"
             else
               echo "| Prettier (new violations only) | :x: failed |"
+            fi
+            if [ "${{ steps.script-tests.outcome }}" = "success" ]; then
+              echo "| CI script policy tests | :white_check_mark: passed |"
+            else
+              echo "| CI script policy tests | :x: failed |"
             fi
             echo ""
             # Pre-existing debt is reported, never fatal — surface it so reviewers can see
@@ -158,6 +173,14 @@ jobs:
               echo '```'
               echo "</details>"
             fi
+            if [ "${{ steps.script-tests.outcome }}" != "success" ]; then
+              echo "<details><summary>CI script policy test output</summary>"
+              echo ""
+              echo '```'
+              cat ci-scripts-output.txt 2>/dev/null || echo "(no output captured)"
+              echo '```'
+              echo "</details>"
+            fi
             echo ""
             echo "> Repo-wide \`npm run format:check\` is not run here — it is red on tracked historical debt. Only *newly introduced* violations fail this check. See \`docs/CI.md\`."
           } > ci-artifacts/lint-and-typecheck.md
@@ -176,7 +199,8 @@ jobs:
           always() &&
           (steps.lint.outcome == 'failure' ||
            steps.typecheck.outcome == 'failure' ||
-           steps.format.outcome == 'failure')
+           steps.format.outcome == 'failure' ||
+           steps.script-tests.outcome == 'failure')
         run: exit 1
 
   unit-tests:

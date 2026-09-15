@@ -49,17 +49,39 @@ npm run gates -- --base origin/dev --only lint,test
 - `gates` 里任何一项失败都会继续跑完其余项，最后打印汇总表并以非零码退出（CI 里失败即失败）。
 - prettier 那一步只检查**相对 base 改动过的文件**，base 解析顺序：
   `--base` / `BASE_REF` → `origin/HEAD` → `origin/dev` → `origin/staging` → `origin/prod` → `origin/main` → `origin/master` → `HEAD~1`。
+  **注意 npm 11**：`npm run gates -- --base origin/dev` 里的 `--base` 会被 npm 自己当成配置项吃掉
+  （还会污染子进程的 `npm_config_base`）。脚本因此同时接受位置参数形式，但推荐用环境变量：
+  `BASE_REF=origin/dev npm run gates`。
 - 只跑单项就用原来的脚本：`npm run lint`、`npm run typecheck`、`npm test`、`npm run build:web`、
-  `npm run format:check:changed`。
+  `npm run format:check:changed`、`npm run test:ci-scripts`、`npm run validate:workflows`。
 
-## `ci.yml` 的三个 job
+## `ci.yml` 的 job
 
-| Job                  | Runner          | 内容                                                                             | 为什么这个 runner                                                                                                                                          |
-| -------------------- | --------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lint-and-typecheck` | `ubuntu-slim`   | `npm ci` → `npm run lint` → `npm run typecheck` → `npm run format:check:changed` | 便宜（1 vCPU），几分钟内跑得完                                                                                                                             |
-| `unit-tests`         | `ubuntu-latest` | `npm ci` → `npm test`                                                            | **必须用 latest**：`ubuntu-slim` 有硬性 15 分钟上限且不可调；vitest 全套（shared + server + web/jsdom）可能被拦腰取消。显式 `timeout-minutes: 20` 说明意图 |
-| `web-build`          | `ubuntu-slim`   | `npm ci` → `npm run build:web`                                                   | 和 lint 同量级，deps 有 npm 缓存                                                                                                                           |
-| `report`             | `ubuntu-slim`   | 汇总三个 job 的 Markdown 片段，发一条 sticky 评论                                | 每个 job 先把小结写成 artifact，`report` 按固定顺序拼接，所以评论形状永远一致                                                                              |
+| Job                  | Runner          | 内容                                                                                                         | 为什么这个 runner                                                                                                                                          |
+| -------------------- | --------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `guard`              | `ubuntu-slim`   | 判断 PR head 是否在**本仓库**（fork → `same_repo=false`），不跑任何仓库代码                                  | 见下文「fork 安全」；它是所有执行代码的 job 的前置条件                                                                                                     |
+| `lint-and-typecheck` | `ubuntu-slim`   | `npm ci` → `npm run lint` → `npm run typecheck` → `npm run format:check:changed` → `npm run test:ci-scripts` | 便宜（1 vCPU），几分钟内跑得完                                                                                                                             |
+| `unit-tests`         | `ubuntu-latest` | `npm ci` → `npm test`                                                                                        | **必须用 latest**：`ubuntu-slim` 有硬性 15 分钟上限且不可调；vitest 全套（shared + server + web/jsdom）可能被拦腰取消。显式 `timeout-minutes: 20` 说明意图 |
+| `web-build`          | `ubuntu-slim`   | `npm ci` → `npm run build:web`                                                                               | 和 lint 同量级，deps 有 npm 缓存                                                                                                                           |
+| `report`             | `ubuntu-slim`   | 汇总三个 job 的 Markdown 片段，发一条 sticky 评论                                                            | 每个 job 先把小结写成 artifact，`report` 按固定顺序拼接，所以评论形状永远一致                                                                              |
+
+### fork 安全：先检查，再执行代码
+
+`ci.yml` / `preview-e2e.yml` / `lighthouse.yml` 的 `pull_request` 事件对同仓库分支与 fork 分支**都会触发**。
+如果直接 `checkout` PR head 再 `npm ci`，一个恶意 fork PR 只要改 `package.json` 的 `preinstall`
+或 test/build 脚本，就能在我们自己的 runner 上执行任意命令。**`branch-gate.yml` 拦不住这件事**——
+两个 workflow 是并行启动的，"事后拒绝"发生时代码早就跑过了。
+
+所以每个 workflow 的第一个 job 都是 `guard`：它只比较
+`github.event.pull_request.head.repo.full_name` 与 `github.repository`，输出 `same_repo`；
+所有会执行仓库代码的 job 都写 `needs: guard` + `if: ... needs.guard.outputs.same_repo == 'true'`。
+
+- **fork PR**：`guard` 通过并给出 warning，其余 job 全部 **skipped**（不是绿），runner 上不会执行 fork 的任何代码。
+- **仓内 PR**：行为完全不变。
+- **不用 `pull_request_target`**：那会把 secrets 与写权限交给不受信代码，比现状更危险。
+- `scripts/ci/validate-workflows.mjs` 会**强制断言**这条不变量：一旦有人删掉某个 job 的 guard
+  条件或 `needs: guard`，`npm run validate:workflows` 立刻失败并指出是哪个 job。
+  （`branch-gate.yml` 不 checkout、不装依赖、只跑纯 shell，因此豁免。）
 
 ### prettier：只禁止**新引入**的违规
 
@@ -87,6 +109,16 @@ npm run gates -- --base origin/dev --only lint,test
 - 历史债会以 `format-changed.json`（`CI_REPORT_PATH`）形式留给 CI，并在 sticky 评论里提示。
 - 只想严格判定（例如清理完历史债之后）：`--no-base-compare` 即回到「改动过的文件必须全部干净」。
 - 本地同样一条命令：`npm run format:check:changed`（或 `npm run gates` 里的 `format:changed`）。
+- **这个策略本身有回归测试**：`npm run test:ci-scripts`
+  （`scripts/ci/format-check-changed.test.mjs`）。它在系统临时目录里建一个一次性 git 仓库，
+  对真实脚本跑 5 个场景：A 弄脏原本干净的文件 → 必须失败；B 改动历史脏文件 → 必须通过并报为
+  pre-existing；C 新增脏文件 → 必须失败；D 全干净 → 通过且报告为空；E 改动 `.prettierignore`
+  里的文件 → 被 Prettier 跳过、不报违规。CI 与 `npm run gates` 都会跑它。
+- 脚本自身**不做** `.prettierignore` 过滤：`git check-ignore` 只读 git 自己的 ignore 链
+  （`.gitignore` / `.git/info/exclude`），**不读 `.prettierignore`**，用它过滤等于空操作（曾经写过，
+  被评审指出后删掉）。Prettier 即使收到显式文件路径也会尊重 `.prettierignore`（已实测：
+  `.github/workflows/` 下的文件被跳过且整体仍然 exit 0），所以忽略规则由 Prettier 自己负责，
+  这正是场景 E 断言的行为。
 
 想真正还这笔债：单独开一个 `chore/format-repo` PR 跑 `npm run format`，在 `.git-blame-ignore-revs` 里
 登记该 commit，然后把 `ci.yml` 的 prettier 步骤换成全量 `npm run format:check`（或保留本脚本并加

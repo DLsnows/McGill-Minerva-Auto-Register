@@ -85,6 +85,11 @@ const GATES = [
     skipReason: 'no base revision could be resolved — pass --base <ref> or set BASE_REF',
   },
   {
+    id: 'ci-script-tests',
+    label: 'CI script policy tests (prettier new-violation policy)',
+    command: ['npm', ['run', 'test:ci-scripts']],
+  },
+  {
     id: 'test',
     label: 'Unit tests (vitest)',
     command: ['npm', ['test']],
