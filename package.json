@@ -20,6 +20,7 @@
     "test:ci-scripts": "node scripts/ci/format-check-changed.test.mjs && node scripts/ci/branch-gate.test.mjs",
     "e2e:install": "node scripts/ci/install-e2e-browsers.mjs",
     "e2e": "npm run build:web && node e2e/run.mjs",
+    "verify:static": "tsx scripts/ci/verify-static-serving.mjs",
     "lighthouse": "node scripts/ci/lighthouse.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",

@@ -16,6 +16,78 @@ import type { Store } from '../store/store';
  * 'logged-out' while still in progress — the session flow resolves first. */
 const LOGIN_TIMEOUT_MS = 360_000;
 
+/** Hostnames the local API answers to. Anything else is a DNS-rebinding Host. */
+const ALLOWED_HOST_NAMES = new Set(['127.0.0.1', 'localhost', '::1']);
+
+/** Default ports per scheme, so `http://localhost` and `localhost:80` compare equal. */
+const DEFAULT_PORTS: Record<string, string> = { 'http:': '80', 'https:': '443' };
+
+/** Hard cap on a single inbound websocket frame. The UI never sends one at all
+ * (`/api/stream` is a one-way broadcast), so this only bounds abuse — it is not a
+ * protocol feature. `@fastify/websocket`'s default is 0 = unlimited. */
+const MAX_WS_PAYLOAD_BYTES = 1 << 20; // 1 MiB
+
+/** Methods that cannot change server state, so they are exempt from the
+ * content-type rule. The Host/Origin rules still apply to every method — a
+ * DNS-rebound `GET /api/settings` is exactly the leak we are closing. */
+const READ_ONLY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+interface ParsedAuthority {
+  name: string;
+  port: string;
+}
+
+/** Split an HTTP authority (`host[:port]`, `[::1]:port`) into name + port.
+ * Bracket handling matters: the `[::1]:4575` form must not be read as name `[`. */
+function splitAuthority(authority: string, defaultPort: string): ParsedAuthority | null {
+  const value = authority.trim();
+  if (!value) return null;
+  if (value.startsWith('[')) {
+    const end = value.indexOf(']');
+    if (end < 0) return null;
+    const rest = value.slice(end + 1);
+    if (rest !== '' && !rest.startsWith(':')) return null;
+    return { name: value.slice(1, end).toLowerCase(), port: rest.slice(1) || defaultPort };
+  }
+  const idx = value.lastIndexOf(':');
+  // More than one colon and no brackets = a malformed (or smuggling) authority.
+  if (idx < 0) return { name: value.toLowerCase(), port: defaultPort };
+  if (value.indexOf(':') !== idx) return null;
+  const port = value.slice(idx + 1);
+  if (!/^\d+$/.test(port)) return null;
+  return { name: value.slice(0, idx).toLowerCase(), port };
+}
+
+/** Parse a `Host` header (always carrying the served port when non-default). */
+function parseHostHeader(host: string | undefined): ParsedAuthority | null {
+  if (host === undefined) return null;
+  return splitAuthority(host, '80');
+}
+
+/** Parse an `Origin` header. `null` (an opaque origin from a sandboxed frame or a
+ * `data:`/`file:` document) and anything unparseable resolve to `null` = refused. */
+function parseOriginHeader(origin: string | undefined): ParsedAuthority | null {
+  if (origin === undefined) return null;
+  const value = origin.trim();
+  if (!value || value === 'null') return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  if (!url.hostname) return null;
+  return splitAuthority(url.host, DEFAULT_PORTS[url.protocol] ?? '');
+}
+
+/** `Content-Type` without its parameters, lower-cased (`application/json; c=1`). */
+function mediaType(contentType: string | undefined): string | null {
+  if (contentType === undefined) return null;
+  const semi = contentType.indexOf(';');
+  return (semi < 0 ? contentType : contentType.slice(0, semi)).trim().toLowerCase();
+}
+
 export interface ApiSession {
   launch(): Promise<void>;
   ensureLoggedIn(onPrompt?: () => void): Promise<void>;
@@ -84,8 +156,92 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
 
   // `.after()` (not `.catch()`) — surfacing a plugin load failure without
   // prematurely triggering `ready()`, which would reject later route registration.
-  app.register(websocketPlugin).after((err) => {
+  // `maxPayload` replaces the plugin default of 0 (unlimited): `/api/stream` is a
+  // one-way broadcast and the UI never sends a frame, so this only bounds abuse.
+  app.register(websocketPlugin, { options: { maxPayload: MAX_WS_PAYLOAD_BYTES } }).after((err) => {
     if (err) console.error('[api] WebSocket plugin failed to load:', err);
+  });
+
+  // --- local-API source validation (Q5 / Q6, audit 2026-09-15) ---
+  //
+  // The API is unauthenticated by design (single-user, loopback-only), which is
+  // only safe if it is also unreachable from anything except its own UI. Before
+  // this hook a web page the user merely *visited* could drive it: the five
+  // body-less POSTs (`/api/scheduler/*`, `/api/session/login`) and a
+  // `text/plain` form post are CORS-simple requests, so no preflight happens and
+  // the JSON-parsing routes never object. The auditor reproduced a 200 for
+  // `<form method=POST enctype=text/plain action=http://127.0.0.1:4575/api/scheduler/stop-all>`.
+  //
+  // Three rules, all fail-closed, all applied before routing so no handler runs
+  // on a rejected request:
+  //   1. `Host` must be a loopback name — this is the DNS-rebinding gate (a
+  //      rebound page has an attacker-controlled `Host` even though its origin
+  //      *looks* same-origin to the browser).
+  //   2. If `Origin` is present it must be byte-for-byte our own origin. It is
+  //      deliberately optional: browsers attach it to every cross-site request
+  //      (including forms and websocket handshakes), while curl and scripts omit
+  //      it, so "absent" is not evidence of an attack. A websocket upgrade is the
+  //      exception and requires it (see below).
+  //   3. A request that carries a body must declare `application/json`, so the
+  //      `text/plain` / urlencoded form postings that CORS lets through without a
+  //      preflight are refused even if an Origin is somehow forged. Body-less
+  //      requests are exempt because the UI's helper omits the header entirely
+  //      for them (`packages/web/src/lib/api.ts`), and requiring it there would
+  //      break every legitimate client for no additional protection — rule 2
+  //      already covers that vector.
+  app.addHook('onRequest', (req, reply, done) => {
+    // `request.ws` is set by @fastify/websocket's own onRequest hook (registered
+    // before this one, so it always runs first) and is true exactly when this HTTP
+    // request is a websocket upgrade rather than an ordinary request.
+    const isUpgrade = req.ws === true;
+
+    /** Refuse, and say why in the server log — a silently 403-ing local API is
+     * indistinguishable from a broken one when the user is the one debugging it.
+     * Nothing here is echoed beyond method/path/reason, so it cannot be used as a
+     * reflection oracle. */
+    const refuse = (code: number, error: string) => {
+      console.warn(`[api] ${req.method} ${req.url} refused (${code}): ${error}`);
+      void reply.code(code).send({ error });
+      return done();
+    };
+
+    const host = parseHostHeader(req.headers.host);
+    if (!host || !ALLOWED_HOST_NAMES.has(host.name)) {
+      return refuse(403, 'forbidden: unexpected Host header');
+    }
+
+    const rawOrigin = req.headers.origin;
+    if (isUpgrade && rawOrigin === undefined) {
+      // A browser always sends Origin on a websocket handshake, so its absence
+      // means the peer is not the app's own page.
+      return refuse(403, 'forbidden: websocket upgrade without Origin');
+    }
+    if (rawOrigin !== undefined) {
+      const origin = parseOriginHeader(rawOrigin);
+      if (!origin || origin.name !== host.name || origin.port !== host.port) {
+        return refuse(403, 'forbidden: cross-origin request');
+      }
+    }
+
+    const declaresBody =
+      req.headers['transfer-encoding'] !== undefined ||
+      (req.headers['content-length'] !== undefined && Number(req.headers['content-length']) > 0);
+    if (!READ_ONLY_METHODS.has(req.method) && declaresBody) {
+      const type = mediaType(req.headers['content-type']);
+      if (type !== 'application/json') {
+        return refuse(415, 'unsupported media type: expected application/json');
+      }
+    }
+    return done();
+  });
+
+  // Clickjacking: the local UI must never be frameable by another site. Applied to
+  // every response (API included) — it costs nothing there and means a future
+  // route cannot forget it.
+  app.addHook('onSend', (_req, reply, payload, done) => {
+    void reply.header('X-Frame-Options', 'DENY');
+    void reply.header('Content-Security-Policy', "frame-ancestors 'none'");
+    done(null, payload);
   });
 
   app.get('/api/health', () => ({ ok: true }));
@@ -137,7 +293,8 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     const cadenceChanged =
       (parsed.data.pollIntervalMinutes !== undefined &&
         parsed.data.pollIntervalMinutes !== before.pollIntervalMinutes) ||
-      (parsed.data.jitterMinutes !== undefined && parsed.data.jitterMinutes !== before.jitterMinutes);
+      (parsed.data.jitterMinutes !== undefined &&
+        parsed.data.jitterMinutes !== before.jitterMinutes);
     // Email notifications are temporarily sunset: the server — not the UI — is
     // the source of truth, so a request body carrying `notify.email: true` (a
     // stale client, a hand-rolled curl, a restored backup) is overridden here.
