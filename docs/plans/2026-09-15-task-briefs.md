@@ -158,3 +158,287 @@ PR: <url>
 评审评论处置: <逐条列出 comment → 处置>
 需要人工判断: <列出>
 ```
+
+---
+
+## P2 — 预算进度显示一致性
+
+- **工作目录**：`C:\Users\lenovo\deepseekHarness\Auto-Register\wt\budget-progress`
+- **分支**：`feat/budget-progress`
+- **PR base**：`feat/ci-and-ux-overhaul`
+
+### 用户报障
+> 「在初始上限比较低的时候（比如每天 1000 次查询），设置改到 10000 次之后，会莫名其妙显示类似 9000/1000 这样的进度。不过开始之后就正常了。」
+
+### 已定位的根因（审计线 C 已核实，行号可直接引用）
+- `packages/web/src/App.tsx:40`：`queryUsed={queryBudget - (budget.data?.query ?? queryBudget)}`——
+  **`budget.data.query` 是「剩余量」，`queryBudget` 是「上限」，两者来自两次不同时刻的独立请求。**
+- 保存设置时 `packages/web/src/pages/Settings.tsx:83-84` 只 `await settings.refetch()`，**没有 refetch budget**。
+- 于是渲染出 `新上限 − 旧快照的剩余量`：上限 1000→10000、剩余快照 1000 → 显示 **9000/10000**（用户记忆中的 9000/1000）。
+- 下调上限时还会出现负数：`100 − 995 = -895` → 渲染 `-895/100`。
+- 「开始之后就正常了」的原因：轮询产生日志事件 → `Dashboard.tsx:38-43` 触发 budget refetch → 数值归位。
+- 同类问题见 `packages/web/src/App.tsx:14-15` 的硬编码兜底（`?? 100` / `?? 20`）与 `:42`（注册预算同样算法）。
+
+### 必须交付
+
+1. **单一原子数据源**：让 `GET /api/budget` 在同一个 handler 内一次性读 settings 与 dailyOps，返回
+   ```ts
+   interface BudgetSnapshot {
+     query:    { used: number; limit: number; remaining: number };
+     register: { used: number; limit: number; remaining: number };
+   }
+   ```
+   - 在 `packages/server/src/budget/budget.ts` 增加 `snapshot(now?)`，**一次** `getDailyOps()` + **一次** `getSettings()`，保证 `used/limit/remaining` 三者严格自洽（`used = min(count, limit)`、`remaining = max(0, limit - count)`）。
+   - `packages/server/src/api/server.ts` 的 `GET /api/budget` 改返回 snapshot。
+   - 保留 `remaining()`（scheduler 在用），或让 `snapshot()` 复用它内部逻辑，不要复制粘贴两套算术。
+2. **前端只展示快照**：`packages/web/src/lib/api.ts` 的 `getBudget` 类型改成 `BudgetSnapshot`；`App.tsx` 删除 `queryBudget - ...` 的减法与硬编码兜底，ticker 直接读 `used` / `limit`。
+   - `packages/web/src/components/Ticker.tsx` 的 props 改成接收 `query: {used, limit}` / `register: {used, limit}`（或等价的清晰形态）。**在 Ticker 内部对展示值做一次防御性 clamp**（`used` 至少 0 且不超过 `limit` 时按原样，越界时按 `limit` 显示），保证任何异常数据都不会渲染出 `9000/1000` 这种「分子大于分母」的形态。
+   - 数据未就绪时显示占位（例如 `— / —` 或 loading 态），**不要**用 100/20 这种硬编码默认值冒充真实值。
+3. **保存后同步刷新**：`Settings.tsx` 保存成功后同时刷新 settings 与 budget（并处理两者都失败时的错误提示——参照现有 `err` 状态，不要新增静默失败路径）。
+4. **测试（必须有）**，至少覆盖：
+   - server：`GET /api/budget` 在 settings 被 PUT 成新上限后的**同一个响应内** `used/limit/remaining` 自洽；`limit` 下调到低于已用次数时 `used === limit` 且 `remaining === 0`（不出现负数）。
+   - budget 单元：`snapshot()` 的三种状态（当日零查询 / 部分使用 / 超额使用）。
+   - web：`Ticker` 在 `used > limit` 的输入下不渲染出分子大于分母的文本。
+   - web：Settings 保存后 ticker 显示的是**新上限与新 used**（可参照 `packages/web/src/pages/Settings.test.tsx` 与 `App`/`Dashboard` 现有测试的写法）。
+
+### 约束
+- 不改 scheduler 的预算消耗逻辑、不改 dailyOps 的翻转语义、不改每日预算守卫。
+- 不要顺手改审计清单里其它条目。
+
+---
+
+## P3 — 首次「开始」立即轮询 + 主开关语义 + error 终态可恢复
+
+- **工作目录**：`C:\Users\lenovo\deepseekHarness\Auto-Register\wt\start-polling`
+- **分支**：`feat/start-polling`
+- **PR base**：`feat/ci-and-ux-overhaul`
+
+### 用户报障
+> 「很多时候第一次设置出来的目标，点击开始后，并不会正常开始，而是必须要彻底关闭再重新点击全部开始之后，才会开始正常的轮询。」
+
+### 已定位的根因（审计线 D 已核实）
+**(a) 主开关的语义绑错了对象**：`packages/web/src/pages/Dashboard.tsx:103-126` 用「有没有课程处于 watching」决定按钮动作与标签（`anyWatching`），而不是引擎的真实 running 状态。新添加的课程默认 `status='watching'`（`store.ts:111`），而 `api/main.ts` **从不调用 `scheduler.start()`**（只有 `server.ts:189/201` 两个路由里调）。于是：
+- 首次加课后按钮显示「监控 · 运行中 / ■ 全部停止」；
+- 用户第一次点击走 `api.stopAll()` → 所有课程被改成 paused、引擎停止（**与期望完全相反**）；
+- 用户要再点一次（此时标签才变成「全部启动」）或重启程序。
+
+**(b) 新目标没有立即轮询**：`scheduler.start()` 只装 30s 的 `setInterval`（`scheduler.ts:309-318`），且新目标的 `nextPollAt` 是 `undefined`。恢复监控时（`start-all`）只把 status 改成 watching、**没有设置 `nextPollAt`**，所以第一次真正轮询要等下一次 tick 判定到期。用户点「开始」后 30 秒内看不到任何日志，会认为「没生效」。
+
+**(c) error 是死状态**：`noteFailure` 连续 3 次失败后写 `status:'error'` 并停止轮询（`scheduler.ts:199-210`），而 UI 上 error 既不能 pause 也不能 resume 也不能「立即执行」（`CourseCard.tsx` 的 PAUSABLE/RESUMABLE 都不含 error），`start-all` 也只捞 paused（`server.ts:199`）。目标永久停摆，唯一出路是删掉重建。
+
+### 必须交付
+
+1. **引擎状态与课程状态解耦**（核心修复）：
+   - `Dashboard.tsx` 的主开关必须以 `GET /api/scheduler` 的真实 `running` 为唯一依据决定「启动 / 停止」动作与标签（回到 p7b 原始设计意图）。
+   - `SchedulerToggle` 的 `running` prop 传引擎真实状态；按钮 disabled 条件保持「未登录不能启动」。
+   - 顶部 Ticker 的「监控中 N」保持不变（那是课程计数，语义不同），但要确保引擎停止时用户能看出「课程在列表里 ≠ 正在轮询」。
+2. **点「开始」就立即轮询**：
+   - 服务端在「目标进入 watching」的所有入口（`POST /api/targets`、`PATCH /api/targets/:id` 改成 watching、`POST /api/scheduler/start-all`）把该目标的 `nextPollAt` 设为「现在 + 一个小的随机抖动（建议 0–3 秒，避免多目标同时打服务器）」。
+   - `scheduler.start()` 后立刻跑一次 `tick()`（不必等满 30s），或用等价的「启动即检查到期」实现。
+   - `POST /api/scheduler/start-all` 的响应里带上 `resumed` 数量，前端据此给用户一条可见反馈（例如日志事件 + 按钮状态）。
+3. **error 终态可恢复**：
+   - 在目标进入 watching 时清除该目标的失败 streak。
+   - 允许 `start-all`（或新增一个明确的「重新监控」动作）把 `error` 目标恢复为 watching；并在 `start-all` 响应里区分「恢复了 N 门 / 跳过了 M 门终态课程」。
+   - `packages/web/src/components/CourseCard.tsx`：为 `error` 状态提供恢复入口（例如「重新监控」按钮），复用现有按钮样式与 i18n 命名空间。
+4. **测试（必须有）**：
+   - server：`PATCH /api/targets/:id` 把 paused → watching 后 `nextPollAt` 落在近未来（不是 `undefined`、不是 30 分钟后）。
+   - server：`start-all` 后 `error` 目标可被恢复；`start-all` 的响应计数正确。
+   - server：`scheduler.start()` 之后立即触发一次 tick（可用注入的 clock 断言）。
+   - web：主开关在「有 watching 课程但引擎未启动」时显示的是**启动**语义，点击调用 `startAll` 而不是 `stopAll`（这是报障的直接回归测试，务必写）。
+   - web：error 卡片渲染出恢复入口。
+
+### 约束
+- 不要改 `pauseAllWatching()` 的「启动时不自动恢复轮询」的既有设计意图（这是有意的安全保证）。
+- 不要改 `FAILURE_LIMIT`（3 次）与失败连击的语义。
+- 不要顺手改审计清单里其它条目（尤其不要动 P2 的 budget 相关文件）。
+
+---
+
+## P4 — 操作速度（操作间隔 + 抖动）设置
+
+- **工作目录**：`C:\Users\lenovo\deepseekHarness\Auto-Register\wt\pacing-controls`
+- **分支**：`feat/pacing-controls`
+- **PR base**：`feat/ci-and-ux-overhaul`
+
+### 需求
+> 「希望设置中可以加上设置操作速度的选项，可以控制操作之间的空隙（现在是 5s 左右应该）和抖动范围。」
+
+### 现状
+- `packages/server/src/util/pacing.ts`：`humanPause(baseMs = 3000, jitterMs = 1000)`，下限 250ms。
+- 全仓库 17 处调用（`minerva/query-client.ts` 9 处、`minerva/register-client.ts` 8 处）都是 `humanPause()` **无参调用**，所以实际是硬编码 3000±1000ms。
+- 一个轮询周期要跑 9 次 humanPause，加上导航大约 30–60s，这是用户感觉「慢」的来源。
+
+### 必须交付
+
+1. **设置项**（`packages/shared/src/store-types.ts` 的 `Settings` + `DEFAULT_SETTINGS`）：
+   - `opPauseMs: number`（默认 `3000`）——两次浏览器操作之间的基础间隔（毫秒）。
+   - `opJitterMs: number`（默认 `1000`）——抖动范围（毫秒，`±opJitterMs`）。
+   - 保留 `pollIntervalMinutes` / `jitterMinutes`（那是**轮询频率**，与**单周期内操作速度**是两件不同的事，UI 上要讲清楚区别）。
+2. **pacing 改造**：`humanPause` 支持从运行时配置读取。推荐做法：
+   - 在 `packages/server/src/util/pacing.ts` 增加 `configurePacing({baseMs, jitterMs})` + `getPacing()`，模块级状态；
+   - 启动时（`scheduler/runtime.ts`）用 store 里的 settings 初始化；
+   - `PUT /api/settings` 成功后重新应用（与现有 `rescheduleWatching` 的触发方式保持一致）。
+   - 保留 `humanPause(baseMs, jitterMs)` 的显式传参能力（测试要用），无参调用时读运行时配置。
+   - **下限必须保留 250ms**：用户把间隔设成 0 也不能把节奏打满（这是反检测设计要求）。
+3. **设置 UI**（`packages/web/src/pages/Settings.tsx`）：
+   - 两个数字输入（毫秒），带单位说明「毫秒」。
+   - 用不同措辞与既有「轮询间隔 / 抖动」区分开：现有的是「多久查一次」，新的是「一次查询内部的每个点击之间等多久」。
+   - 增加校验与提示：越界值（<250ms、>60000ms、负数、NaN）要么前端 clamp、要么给出明确的错误条，不能静默保存垃圾值。
+   - **i18n 三语同步**：只新增 `settings.*` 命名空间下的 `opPause` / `opJitter` / `pacingSection` / `pacingHint` 等键（具体键名自定，但必须 zh/en/fr 齐全）。
+4. **服务端校验**：`packages/server/src/api/server.ts` 的 settings zod schema 增加这两个字段的 `min/max` 约束（不要只靠前端）。
+5. **测试（必须有）**：
+   - `humanPause` 在配置 500/100 时落在 `[400, 600]` 区间（注入可预测的 `Math.random`）。
+   - 下限：配置 `baseMs=0, jitterMs=0` 时仍 ≥250ms。
+   - `PUT /api/settings` 写入后，新的 pacing 对后续 `humanPause` 生效。
+   - web：设置页渲染出这两个输入并能保存（参照 `Settings.test.tsx` 的现有写法）。
+6. **文档**：在 `README.zh.md` / `README.md`（至少中文版）的说明里补一句「操作速度」设置的作用与建议值，并强调不要设得过于激进。
+
+### 约束
+- 不要删掉 humanPause（反检测设计要求）。
+- 不要改 `pollIntervalMinutes` / `jitterMinutes` 的语义。
+- 不要动 `minerva/*-client.ts` 里 humanPause 的**调用位置**（只让它们读到新配置），避免与其它任务冲突。
+
+---
+
+## P5 — 邮件通知 UI 下架（后端保留、强制关闭）
+
+- **工作目录**：`C:\Users\lenovo\deepseekHarness\Auto-Register\wt\email-sunset`
+- **分支**：`feat/email-sunset`
+- **PR base**：`feat/ci-and-ux-overhaul`
+
+### 需求
+> 「暂时下架邮件提示功能.」
+
+已确认采用方案：**UI 隐藏 + 后端代码保留且强制关闭**（将来想恢复只需少量改动）。
+
+### 现状
+- UI：`packages/web/src/pages/Settings.tsx` 的「Email」勾选框（:117-119）、整节 SMTP 表单（:135-149）、`DOC_URL` 指向 `docs/EMAIL_SETUP.md`（:7-8）、email 完整性校验（:70-76）、保存时的 email 组装（:83）。
+- 后端：`packages/server/src/notifier/email.ts`、`notifier.ts`（按 `settings.notify.email` 决定是否发信）、`api/server.ts` 的 settings schema 允许 `notify.email`。
+- 类型：`packages/shared/src/store-types.ts` 的 `NotifyChannels.email` 与 `EmailConfig`。
+
+### 必须交付
+
+1. **前端彻底隐藏邮件相关 UI**：勾选框、SMTP 表单整节、设置指南链接、email 必填校验、保存时对 email 的组装。设置页不应再出现任何 email/SMTP 字样。
+2. **保存时强制关闭**：`PUT /api/settings` 的 schema 处理后，服务端强制 `notify.email = false`（即使用户请求体里带 `true` 也被覆盖），确保**不可能**因残留数据而发信。同时启动时（`runtime.ts`）也把已持久化的 `notify.email` 归零并落盘，这样老用户的 `store.json` 里 `email: true` 也会被清掉。
+3. **后端代码保留**：`notifier/email.ts`、`EmailConfig` 类型、`email` 配置字段**都不要删**（将来恢复用）。`Notifier` 里对 email 的分支保留，但因为 `notify.email` 永远为 false，实际不会发信。
+4. **文档**：`docs/EMAIL_SETUP.md` 顶部加一个明显的「该功能已暂时下架」提示块（说明 UI 已隐藏、后端已强制关闭、如何恢复），**不要删除该文档**。README 三语里若提到邮件通知，补一句「暂时下架」。
+5. **i18n**：移除或保留 `settings.email*` 键由你决定，但**保证 zh/en/fr 三份字典结构仍然一致**（类型是 `typeof en`，少一个键会编译失败）。推荐保留键不删（免得将来还要补回来），只是不再渲染。
+6. **测试（必须有）**：
+   - server：`PUT /api/settings` 带 `notify.email: true` 时，读回的 settings 里 `notify.email === false`。
+   - server：启动时把持久化的 `notify.email: true` 归一化为 false。
+   - server：`Notifier` 在 `notify.email === false` 时不调用 email 发送（若已有类似用例则补强）。
+   - web：设置页不再渲染任何 email / SMTP 相关字段（`Settings.test.tsx` 里现有的 email 相关用例要相应调整，并新增「不出现 SMTP 输入」的断言）。
+
+### 约束
+- 不要删 `nodemailer` 依赖、不要删 `notifier/email.ts`、不要删 `EmailConfig` 类型、不要删 `docs/EMAIL_SETUP.md`。
+- 不要动 `notify.desktop` / `notify.sound`。
+
+---
+
+## P6 — Windows 一键不休眠开关
+
+- **工作目录**：`C:\Users\lenovo\deepseekHarness\Auto-Register\wt\keep-awake`
+- **分支**：`feat/keep-awake`
+- **PR base**：`feat/ci-and-ux-overhaul`
+
+### 需求（原文）
+> 「给 windows 用户一个一键不休眠开关，打开之后电脑不会进入休眠（但是显示器自然关闭）。如果是笔记本，则是连接电源的话电脑不会休眠。但是用电池的话还是休眠。也放在设置里，然后这里给用户要讲清楚。」
+
+已确认：**仅 Windows 显示该开关，其他平台隐藏**。
+
+### 技术方案（已验证可行）
+用 PowerShell 调 Win32 `SetThreadExecutionState`，由一个长期存活的子进程持有执行状态；子进程退出时状态自动失效（**不修改用户的电源计划**，这是与 `powercfg /change` 的关键区别）。
+
+**已在本机实测通过的脚本骨架**（注意 `[uint32]` 转换必须避免 PowerShell 把 `0x80000000` 当成负数，实测要用十进制字面量或 `[uint32]` 变量拼接）：
+
+```powershell
+$sig = @"
+using System;
+using System.Runtime.InteropServices;
+public static class Awake {
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern uint SetThreadExecutionState(uint esFlags);
+}
+"@
+Add-Type -TypeDefinition $sig -ErrorAction Stop
+[uint32]$ES_CONTINUOUS      = 2147483648   # 0x80000000
+[uint32]$ES_SYSTEM_REQUIRED = 1            # 0x00000001
+$flags = $ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED   # 不加 ES_DISPLAY_REQUIRED → 显示器照常关闭
+# 每 30 秒刷新一次；stdin 收到 "stop" 或管道关闭时用 $ES_CONTINUOUS 复位
+```
+
+**笔记本电源判断**：`Get-CimInstance -ClassName Win32_Battery` 有返回 = 笔记本；无返回 = 台式机（本机实测台式机返回空，符合预期）。电池状态用返回对象的 `BatteryStatus` 字段（2 = 接电源，1 = 用电池）。
+> 注意：`powercfg /requests` 需要管理员权限（本机实测报错），**不要用它**。
+
+### 必须交付
+
+1. **服务端模块** `packages/server/src/system/keep-awake.ts`：
+   - `isSupported()`：仅 `process.platform === 'win32'` 为真。
+   - `getPowerSource()`：通过 PowerShell 查 `Win32_Battery` → `'ac' | 'battery' | 'desktop' | 'unknown'`。
+   - `start()` / `stop()` / `status()`：管理 keeper 子进程；`status()` 返回 `{supported, settingEnabled, active, powerSource, reason}`。
+   - **接电源才生效**：用电池（`powerSource === 'battery'`）时**停止休眠保持**；插上电源后自动恢复。实现方式建议由服务端**周期性轻量轮询电池状态**（例如每 60 秒一次 PowerShell 调用，成本很低）并在状态变化时切换 keeper。
+   - **进程清理**：`process.on('exit'/'SIGINT'/'SIGTERM')` 与 `app.close()` 时确保 keeper 子进程被杀掉，绝不能留下孤儿进程。
+   - PowerShell 不可用 / 调用失败时：不要抛异常打崩服务，降级为 `{active:false, reason:'unavailable'}` 并记录。
+2. **设置项**：`Settings.keepAwake: boolean`（默认 `false`，因为这是改变机器行为的开关，默认不开启更安全）+ 更新 `DEFAULT_SETTINGS`。
+3. **API**：
+   - `GET /api/power`（或在 `/api/settings` 里附带）返回 `{supported, enabled, active, powerSource, reason}`。
+   - 设置保存后立即应用/撤销。
+   - 非 Windows 平台上接口返回 `supported:false`，且不启动任何子进程。
+4. **设置 UI**（`packages/web/src/pages/Settings.tsx`）：
+   - **仅当 `supported === true` 时渲染**该开关（其他平台整块不出现，也不留空位）。
+   - 开关下方必须把用户要求讲清楚（三语文案，`settings.*` 命名空间）：
+     - 打开后电脑不会自动进入休眠；
+     - **显示器仍会正常关闭**（不休眠 ≠ 不关屏）；
+     - 笔记本**只有接着电源时**才保持不休眠，**用电池时仍然会休眠**（省电保护）；
+     - 台式机插着电即全程生效；
+     - 关掉开关或退出本程序后立即恢复正常电源行为。
+   - 显示当前实际状态（生效中 / 等待接入电源 / 已关闭 / 不支持），状态来源是 `GET /api/power`。
+5. **测试（必须有）**：
+   - `isSupported()` 在 `platform='win32'` 时为 true、其它为 false（可注入 platform 或用环境变量覆盖，不要在测试里真的改 `process.platform`）。
+   - 电池状态为 `battery` 时 `start()` 不启动 keeper；切到 `ac` 后启动（用可注入的 power-source provider 假实现）。
+   - `stop()` 会终止子进程（用假的 spawn 实现断言调用参数，**不要真的 spawn powershell**）。
+   - 非 Windows 上 `start()` 是空操作。
+   - web：`supported:false` 时设置页不渲染该开关；`supported:true` 时渲染且文案齐全。
+6. **文档**：README（中文至少）补一节说明这个开关与它的边界（只防休眠、不防关屏、电池下不生效）。
+
+### 约束
+- **不要修改用户的电源计划**（禁止 `powercfg /change`）。用 `SetThreadExecutionState`。
+- 不要用 `powercfg /requests`（需要管理员）。
+- 不要让 PowerShell 调用阻塞请求线程（异步 spawn，设置超时）。
+- 不要为了这个功能新增 npm 依赖。
+
+---
+
+## P7 — 添加课程表单：标注必填 / 选填
+
+- **工作目录**：`C:\Users\lenovo\deepseekHarness\Auto-Register\wt\course-form-labels`
+- **分支**：`feat/course-form-labels`
+- **PR base**：`feat/ci-and-ux-overhaul`
+
+### 需求
+> 「添加目标课程那边，可以写一下哪些空是必填，哪些空是选填（如果有的话）。」
+
+### 现状
+- `packages/web/src/components/CourseForm.tsx:26-33` 已有一份 `FIELDS` 定义，其中 `required` 字段**已经存在但完全没被用来渲染任何标记**——只参与了 submit 时的校验（:73-76）。
+- 必填：`term` / `subject` / `faculty` / `courseNumber` / `targetCrn`；选填：`label`；`mode` 有默认值（auto），语义上是选填。
+- i18n `form.*` 命名空间在 `packages/web/src/i18n/index.ts`（zh/en/fr 三份）。
+
+### 必须交付
+
+1. **视觉标注**：每个字段标签后有明确标记——必填加 `*`（并用 `aria-required`/`required` 等无障碍属性表达），选填显示「（选填）」/「(optional)」/「(facultatif)」字样。用现有 CSS 变量做样式，不要引入新的 UI 库。
+2. **表单顶部一句话说明**：例如「带 * 的为必填项」，让用户一眼看到图例。
+3. **校验提示更精确**：现有 `form.required` 是笼统的「Term, Subject, Faculty, Course # 和 Target CRN 是必填的」。改成**高亮缺失的字段**（例如把缺失字段的输入框边框标红 + 在字段下方给出提示），保留原有的错误条作为兜底。
+4. **`mode` 字段**：说明它有默认值（不选就是 auto），措辞上不要造成「必须选」的误解。
+5. **i18n 三语同步**：在 `form.*` 命名空间新增所需键（如 `requiredMark`、`optionalMark`、`requiredLegend`、`fieldRequired` 等，键名自定），zh/en/fr 必须齐全。
+6. **测试（必须有）**：新增/调整 `packages/web/src/components/CourseForm.test.tsx`：
+   - 必填字段带必填标记（按 `aria-required` 或可访问名断言，不要只断言 `*` 字符）。
+   - 选填字段带「选填」标记、且不带必填标记。
+   - 只填部分必填项提交时：不调用 `onSubmit`，且缺失字段被标出（断言具体是哪些字段被标记）。
+   - 全部填好后提交：`onSubmit` 收到 trim 后的值（这条若已有则保留）。
+   - 图例文案存在。
+7. **`Courses.tsx` 的编辑表单复用同一个 `CourseForm`**，所以改动自动生效；确认编辑态下标记也正确渲染，并补一条断言。
+
+### 约束
+- 只动 `CourseForm.tsx`、`Courses.tsx`（如确有必要）、`i18n/index.ts` 的 `form.*`、以及对应测试。
+- 不要改提交逻辑的字段裁剪行为，不要新增/删除表单字段。
+- 不要动 `settings.*` 命名空间。
