@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, MAX_OP_PAUSE_MS, MIN_OP_PAUSE_MS } from '@autoregister/shared';
-import { applyPacingSettings, configurePacing, effectiveJitterMs, getPacing, humanPause, resetPacing } from './pacing';
+import {
+  applyPacingSettings,
+  configurePacing,
+  effectiveJitterMs,
+  getPacing,
+  humanPause,
+  resetPacing,
+} from './pacing';
 
 /**
  * Delay `humanPause()` actually scheduled, without waiting for it. Fake timers
