@@ -140,8 +140,12 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
       deps.store.updateTarget(id, { status: 'watching' });
       deps.scheduler.clearFailures?.(id);
       // Also clear any stale nextPollAt (a budget back-off can be hours away) so
-      // the fixed query is actually retried soon.
+      // the fixed query is actually retried soon, and start the engine: `scheduleNow`
+      // only writes a timestamp, so without this an API client that does not also POST
+      // /api/scheduler/start leaves the target 'watching' with no timer running and the
+      // recovery silently does nothing.
       deps.scheduler.scheduleNow?.(id);
+      deps.scheduler.start();
       logStatus('Course edited — cleared the error state, watching it again.', id, 'ok', {
         status: 'watching',
       });
@@ -162,7 +166,14 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     const { id } = req.params as { id: string };
     const target = deps.store.getTarget(id);
     if (!target) return reply.code(404).send({ error: 'not found' });
-    if (target.status === 'watching') return reply.send({ resumed: false, status: 'watching' });
+    if (target.status === 'watching') {
+      // Idempotent, but still make sure the engine is up: a client that calls resume on
+      // an already-watching target while the engine is stopped means "poll this", and
+      // answering `{resumed:false}` without starting anything would leave it idle. This
+      // is also what makes the route safe for the UI's double-click.
+      deps.scheduler.start();
+      return reply.send({ resumed: false, status: 'watching' });
+    }
     if (target.status !== 'error' && target.status !== 'paused') {
       return reply.code(409).send({
         error: `target is ${target.status} — only 'error' or 'paused' targets can be resumed`,
@@ -175,6 +186,10 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     // back in `error`, which would make the button appear to do nothing.
     deps.scheduler.clearFailures?.(id);
     deps.scheduler.scheduleNow?.(id);
+    // `scheduleNow` only writes a timestamp — start the engine too, or a client that
+    // resumes without also POSTing /api/scheduler/start gets a 'watching' target that
+    // never polls (the same gap the edit-recovery path above had).
+    deps.scheduler.start();
     logStatus(`Resumed watching (was '${was}') — polling again.`, id, 'ok', { status: 'watching' });
     return reply.send({ resumed: true, status: 'watching' });
   });
@@ -291,7 +306,14 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     for (const t of toResume) deps.scheduler.scheduleNow?.(t.id);
     deps.scheduler.start();
     const errored = all.filter((t) => t.status === 'error').length;
-    const skipped = all.length - toResume.length;
+    // "Skipped" means "deliberately left alone because it is finished or failed" — NOT
+    // "everything I did not resume". `all.length - toResume.length` also counted courses
+    // that were already `watching`, i.e. actively polling, and reported them as skipped;
+    // that is precisely the claim this count exists to avoid making. A `watching` course
+    // is neither resumed nor skipped — it was already running.
+    const skipped = all.filter(
+      (t) => t.status === 'error' || t.status === 'registered' || t.status === 'waitlisted',
+    ).length;
     logStatus(
       `Start all: resumed ${toResume.length} course(s)` +
         (skipped > 0

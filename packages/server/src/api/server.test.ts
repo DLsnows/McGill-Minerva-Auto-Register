@@ -858,6 +858,72 @@ describe('API', () => {
     await app2.close();
   });
 
+  it('start-all does not count already-watching courses as skipped', async () => {
+    // Review finding (pr-agent): `all.length - resumed` reported actively-watched
+    // courses as "skipped", i.e. it claimed active courses were left idle. The UI
+    // avoids calling start-all in that state, but the API has no such guard.
+    const store = new Store(dir);
+    const paused = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    store.addTarget({ ...validTarget, targetCrn: '2222' }); // already watching
+    const errored = store.addTarget({ ...validTarget, targetCrn: '3333' });
+    store.updateTarget(paused.id, { status: 'paused' });
+    store.updateTarget(errored.id, { status: 'error' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: {
+        start: () => undefined,
+        stop: () => undefined,
+        runTarget: () => undefined,
+        isRunning: () => false,
+      },
+    });
+    const body = (await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' })).json();
+
+    // 1 paused (resumed) + 1 already active + 1 errored → only the errored one skipped.
+    expect(body).toMatchObject({ resumed: 1, skipped: 1, errored: 1 });
+    await app2.close();
+  });
+
+  it('resume and edit-recovery start the engine themselves', async () => {
+    // Review finding (pr-agent): `scheduleNow` only writes nextPollAt. Without
+    // starting the engine, an API client that does not also POST
+    // /api/scheduler/start leaves the target 'watching' with no timer running —
+    // the recovery silently does nothing.
+    const store = new Store(dir);
+    const a = store.addTarget({ ...validTarget, targetCrn: '1111' });
+    const b = store.addTarget({ ...validTarget, targetCrn: '2222' });
+    store.updateTarget(a.id, { status: 'error' });
+    store.updateTarget(b.id, { status: 'error' });
+    const start = vi.fn();
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: {
+        launch: async () => undefined,
+        ensureLoggedIn: async () => undefined,
+        isLoggedIn: async () => true,
+      },
+      scheduler: { start, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+    });
+
+    await app2.inject({ method: 'POST', url: `/api/targets/${a.id}/resume` });
+    expect(start).toHaveBeenCalledTimes(1);
+
+    await app2.inject({
+      method: 'PATCH',
+      url: `/api/targets/${b.id}`,
+      payload: { targetCrn: '9999' },
+    });
+    expect(start).toHaveBeenCalledTimes(2);
+    await app2.close();
+  });
+
   it('pushes scheduler status changes to the live console, not just to the store', async () => {
     // The response body alone is not enough: the Dashboard is a stream client, and
     // the log line is how a user reconstructs "why did everything stop?".
