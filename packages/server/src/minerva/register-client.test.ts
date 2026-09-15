@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BrowserContext } from 'playwright';
-import { RESULT_ANCHOR, RegisterClient } from './register-client';
+import { RESULT_ANCHOR, SUBMITTING_ATTR, RegisterClient } from './register-client';
 import { SessionManager } from '../session/session-manager';
 
 // Real pacing is 3s ± 1s of deliberate human-like delay; irrelevant here.
@@ -85,6 +85,9 @@ class FakePage {
   /** Whether the submit's response replaces the page within the wait (a submit
    * whose navigation is still in flight keeps the old document in place). */
   documentReplaced = true;
+  /** Whether the "document we submit from" mark is on the CURRENT document. The
+   * mark is part of the serialized HTML, exactly as it is in a real browser. */
+  private marked = false;
 
   queueReads(...docs: string[]): void {
     this.reads = docs;
@@ -102,12 +105,16 @@ class FakePage {
   async goto(url: string): Promise<void> {
     this.log.push(`goto ${url}`);
   }
-  async evaluate(): Promise<void> {
+  async evaluate(expression: string): Promise<void> {
     this.log.push('evaluate');
+    if (expression.includes('setAttribute')) this.marked = true;
   }
   async waitForFunction(): Promise<unknown> {
     this.log.push('waitForFunction');
-    if (!this.documentReplaced) throw new Error('Timeout 10000ms exceeded.');
+    // Nothing marked → the predicate is trivially true, as in the browser.
+    if (!this.marked) return true;
+    if (!this.documentReplaced) throw new Error('Timeout 10000ms exceeded.'); // still the old document
+    this.marked = false; // the response replaced the page, so the mark is gone
     return true;
   }
   async content(): Promise<string> {
@@ -118,8 +125,9 @@ class FakePage {
         'Unable to retrieve content because the page is navigating and changing the content.',
       );
     }
-    if (this.reads.length > 1) return this.reads.shift() as string;
-    return this.reads[0] ?? this.html;
+    const doc =
+      this.reads.length > 1 ? (this.reads.shift() as string) : (this.reads[0] ?? this.html);
+    return this.marked ? doc.replace('<html', `<html ${SUBMITTING_ATTR}="1"`) : doc;
   }
   async click(selector: string): Promise<void> {
     this.log.push(`click ${selector}`);

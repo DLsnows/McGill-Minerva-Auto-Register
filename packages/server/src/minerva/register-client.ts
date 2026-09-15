@@ -15,8 +15,9 @@ export const RESULT_ANCHOR =
   'table[summary="Current Schedule"], table[summary*="Registration Errors"]';
 
 /** Attribute planted on the document we are submitting from, so the submit can
- * be distinguished from the response that replaces it. */
-const SUBMITTING_ATTR = 'data-autoreg-submitting';
+ * be distinguished from the response that replaces it. Exported for tests, which
+ * have to model it as part of the serialized document. */
+export const SUBMITTING_ATTR = 'data-autoreg-submitting';
 
 /** How long to give the post-submit result page to render its tables. */
 const RESULT_TIMEOUT_MS = 10_000;
@@ -163,13 +164,18 @@ export class RegisterClient {
    * established is reported as `unverified`.
    */
   private async submitChanges(page: Page, crn: string): Promise<RegisterOutcome> {
+    // Mark FIRST, then snapshot: the mark becomes part of the serialized document
+    // we are submitting from, so a later read of that same (un-replaced) document
+    // has to compare equal to the snapshot. Snapshotting first would make the two
+    // differ by exactly the mark and silently defeat the guard below.
+    const marked = await this.markSubmittingDocument(page);
     const submittedFrom = await page.content().catch(() => null);
-    await this.markSubmittingDocument(page);
     await humanPause();
     await page.click('input[name="REG_BTN"][value="Submit Changes"]');
     // Wait for the result document to commit — the anchor alone cannot tell the
-    // two documents apart (see RESULT_ANCHOR).
-    const replaced = await this.waitForNewDocument(page, RESULT_TIMEOUT_MS);
+    // two documents apart (see RESULT_ANCHOR). Without a mark there is nothing to
+    // wait for, so the document comparison below has to carry the guard.
+    const replaced = marked && (await this.waitForNewDocument(page, RESULT_TIMEOUT_MS));
 
     let lastError: string | undefined;
     let fallback: RegisterOutcome | undefined;
@@ -217,11 +223,16 @@ export class RegisterClient {
     };
   }
 
-  /** Tag the current document so the submit's response can be told apart from it. */
-  private async markSubmittingDocument(page: Page): Promise<void> {
-    await page
+  /**
+   * Tag the current document so the submit's response can be told apart from it.
+   * Returns false when the tag could not be planted (the caller then falls back
+   * to comparing document contents).
+   */
+  private async markSubmittingDocument(page: Page): Promise<boolean> {
+    return page
       .evaluate(`document.documentElement.setAttribute('${SUBMITTING_ATTR}', '1')`)
-      .catch(() => undefined);
+      .then(() => true)
+      .catch(() => false);
   }
 
   /**
