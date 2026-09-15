@@ -6,6 +6,7 @@ import {
   KEEPER_EXIT_GRACE_MS,
   KEEPER_READY,
   KEEPER_REFRESH_SECONDS,
+  KEEPER_RETRY_MAX_BACKOFF_MS,
   POWER_POLL_MS,
   POWER_QUERY_SCRIPT,
   PROBE_STALE_MS,
@@ -646,6 +647,88 @@ describe('keep-awake', () => {
       const status = await manager.start();
       expect(status).toMatchObject({ active: false, powerSource: 'ac', reason: 'keeperFailed' });
       manager.stop();
+    });
+
+    it('backs off instead of spawning a doomed keeper every tick', async () => {
+      // Claude review on #37: a machine where the keeper can never run (Add-Type
+      // blocked by execution policy) spawned a fresh doomed PowerShell process on
+      // every 60s watchdog tick, forever, warning once a minute — and the reported
+      // reason flickered terminal → 'starting' → terminal on each retry.
+      vi.useFakeTimers();
+      const h = harness();
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      let failing = true;
+      const spawn = vi.fn(() => {
+        if (failing) throw new Error('spawn powershell.exe EPERM');
+        const child = new FakeChild();
+        h.children.push(child);
+        queueMicrotask(() => child.emitReady());
+        return child as unknown as ChildProcess;
+      });
+      const manager = createKeepAwake({
+        platform: 'win32',
+        spawn: spawn as never,
+        getPowerSource: () => 'ac',
+      });
+
+      await manager.start();
+      expect(spawn).toHaveBeenCalledTimes(1);
+      // The failure is reported as a stable explanation, not a transient 'starting'.
+      expect(manager.status()).toMatchObject({ reason: 'keeperFailed', active: false });
+
+      // The first retry waits one interval, so the very next watchdog tick spawns
+      // again (`now >= retryAt` is true exactly at the boundary). That is the
+      // intended one-per-tick retry for a transient failure.
+      await vi.advanceTimersByTimeAsync(POWER_POLL_MS);
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(manager.status()).toMatchObject({ reason: 'keeperFailed' });
+
+      // From there the backoff doubles each time, so the *rate* decays: the next
+      // 60s tick is not yet a retry (2m is owed) …
+      await vi.advanceTimersByTimeAsync(POWER_POLL_MS);
+      expect(spawn).toHaveBeenCalledTimes(2);
+      // … and the one after that is.
+      await vi.advanceTimersByTimeAsync(POWER_POLL_MS);
+      expect(spawn).toHaveBeenCalledTimes(3);
+
+      // The point of the backoff, stated as a rate: over the next hour a permanently
+      // broken machine retries a handful of times, not 60 times.
+      const before = spawn.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      const retriesInAnHour = spawn.mock.calls.length - before;
+      expect(retriesInAnHour).toBeLessThanOrEqual(6);
+
+      // Once a keeper confirms its hold, the failure state clears and the backoff
+      // resets, so a later failure starts over at one retry per tick.
+      failing = false;
+      await vi.advanceTimersByTimeAsync(KEEPER_RETRY_MAX_BACKOFF_MS);
+      await flush();
+      expect(manager.status()).toMatchObject({ active: true, reason: 'active' });
+
+      manager.stop();
+    });
+
+    it('treats the discharging battery states as battery, not as AC', async () => {
+      // `Win32_Battery.BatteryStatus` 4 (Low) and 5 (Critical) also mean the battery
+      // is draining. Classifying them as `ac` made a laptop at 10% on battery read as
+      // "on AC", so the keeper held the wake request while the battery drained —
+      // breaking the "on battery it still sleeps" guarantee.
+      //
+      // The classification lives in the PowerShell source, so this pins the script's
+      // decision table rather than executing it (the manager's probe is injected in
+      // every other test). It is the assertion that would have caught the defect.
+      const script = POWER_QUERY_SCRIPT;
+      expect(script).toContain('-contains $battery[0].BatteryStatus');
+      const batteryMatch = /@\(([^)]*)\)\s*-contains\s*\$battery\[0\]\.BatteryStatus/.exec(script);
+      expect(batteryMatch, 'battery branch not found in the probe script').not.toBeNull();
+      const batteryStatuses = (batteryMatch?.[1] ?? '')
+        .split(',')
+        .map((s) => Number(s.trim()))
+        .filter((n) => !Number.isNaN(n));
+      // 1 discharging, 4 Low, 5 Critical — all three must take the battery branch.
+      expect(batteryStatuses.sort((a, b) => a - b)).toEqual([1, 4, 5]);
+      // And the fall-through must be the AC branch, so the charged states still hold.
+      expect(script).toMatch(/Write-Output 'ac'/);
     });
   });
 });

@@ -89,6 +89,18 @@ export const POWER_POLL_MS = 60_000;
  */
 export const PROBE_STALE_MS = POWER_POLL_MS;
 
+/**
+ * How long to wait before re-spawning a keeper that failed to start.
+ *
+ * Without this, a machine where the keeper can never run — `Add-Type` blocked by
+ * execution policy, PowerShell unavailable to the child, `SetThreadExecutionState`
+ * refused — spawns a doomed process on *every* 60s watchdog tick, forever, logging
+ * a warning each time. The retry itself is right (the condition can be transient);
+ * the unbounded rate is not. Doubles per consecutive failure, capped here, and
+ * resets the moment a keeper confirms its hold.
+ */
+export const KEEPER_RETRY_MAX_BACKOFF_MS = 15 * 60_000;
+
 /** Grace period before force-killing a keeper that did not exit on its own. */
 export const KEEPER_EXIT_GRACE_MS = 4_000;
 
@@ -150,16 +162,23 @@ exit 0
  * silently breaking the one guarantee this feature makes. A failure must degrade
  * to `unknown` (→ "unavailable"), never to a hold.
  *
- * `Win32_Battery.BatteryStatus`: 2 = AC, 1 = discharging. A present-but-idle
- * battery can report other values; those fall back to `ac` because
- * `PowerManagementSupported`/status are unreliable on some firmware.
+ * `Win32_Battery.BatteryStatus`: 1 = discharging, 4 = Low, 5 = Critical. Per the
+ * Win32_Battery docs 4 and 5 also mean the battery is *draining* — they are not
+ * "on AC" — so all three must take the battery branch. Treating 4/5 as `ac` made a
+ * laptop at 10% on battery read as "on AC", and the keeper then held the wake
+ * request while the battery drained, breaking the one guarantee this feature makes
+ * ("on battery the PC still sleeps as usual").
+ *
+ * Charging/charged states ({2, 3, 6, 7, 8, 9, 11}) and "no battery present" fall
+ * through to `ac`/`desktop`; 0 and 10 mean "unknown/undefined", which the
+ * `PowerManagementSupported` note below covers.
  */
 export const POWER_QUERY_SCRIPT = `
 $cimError = $null
 $battery = @(Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue -ErrorVariable cimError)
 if ($cimError.Count -gt 0) { Write-Output 'unknown'; exit 0 }
 if ($battery.Count -eq 0) { Write-Output 'desktop'; exit 0 }
-if ($battery[0].BatteryStatus -eq 1) { Write-Output 'battery'; exit 0 }
+if (@(1, 4, 5) -contains $battery[0].BatteryStatus) { Write-Output 'battery'; exit 0 }
 Write-Output 'ac'
 `;
 
@@ -311,8 +330,16 @@ class KeepAwakeManager implements KeepAwake {
    * Distinguishes "this is a desktop, the probe just hiccuped" from "we have never
    * read this machine" — see `shouldKeepHoldingThroughFailure()`. */
   private lastSource: PowerSource = 'unknown';
-  /** Set when a keeper we started exited on its own; cleared when one is running. */
+  /** Set when a keeper we started exited on its own, or could not be spawned.
+   *
+   * Sticky for *reporting*: it stays set across retries until a keeper actually
+   * confirms its hold, so the UI's "the helper could not run" does not flicker back
+   * to "starting" once per retry. `keeperRetryAt` is the separate, transient half
+   * that governs when the next attempt is allowed. */
   private keeperFailed = false;
+  /** Consecutive failed keeper starts, and when the next attempt is allowed. */
+  private keeperFailures = 0;
+  private keeperRetryAt = 0;
   /** Set once the keeper has confirmed it holds the request (its `READY` line).
    * `this.child` alone is not enough: it exists between spawn and that confirmation. */
   private keeperReady = false;
@@ -488,12 +515,18 @@ class KeepAwakeManager implements KeepAwake {
   }
 
   /** Synchronous best-effort cleanup for `process.on('exit')`. */
+  /** Synchronous best-effort cleanup for `process.on('exit')`.
+   *
+   * Note the ordering: the "not a failure" reset happens only when there *was* a
+   * child. An earlier revision reset it before the `if (!child) return`, which meant
+   * a keeper that had already died — precisely the failed-spawn / abnormal-exit case
+   * — kept its `keeperFailed` flag set through the exit sweep. */
   killChildSync(): void {
     const child = this.child;
     this.child = undefined;
     this.keeperReady = false;
     if (!child) return;
-    this.keeperFailed = false;
+    this.clearKeeperFailure();
     try {
       child.stdin?.destroy();
       child.kill();
@@ -533,11 +566,33 @@ class KeepAwakeManager implements KeepAwake {
     // NOT covered: there, `unknown` may mean the charger was pulled.
     const keepHolding = hold || shouldKeepHoldingThroughFailure(this.powerSource, this.lastSource);
     if (keepHolding && !this.child) {
-      this.spawnKeeper();
+      // Retry a failed keeper, but not on every tick: a machine where it can never
+      // start would otherwise spawn a doomed PowerShell process every 60s forever.
+      if (this.now() >= this.keeperRetryAt) this.spawnKeeper();
     } else if (!keepHolding && this.child) {
       this.killChild();
     }
     // While disabled the cached source still drives the UI wording.
+  }
+
+  /** Record a failed keeper start and schedule the next attempt with backoff. */
+  private noteKeeperFailure(): void {
+    this.keeperFailed = true;
+    this.keeperFailures += 1;
+    // 60s, 2m, 4m, 8m, then capped at 15m. One retry per watchdog tick at first, so
+    // a transient failure still recovers within a minute.
+    const backoff = Math.min(
+      this.intervalMs * 2 ** (this.keeperFailures - 1),
+      KEEPER_RETRY_MAX_BACKOFF_MS,
+    );
+    this.keeperRetryAt = this.now() + backoff;
+  }
+
+  /** A deliberate release or a confirmed hold: nothing is wrong, retry immediately. */
+  private clearKeeperFailure(): void {
+    this.keeperFailed = false;
+    this.keeperFailures = 0;
+    this.keeperRetryAt = 0;
   }
 
   private spawnKeeper(): void {
@@ -554,12 +609,15 @@ class KeepAwakeManager implements KeepAwake {
         err instanceof Error ? err.message : String(err),
       );
       // The source itself was read fine; it is the keeper that could not run.
-      this.keeperFailed = true;
+      this.noteKeeperFailure();
       return;
     }
     this.child = child;
     this.keeperReady = false;
-    this.keeperFailed = false;
+    // `keeperFailed` is deliberately NOT cleared here: wiping it on every attempt
+    // made the reported reason flip terminal → 'starting' → terminal once per
+    // retry, so a permanently broken machine never showed a stable explanation. It
+    // clears when a keeper confirms its hold, or when the switch is turned off.
     // Do not hold the event loop open on the keeper; the exit hooks below (and
     // the fact that its stdin closes with our own stdio) clean it up.
     child.unref?.();
@@ -570,7 +628,9 @@ class KeepAwakeManager implements KeepAwake {
       if (this.child !== child || this.keeperReady) return;
       if (String(chunk).includes(KEEPER_READY)) {
         this.keeperReady = true;
-        this.keeperFailed = false;
+        // A confirmed hold means the environment is healthy again: drop the failure
+        // state and the backoff so a later failure starts over at one retry per tick.
+        this.clearKeeperFailure();
         this.onEvent('keep-awake: sleep prevention active (display still turns off)', 'info');
       }
     });
@@ -580,7 +640,7 @@ class KeepAwakeManager implements KeepAwake {
         this.child = undefined;
         this.keeperReady = false;
       }
-      this.keeperFailed = true;
+      this.noteKeeperFailure();
     });
     child.on('exit', (code, signal) => {
       const wasCurrent = this.child === child;
@@ -592,7 +652,7 @@ class KeepAwakeManager implements KeepAwake {
       // Anything else means the keeper died on its own, and nothing is holding sleep
       // off — surface that as such instead of blaming the power-source probe.
       if (code === 0 || signal || !wasCurrent) return;
-      this.keeperFailed = true;
+      this.noteKeeperFailure();
       console.warn(
         `[keep-awake] keeper exited unexpectedly (code ${String(code)}) — wake request released.`,
       );
@@ -618,7 +678,7 @@ class KeepAwakeManager implements KeepAwake {
     this.keeperReady = false;
     if (!child) return;
     // We are shutting this keeper down on purpose, so its exit is not a failure.
-    this.keeperFailed = false;
+    this.clearKeeperFailure();
     try {
       child.stdin?.end();
       const timer = setTimeout(() => {
