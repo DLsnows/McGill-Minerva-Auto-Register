@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, MAX_OP_PAUSE_MS, MIN_OP_PAUSE_MS } from '@autoregister/shared';
-import { applyPacingSettings, configurePacing, getPacing, humanPause, resetPacing } from './pacing';
+import { applyPacingSettings, configurePacing, effectiveJitterMs, getPacing, humanPause, resetPacing } from './pacing';
 
 /**
  * Delay `humanPause()` actually scheduled, without waiting for it. Fake timers
@@ -63,6 +63,43 @@ describe('humanPause', () => {
     // A hand-edited store.json with a negative value cannot beat the floor either.
     configurePacing({ baseMs: -5000, jitterMs: 0 });
     withRandom(0, () => expect(scheduledDelay()).toBe(MIN_OP_PAUSE_MS));
+  });
+
+  /**
+   * Regression: making the two values independently configurable exposed an interaction
+   * the hardcoded 3000 ± 1000 never had. With base = 250 and jitter = 60000, every
+   * negative jitter term (Math.random() <= 0.5) collapsed onto the 250ms floor while the
+   * rest spread to ~60s — half of all browser pauses sitting on the hard minimum, i.e. a
+   * bimodal and obviously mechanical distribution.
+   */
+  describe('jitter cannot make the floor the mode', () => {
+    it('caps the jitter at the headroom above the floor', () => {
+      expect(effectiveJitterMs(250, 60000)).toBe(0);
+      expect(effectiveJitterMs(1000, 60000)).toBe(1000 - MIN_OP_PAUSE_MS);
+      // Below the headroom the configured value is untouched.
+      expect(effectiveJitterMs(3000, 1000)).toBe(1000);
+      // A base under the floor has no headroom at all.
+      expect(effectiveJitterMs(0, 5000)).toBe(0);
+    });
+
+    it('keeps the whole distribution above the floor instead of piling up on it', () => {
+      configurePacing({ baseMs: MIN_OP_PAUSE_MS, jitterMs: 60000 });
+      // The lowest possible draw (random = 0) and a mid draw (random = 0.5) both stay at
+      // the floor precisely because the effective jitter is 0 — but they are no longer a
+      // *spike*: every other draw is 250 too, so the distribution is a point, not a mode.
+      for (const r of [0, 0.25, 0.5, 0.75, 1] as const) {
+        withRandom(r, () => expect(scheduledDelay()).toBe(MIN_OP_PAUSE_MS));
+      }
+    });
+
+    it('still spreads upward when the base is above the floor', () => {
+      configurePacing({ baseMs: 3000, jitterMs: 60000 });
+      // Headroom is 2750ms, so the spread is 250 … 5750 — never below the floor, and no
+      // sample can land on it twice as often as anywhere else.
+      withRandom(0, () => expect(scheduledDelay()).toBe(MIN_OP_PAUSE_MS));
+      withRandom(0.5, () => expect(scheduledDelay()).toBe(3000));
+      withRandom(1, () => expect(scheduledDelay()).toBe(3000 + (3000 - MIN_OP_PAUSE_MS)));
+    });
   });
 
   it('lets explicit arguments override the runtime configuration', () => {

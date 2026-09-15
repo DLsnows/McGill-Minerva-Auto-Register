@@ -75,10 +75,27 @@ export function resetPacing(): PacingConfig {
 /**
  * Wait `baseMs` ± `jitterMs` (uniform), never less than {@link MIN_OP_PAUSE_MS}.
  * Explicit arguments override the runtime configuration (tests use this).
+ *
+ * The jitter is capped at `base - MIN_OP_PAUSE_MS` so the floor can never become the
+ * *mode*. Without that cap, two independently-valid settings interact badly: with
+ * `base = 250` and `jitter = 60000`, every sample whose jitter term is negative
+ * (`Math.random() <= 0.5`) collapses to exactly 250ms while the rest spread up to ~60s.
+ * Half of all browser pauses would sit on the hard minimum — a bimodal, obviously
+ * mechanical distribution, and the opposite of what a floor is for. Defaults
+ * (3000 ± 1000) never hit this because `jitter < base`; making the values configurable
+ * is what exposed it.
+ *
+ * Only the *low* side is capped: when `jitter > base` the pauses ramp uniformly from
+ * the floor up to `base + jitter`, which is still a plausible human spread.
  */
+export function effectiveJitterMs(baseMs: number, jitterMs: number): number {
+  const headroom = Math.max(0, baseMs - MIN_OP_PAUSE_MS);
+  return Math.min(jitterMs, headroom);
+}
+
 export function humanPause(baseMs?: number, jitterMs?: number): Promise<void> {
   const base = baseMs ?? current.baseMs;
-  const jitter = jitterMs ?? current.jitterMs;
+  const jitter = effectiveJitterMs(base, jitterMs ?? current.jitterMs);
   const ms = Math.max(MIN_OP_PAUSE_MS, base + (Math.random() * 2 - 1) * jitter);
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
