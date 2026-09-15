@@ -9,9 +9,16 @@ import type {
   SectionStats,
   WatchMode,
 } from '@autoregister/shared';
+import { PageStructureError } from '@autoregister/shared';
 import { Store } from '../store/store';
 import { Budget } from '../budget/budget';
-import { MANUAL_RUN_COOLDOWN_MS, Scheduler, type Actor, type SessionGuard, type Watcher } from './scheduler';
+import {
+  MANUAL_RUN_COOLDOWN_MS,
+  Scheduler,
+  type Actor,
+  type SessionGuard,
+  type Watcher,
+} from './scheduler';
 
 let dir: string;
 beforeEach(() => {
@@ -188,13 +195,16 @@ describe('Scheduler.runOnce', () => {
     await scheduler.runOnce(target.id);
     expect(reasons).toEqual(['no browser context']);
     expect(store.getTarget(target.id)!.status).toBe('paused');
-    expect(store.recentEvents().some((e) => e.level === 'warn' && /no browser context/.test(e.message))).toBe(
-      true,
-    );
+    expect(
+      store.recentEvents().some((e) => e.level === 'warn' && /no browser context/.test(e.message)),
+    ).toBe(true);
   });
 
   it('accepts a handler registered after construction (the API wires it up later)', async () => {
-    const { scheduler, store, target } = setup({ decision: { action: 'NOOP', reason: 'x' }, loggedIn: false });
+    const { scheduler, store, target } = setup({
+      decision: { action: 'NOOP', reason: 'x' },
+      loggedIn: false,
+    });
     const reasons: string[] = [];
     scheduler.setSessionLostHandler((r) => reasons.push(r));
     await scheduler.runOnce(target.id);
@@ -267,7 +277,14 @@ describe('Scheduler.runOnce', () => {
       now: () => NOW,
       random: () => 0.5,
     });
-    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '9999', mode: 'auto' });
+    const t = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '9999',
+      mode: 'auto',
+    });
 
     // First misses log an error but keep watching (absorbs a transient blip).
     await scheduler.runOnce(t.id);
@@ -279,7 +296,9 @@ describe('Scheduler.runOnce', () => {
     expect(store.getTarget(t.id)!.status).toBe('error');
     expect(watcher.calls).toBe(3);
     expect(
-      store.recentEvents().some((e) => e.level === 'error' && /not found in search results/i.test(e.message)),
+      store
+        .recentEvents()
+        .some((e) => e.level === 'error' && /not found in search results/i.test(e.message)),
     ).toBe(true);
 
     // Now stopped: a further run does not query again.
@@ -289,8 +308,22 @@ describe('Scheduler.runOnce', () => {
 
   it('stopping one unfindable target leaves the other targets polling', async () => {
     const store = new Store(dir);
-    const good = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
-    const bad = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '9999', mode: 'notify' });
+    const good = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '1814',
+      mode: 'auto',
+    });
+    const bad = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '9999',
+      mode: 'notify',
+    });
     let goodCalls = 0;
     const watcher: Watcher = {
       checkCourse: async (q) => {
@@ -335,7 +368,10 @@ describe('Scheduler.runOnce', () => {
     const store = new Store(dir);
     let kind: RegisterOutcome['kind'] = 'error';
     const watcher: Watcher = {
-      checkCourse: async () => ({ stats: stats(), decision: { action: 'REGISTER', reason: 'rem>0' } }),
+      checkCourse: async () => ({
+        stats: stats(),
+        decision: { action: 'REGISTER', reason: 'rem>0' },
+      }),
     };
     const actor: Actor = {
       act: async () =>
@@ -344,10 +380,22 @@ describe('Scheduler.runOnce', () => {
           : { kind: 'waitlist-full', crn: '1814' },
     };
     const scheduler = new Scheduler({
-      store, budget: new Budget(store), watcher, actor,
-      session: new FakeSession(true), now: () => NOW, random: () => 0.5,
+      store,
+      budget: new Budget(store),
+      watcher,
+      actor,
+      session: new FakeSession(true),
+      now: () => NOW,
+      random: () => 0.5,
     });
-    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+    const t = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '1814',
+      mode: 'auto',
+    });
 
     await scheduler.runOnce(t.id); // fail 1
     await scheduler.runOnce(t.id); // fail 2
@@ -362,7 +410,14 @@ describe('Scheduler.runOnce', () => {
 
   it('rescheduleWatching recomputes nextPollAt for watching targets only', () => {
     const { store, scheduler, target } = setup({ decision: { action: 'NOOP', reason: 'x' } });
-    const paused = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '2222', mode: 'auto' });
+    const paused = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '2222',
+      mode: 'auto',
+    });
     const STALE = NOW + 9_000_000; // far-future, as if scheduled under an old long interval
     store.updateTarget(target.id, { nextPollAt: STALE });
     store.updateTarget(paused.id, { status: 'paused', nextPollAt: STALE });
@@ -377,7 +432,14 @@ describe('Scheduler.runOnce', () => {
 
   it('skips a concurrent run of the same target (no double registration)', async () => {
     const store = new Store(dir);
-    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+    const t = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '1814',
+      mode: 'auto',
+    });
     let releaseCheck!: () => void;
     const gate = new Promise<void>((r) => (releaseCheck = r));
     let checkCalls = 0;
@@ -409,9 +471,9 @@ describe('Scheduler.runOnce', () => {
     // (audit Q16/Q60). Before the fix runOnce returned void for both.
     expect(ran1).toBe(true);
     expect(ran2).toBe(false);
-    expect(
-      store.recentEvents().some((e) => e.message.includes('Run already in progress')),
-    ).toBe(true);
+    expect(store.recentEvents().some((e) => e.message.includes('Run already in progress'))).toBe(
+      true,
+    );
   });
 });
 
@@ -419,7 +481,10 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
   function manualSetup() {
     const store = new Store(dir);
     const budget = new Budget(store);
-    const watcher = new FakeWatcher({ stats: stats(), decision: { action: 'NOOP', reason: 'full' } });
+    const watcher = new FakeWatcher({
+      stats: stats(),
+      decision: { action: 'NOOP', reason: 'full' },
+    });
     const actor = new FakeActor({ kind: 'not-found', crn: '1814' });
     let clock = NOW;
     const scheduler = new Scheduler({
@@ -431,7 +496,14 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
       now: () => clock,
       random: () => 0.5,
     });
-    const target = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+    const target = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '1814',
+      mode: 'auto',
+    });
     return { store, budget, watcher, scheduler, target, setClock: (t: number) => (clock = t) };
   }
 
@@ -494,7 +566,14 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
 
   it('reports in progress — not a false start — when a cycle is already running', async () => {
     const store = new Store(dir);
-    const t = store.addTarget({ term: '202701', subject: 'COMP', faculty: 'Faculty of Science', courseNumber: '551', targetCrn: '1814', mode: 'auto' });
+    const t = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '1814',
+      mode: 'auto',
+    });
     let releaseCheck!: () => void;
     const gate = new Promise<void>((r) => (releaseCheck = r));
     const scheduler = new Scheduler({
@@ -539,7 +618,10 @@ describe('Scheduler.runTarget (manual "Register now")', () => {
 
   it('refuses an unknown target instead of pretending to start', () => {
     const { scheduler } = manualSetup();
-    expect(scheduler.runTarget('no-such-id')).toEqual({ started: false, reason: 'target not found' });
+    expect(scheduler.runTarget('no-such-id')).toEqual({
+      started: false,
+      reason: 'target not found',
+    });
   });
 });
 
@@ -551,5 +633,162 @@ describe('Scheduler.isRunning', () => {
     expect(scheduler.isRunning()).toBe(true);
     scheduler.stop();
     expect(scheduler.isRunning()).toBe(false);
+  });
+});
+
+describe('Scheduler failure attribution (Q22)', () => {
+  function setupPageDrift() {
+    const store = new Store(dir);
+    const watcher: Watcher = {
+      checkCourse: async () => {
+        throw new PageStructureError(
+          'the "Sections Found" table header is not recognized (missing column(s): WL Rem)',
+        );
+      },
+    };
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher,
+      actor: new FakeActor({ kind: 'registered', crn: '1814' }),
+      session: new FakeSession(true),
+      now: () => NOW,
+      random: () => 0.5,
+    });
+    const target = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '1814',
+      mode: 'auto',
+    });
+    return { store, scheduler, target };
+  }
+
+  it('does NOT count an unrecognized results page as a missing CRN', async () => {
+    const { store, scheduler, target } = setupPageDrift();
+    store.updateTarget(target.id, { lastStats: stats() });
+
+    for (let i = 0; i < 4; i++) await scheduler.runOnce(target.id);
+
+    // Before the fix every drifted page counted as "CRN not found": 3 strikes and
+    // the target was stopped for a reason that had nothing to do with the course.
+    expect(store.getTarget(target.id)!.status).toBe('watching');
+    const events = store.recentEvents();
+    expect(
+      events.some((e) => e.level === 'error' && /page-structure problem/i.test(e.message)),
+    ).toBe(true);
+    // The misleading attribution must be gone entirely.
+    expect(events.some((e) => /not found in search results/i.test(e.message))).toBe(false);
+    expect(events.some((e) => /Query failed/i.test(e.message))).toBe(false);
+    // The last known seat numbers survive, so the UI does not go blank.
+    expect(store.getTarget(target.id)!.lastStats).toEqual(stats());
+    // …and the target keeps its normal cadence.
+    expect(store.getTarget(target.id)!.nextPollAt!).toBeGreaterThan(NOW);
+  });
+
+  it('announces a page drift once per episode instead of on every poll', async () => {
+    const { store, scheduler, target } = setupPageDrift();
+
+    for (let i = 0; i < 4; i++) await scheduler.runOnce(target.id);
+
+    // `warn`/`error` push a desktop notification: a page that stays changed must
+    // not notify on every poll for as long as the daily budget lasts.
+    expect(
+      store
+        .recentEvents()
+        .filter((e) => e.level === 'error' && /page-structure problem/i.test(e.message)),
+    ).toHaveLength(1);
+    expect(
+      store.recentEvents().filter((e) => /page-structure problem/i.test(e.message)),
+    ).toHaveLength(4);
+  });
+
+  it('still stops a target whose CRN is genuinely absent from readable results', async () => {
+    const store = new Store(dir);
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher: new FakeWatcher(null), // readable results, CRN simply not in them
+      actor: new FakeActor({ kind: 'registered', crn: '1814' }),
+      session: new FakeSession(true),
+      now: () => NOW,
+      random: () => 0.5,
+    });
+    const target = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '9999',
+      mode: 'auto',
+    });
+
+    for (let i = 0; i < 3; i++) await scheduler.runOnce(target.id);
+
+    expect(store.getTarget(target.id)!.status).toBe('error');
+    expect(store.recentEvents().some((e) => /not found in search results/i.test(e.message))).toBe(
+      true,
+    );
+  });
+});
+
+describe('Scheduler registration-result attribution (Q4)', () => {
+  it('does not report an unreadable submit result as "no action taken"', async () => {
+    const { scheduler, store, target } = setup({
+      decision: { action: 'REGISTER', reason: 'rem>0' },
+      outcome: {
+        kind: 'unverified',
+        crn: '1814',
+        message: 'the result page was not recognized — the submission may still have gone through',
+      },
+    });
+
+    await scheduler.runOnce(target.id);
+
+    const events = store.recentEvents();
+    expect(events.some((e) => e.level === 'error' && /could not verify/i.test(e.message))).toBe(
+      true,
+    );
+    expect(events.some((e) => /No action taken/i.test(e.message))).toBe(false);
+
+    // Bounded, not an endless resubmit loop: the third consecutive unreadable
+    // result stops the target and asks for a human.
+    await scheduler.runOnce(target.id);
+    expect(store.getTarget(target.id)!.status).toBe('watching');
+    await scheduler.runOnce(target.id);
+    expect(store.getTarget(target.id)!.status).toBe('error');
+  });
+
+  it('treats a not-found submit result as unverified rather than a clean cycle', async () => {
+    const { scheduler, store, target } = setup({
+      decision: { action: 'REGISTER', reason: 'rem>0' },
+      outcome: { kind: 'not-found', crn: '1814' },
+    });
+
+    await scheduler.runOnce(target.id);
+
+    const events = store.recentEvents();
+    // Before the fix: "No action taken (not-found)" at info level, failure streak
+    // reset, target rescheduled → the next cycle submitted the same CRN again.
+    expect(events.some((e) => /No action taken/i.test(e.message))).toBe(false);
+    expect(events.some((e) => e.level === 'error' && /could not verify/i.test(e.message))).toBe(
+      true,
+    );
+  });
+
+  it('never asks the actor to act on a NOOP decision', async () => {
+    // Locks in why a "no opening" cycle can never produce the not-found outcome
+    // that now counts as unverified: the actor is never called for NOOP.
+    const { scheduler, store, actor, target } = setup({
+      decision: { action: 'NOOP', reason: 'full' },
+    });
+
+    for (let i = 0; i < 4; i++) await scheduler.runOnce(target.id);
+
+    expect(actor.calls).toBe(0);
+    expect(store.getTarget(target.id)!.status).toBe('watching');
+    expect(store.recentEvents().some((e) => /could not verify/i.test(e.message))).toBe(false);
   });
 });

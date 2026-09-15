@@ -8,6 +8,7 @@ import type {
   SectionStats,
   WatchTarget,
 } from '@autoregister/shared';
+import { PageStructureError } from '@autoregister/shared';
 import type { Budget } from '../budget/budget';
 import type { Store } from '../store/store';
 
@@ -99,6 +100,9 @@ export class Scheduler {
   private readonly inFlight = new Set<string>();
   /** Per-target count of consecutive failed cycles (any error kind). */
   private readonly failureStreak = new Map<string, number>();
+  /** Targets currently reporting an unrecognized results page, so a long drift
+   * is announced once instead of on every poll (each `error` push notifies). */
+  private readonly structureReported = new Set<string>();
   /** Set after construction by the API process (see `setSessionLostHandler`). */
   private sessionLostHandler: ((reason: string) => void) | undefined;
 
@@ -135,7 +139,11 @@ export class Scheduler {
    * tick loop from double-registering the same course. */
   async runOnce(targetId: string, opts: { force?: boolean } = {}): Promise<boolean> {
     if (this.inFlight.has(targetId)) {
-      this.log('info', 'Run already in progress for this target — skipping concurrent run', targetId);
+      this.log(
+        'info',
+        'Run already in progress for this target — skipping concurrent run',
+        targetId,
+      );
       return false;
     }
     this.inFlight.add(targetId);
@@ -196,11 +204,32 @@ export class Scheduler {
       check = await this.deps.watcher.checkCourse(query);
     } catch (e) {
       budget.recordQuery(now);
+      if (e instanceof PageStructureError) {
+        // The results page is not the page we know how to read (renamed caption,
+        // dropped column, unreadable document). That is a fact about Minerva's
+        // HTML, NOT about this CRN: counting it as "CRN not found" would stop the
+        // target after 3 tries for the wrong reason (audit Q22). Keep watching
+        // (and keep the last known stats) and report the real cause.
+        //
+        // `warn`/`error` push a desktop notification, so announce a drift episode
+        // once per target: a page that stays changed would otherwise notify on
+        // every poll for as long as the daily budget lasts.
+        const firstReport = !this.structureReported.has(targetId);
+        this.structureReported.add(targetId);
+        this.log(
+          firstReport ? 'error' : 'info',
+          `Minerva results page not recognized: ${errMsg(e)} — this is a page-structure problem, not a missing CRN; keeping the last known stats and retrying${firstReport ? '' : ' (already reported)'}.`,
+          targetId,
+        );
+        this.scheduleNext(target);
+        return;
+      }
       if (this.noteFailure(target, `Query failed: ${errMsg(e)}`)) return;
       this.scheduleNext(target);
       return;
     }
     budget.recordQuery(now);
+    this.structureReported.delete(targetId); // the page is readable again
 
     if (!check) {
       // The query ran but the target CRN isn't among this course's sections.
@@ -276,11 +305,21 @@ export class Scheduler {
     if (streak >= FAILURE_LIMIT) {
       this.failureStreak.delete(target.id);
       this.deps.store.updateTarget(target.id, { status: 'error' });
-      this.log('error', `${message} — stopped watching after ${streak} consecutive failures.`, target.id, data);
+      this.log(
+        'error',
+        `${message} — stopped watching after ${streak} consecutive failures.`,
+        target.id,
+        data,
+      );
       return true;
     }
     this.failureStreak.set(target.id, streak);
-    this.log('error', `${message} (failure ${streak}/${FAILURE_LIMIT}) — will retry.`, target.id, data);
+    this.log(
+      'error',
+      `${message} (failure ${streak}/${FAILURE_LIMIT}) — will retry.`,
+      target.id,
+      data,
+    );
     return false;
   }
 
@@ -360,19 +399,46 @@ export class Scheduler {
         return; // stop watching
       case 'waitlist-full':
       case 'closed':
-      case 'not-found':
         this.noteSuccess(target.id);
         this.log('info', `No action taken (${outcome.kind})`, target.id, outcome);
         this.scheduleNext(target);
         return;
+      case 'not-found':
+      case 'unverified':
+        // A submission whose result we could NOT read is not "nothing happened":
+        // the registration may well have gone through. Silently treating it as a
+        // clean cycle is what made the old code resubmit the same CRN every cycle
+        // (audit Q4). Report it honestly and let the failure breaker bound the
+        // retries instead of looping forever. The register client re-checks the
+        // schedule before submitting again, so an already-registered CRN is never
+        // resubmitted.
+        if (
+          this.noteFailure(
+            target,
+            `Could not verify the registration result for ${target.label ?? target.targetCrn}: ${outcome.message ?? outcome.kind}`,
+            outcome,
+          )
+        ) {
+          return;
+        }
+        this.scheduleNext(target);
+        return;
       case 'waitlist-available':
         this.noteSuccess(target.id);
-        this.log('warn', 'Open-space reserved for waitlist; will reassess next cycle', target.id, outcome);
+        this.log(
+          'warn',
+          'Open-space reserved for waitlist; will reassess next cycle',
+          target.id,
+          outcome,
+        );
         this.scheduleNext(target);
         return;
       case 'error':
       default:
-        if (this.noteFailure(target, `Registration error: ${outcome.message ?? 'unknown'}`, outcome)) return;
+        if (
+          this.noteFailure(target, `Registration error: ${outcome.message ?? 'unknown'}`, outcome)
+        )
+          return;
         this.scheduleNext(target);
         return;
     }

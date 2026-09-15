@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { PageStructureError } from '@autoregister/shared';
 import { parseSections } from './parse-sections';
 
 // Synthetic fixture mirroring Minerva's real structure (no personal data).
@@ -68,5 +69,56 @@ describe('parseSections', () => {
 
   it('returns empty array when no sections table is present', () => {
     expect(parseSections('<html><body>No classes found</body></html>')).toEqual([]);
+  });
+
+  // Q22 — "the page has no results" and "we do not understand this page" are
+  // different answers. Before the fix BOTH returned [] and the scheduler blamed
+  // the CRN, stopping the target after 3 tries for the wrong reason.
+  it('throws PageStructureError when a sections table is present but a required column is gone', () => {
+    // Minerva renames/drops "WL Rem" (or the header row changes): the table is
+    // plainly there, we just cannot read the waitlist numbers out of it.
+    const drifted = FIXTURE.replace('<th class="ddheader">WL Rem</th>', '');
+    expect(() => parseSections(drifted)).toThrow(PageStructureError);
+    expect(() => parseSections(drifted)).toThrow(/WL Rem/);
+  });
+
+  it('throws PageStructureError when the results table caption was renamed', () => {
+    const renamed = FIXTURE.replace('>Sections Found<', '>Search Results<');
+    expect(() => parseSections(renamed)).toThrow(PageStructureError);
+    expect(() => parseSections(renamed)).toThrow(/caption/i);
+  });
+
+  it('still returns entries when an unrelated extra column is added', () => {
+    // Guard against over-eager structure errors: additive changes must parse.
+    const extra = FIXTURE.replace(
+      '<th class="ddheader">Status</th>',
+      '<th class="ddheader">Status</th><th class="ddheader">Notes</th>',
+    );
+    expect(parseSections(extra).map((r) => r.crn)).toEqual(['2347', '2348']);
+  });
+
+  it('reads a header-only table with an unknown caption as an empty result, not as drift', () => {
+    // A legitimate "nothing found" page may render the skeleton of the results
+    // table; with no rows there is nothing to misread, so this must NOT become a
+    // page-structure error that keeps polling forever.
+    const headerOnly = `
+<table class="datadisplaytable"><caption class="captiontext">Search Results</caption>
+<tr><th class="ddheader">CRN</th><th class="ddheader">Cap</th>
+<th class="ddheader">Act</th><th class="ddheader">Rem</th></tr>
+</table>`;
+    expect(parseSections(headerOnly)).toEqual([]);
+  });
+
+  it('reads a row-less table with a missing column as an empty result, not as drift', () => {
+    // Same rule on the other "we do not understand this page" path: an empty
+    // results table whose header lost a column still tells us there is nothing
+    // to read, so it must stay an empty result instead of erroring forever.
+    const rowLess = `
+<table class="datadisplaytable"><caption class="captiontext">Sections Found</caption>
+<tr><th class="ddheader">CRN</th><th class="ddheader">Cap</th>
+<th class="ddheader">Act</th><th class="ddheader">Rem</th>
+<th class="ddheader">WL Cap</th><th class="ddheader">WL Act</th></tr>
+</table>`;
+    expect(parseSections(rowLess)).toEqual([]);
   });
 });
