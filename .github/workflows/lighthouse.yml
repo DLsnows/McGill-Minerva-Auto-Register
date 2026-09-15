@@ -1,0 +1,97 @@
+name: Lighthouse
+
+# Performance / accessibility / best-practices audit of the built bundle, served locally.
+#
+# Trigger: PR -> `dev`, `opened` only. Lighthouse needs `ubuntu-latest` (Chrome + a real
+# CPU) and takes minutes, so it does not run per push. Re-run by pushing a commit / opening
+# a new PR, or locally with `npm run lighthouse`.
+#
+# The audit itself is `scripts/ci/lighthouse.mjs` + `npx lighthouse@12` rather than
+# treosh/lighthouse-ci-action: this repository's Actions allow-list is narrow, and a script
+# keeps the threshold policy and the SPA-fallback contract explicit. By default the run is
+# INFORMATIONAL (it reports scores and does not block). Set the repository variable
+# `LIGHTHOUSE_ENFORCE=1` (or add `--enforce` below) to make the thresholds blocking; the
+# bars live in the `env` block.
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lighthouse:
+    name: Lighthouse Audit
+    if: ${{ ! github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Informational unless the repository variable LIGHTHOUSE_ENFORCE is set to 1.
+      LH_ENFORCE: ${{ vars.LIGHTHOUSE_ENFORCE || '0' }}
+      LH_MIN_PERFORMANCE: '70'
+      LH_MIN_ACCESSIBILITY: '90'
+      LH_MIN_BEST_PRACTICES: '90'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web bundle
+        run: npm run build:web
+
+      - name: Run Lighthouse on the built bundle
+        id: lighthouse
+        continue-on-error: true
+        run: node scripts/ci/lighthouse.mjs
+
+      - name: Upload Lighthouse reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          path: lighthouse-reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Build comment body
+        if: always()
+        run: |
+          if [ -f lighthouse-reports/summary.md ]; then
+            cat lighthouse-reports/summary.md > /tmp/comment.md
+          else
+            {
+              echo "<!-- section:lighthouse -->"
+              echo "## ⚡ Lighthouse (preview)"
+              echo ""
+              echo ":x: The audit did not produce a report — see the job log."
+            } > /tmp/comment.md
+          fi
+
+      - name: Post sticky comment
+        if: always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: lighthouse
+          path: /tmp/comment.md
+
+      - name: Fail if the audit failed
+        if: always() && steps.lighthouse.outcome == 'failure'
+        run: |
+          echo "::error::Lighthouse step failed. In informational mode this only happens when every audit errored; check the log and the lighthouse-reports artifact."
+          exit 1
