@@ -40,24 +40,29 @@ export interface RunTargetResult {
 }
 
 /** Milliseconds of manual-run cooldown left, as an instant on the *caller's*
- * clock — so both inputs must be local-clock instants:
- *   - `localCoolingUntil`: end of the window estimated locally from a
- *     `retryAfterMs` duration anchored when the response arrived (preferred, no
- *     cross-clock arithmetic);
- *   - `targetLastForcedRunAt`: the server's epoch for the window's start, used
- *     only as a fallback when there is no local estimate (e.g. right after a
- *     reload). Cross-clock skew shows up here — acceptable for a cosmetic
- *     disable, since the server re-checks every request.
+ * clock.
+ *
+ * `localCoolingUntil` (a `retryAfterMs` duration anchored to the moment the
+ * response arrived) wins **whenever it exists**, even if it is in the past —
+ * that is what makes it exclusive rather than merely additive: taking a maximum
+ * over both sources instead would let a stale or skewed server epoch keep the
+ * countdown (and the button) alive after the local window has ended.
+ *
+ * `targetLastForcedRunAt` is the server's epoch for the window's start, used
+ * **only** while there is no local estimate at all (a freshly-loaded page that
+ * has not clicked yet). That path does subtract the client's clock from a server
+ * epoch, so skew shows up in the rendered seconds; it is cosmetic, since the
+ * server re-checks every request.
+ *
  * 0 = a forced run is allowed now. */
 export function cooldownRemainingMs(
   targetLastForcedRunAt: number | undefined,
   localCoolingUntil: number | undefined,
   now: number,
 ): number {
-  const fromServer =
-    targetLastForcedRunAt === undefined ? 0 : targetLastForcedRunAt + MANUAL_RUN_COOLDOWN_MS - now;
-  const fromLocal = localCoolingUntil === undefined ? 0 : localCoolingUntil - now;
-  return Math.max(0, fromServer, fromLocal);
+  if (localCoolingUntil !== undefined) return Math.max(0, localCoolingUntil - now);
+  if (targetLastForcedRunAt === undefined) return 0;
+  return Math.max(0, targetLastForcedRunAt + MANUAL_RUN_COOLDOWN_MS - now);
 }
 
 type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'targetCrn' | 'mode'> &

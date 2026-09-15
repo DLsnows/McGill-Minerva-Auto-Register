@@ -189,7 +189,6 @@ describe('Dashboard', () => {
         started: false,
         reason: 'cooldown',
         retryAfterMs: 45_000,
-        lastForcedRunAt: Date.now() - 15_000,
       });
       renderDashboard();
       await act(async () => {
@@ -363,4 +362,16 @@ describe('Dashboard', () => {
       vi.useRealTimers();
     }
   });
+
+  // Review finding (4th round): `cooldownRemainingMs` combined the local estimate
+  // and the server epoch with `Math.max`, so the stored epoch always participated
+  // — with a fast server clock that inflates the countdown, and a refetch landing
+  // mid-window makes a live countdown jump upwards (45s → 180s).
+  //
+  // The precedence rule itself is pinned in `lib/api.test.ts`
+  // ("uses the local estimate alone…", "keeps an expired local estimate
+  // authoritative…"), which fails with the old `Math.max`. An earlier version of
+  // this test drove the same scenario through the Dashboard, but the refetch it
+  // relied on never actually fired, so the skewed value never reached the card and
+  // it passed against the bug — a vacuous test, removed rather than kept.
 });

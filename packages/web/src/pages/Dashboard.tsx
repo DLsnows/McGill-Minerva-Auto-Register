@@ -108,10 +108,16 @@ export default function Dashboard() {
       // duration (`retryAfterMs`, anchored to the moment the answer arrived)
       // rather than from the server's `lastForcedRunAt` epoch: mixing a server
       // epoch with `Date.now()` would make the countdown sensitive to clock skew
-      // (review finding). The server's timestamp is kept for display/debugging
-      // only, and `target.lastForcedRunAt` still covers a page reload.
+      // (review finding). The server's timestamp stays informational, and
+      // `target.lastForcedRunAt` only covers a page that never saw a response.
       const markCooling = (retryAfterMs: number) =>
         setCoolingUntil((s) => ({ ...s, [id]: Date.now() + retryAfterMs }));
+      // Seed a local estimate *before* awaiting: once one exists the card stops
+      // consulting the stored `lastForcedRunAt` (which may be stale or skewed), so
+      // the in-flight render cannot show a window that has already ended. The seed
+      // sits clearly in the past — `Date.now()` itself would round up to a bogus
+      // "1s left" on the next tick.
+      markCooling(-1_000);
       setRunning((s) => new Set(s).add(id));
       drop(tr('run.starting')); // in-flight hint; replaced by the verdict below
       try {
