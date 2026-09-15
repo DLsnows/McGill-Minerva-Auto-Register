@@ -487,4 +487,18 @@ describe('Scheduler registration-result attribution (Q4)', () => {
     expect(events.some((e) => /No action taken/i.test(e.message))).toBe(false);
     expect(events.some((e) => e.level === 'error' && /could not verify/i.test(e.message))).toBe(true);
   });
+
+  it('never asks the actor to act on a NOOP decision', async () => {
+    // Locks in why a "no opening" cycle can never produce the not-found outcome
+    // that now counts as unverified: the actor is never called for NOOP.
+    const { scheduler, store, actor, target } = setup({
+      decision: { action: 'NOOP', reason: 'full' },
+    });
+
+    for (let i = 0; i < 4; i++) await scheduler.runOnce(target.id);
+
+    expect(actor.calls).toBe(0);
+    expect(store.getTarget(target.id)!.status).toBe('watching');
+    expect(store.recentEvents().some((e) => /could not verify/i.test(e.message))).toBe(false);
+  });
 });

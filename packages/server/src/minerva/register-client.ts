@@ -134,12 +134,21 @@ export class RegisterClient {
   }
 
   /**
-   * Submit the worksheet and read the result. Waits for the result page's
-   * tables before parsing, re-reads a bounded number of times when the CRN is
-   * not mentioned, and reports `unverified` (never `not-found`) when the result
-   * cannot be established.
+   * Submit the worksheet and read the result.
+   *
+   * Two things make an immediate read lie (audit Q4/Q21):
+   * - the tables we wait for also exist on the page we submit FROM, so an anchor
+   *   wait can resolve against the document we are leaving (this is what made the
+   *   waitlist re-submit report the stale offer page as its outcome);
+   * - a slow response body is read while it is still streaming — the auditor
+   *   measured a 58-character document.
+   * So the document is snapshotted before the click and a read is only trusted
+   * once it is a DIFFERENT document; otherwise we re-read a bounded number of
+   * times. `not-found` is never returned: a submit whose result we could not
+   * establish is `unverified`.
    */
   private async submitChanges(page: Page, crn: string): Promise<RegisterOutcome> {
+    const submittedFrom = await page.content().catch(() => null);
     await humanPause();
     await page.click('input[name="REG_BTN"][value="Submit Changes"]');
 
@@ -154,6 +163,12 @@ export class RegisterClient {
         html = await page.content();
       } catch (e) {
         lastError = `the result page could not be read: ${errMsg(e)}`;
+        continue;
+      }
+      if (submittedFrom !== null && html === submittedFrom) {
+        // Still the document we submitted from: the response has not replaced it
+        // yet, so whatever it says is a pre-submit statement, not a result.
+        lastError = 'the page still shows the worksheet we submitted from';
         continue;
       }
       let outcome: RegisterOutcome;

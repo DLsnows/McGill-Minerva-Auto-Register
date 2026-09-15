@@ -6,9 +6,13 @@ const REQUIRED = ['CRN', 'Cap', 'Act', 'Rem', 'WL Cap', 'WL Act', 'WL Rem'] as c
 
 /**
  * True when a table's markup unmistakably IS a course-sections table — a CRN
- * header plus seat columns — even though its caption is not the one we expect.
- * Used to tell "Minerva renamed the caption" (a page we do not understand) from
- * "this page has no results".
+ * header plus seat columns AND at least one real CRN row — even though its
+ * caption is not the one we expect. Used to tell "Minerva renamed the caption"
+ * (a page we do not understand) from "this page has no results".
+ *
+ * The data-row requirement is deliberate: a header-only skeleton is what a
+ * legitimate "nothing found" page can render, and that must stay `[]` instead of
+ * becoming a permanent page-structure error.
  */
 function looksLikeSectionsTable(tableHtml: string): boolean {
   const $ = cheerio.load(tableHtml);
@@ -20,7 +24,15 @@ function looksLikeSectionsTable(tableHtml: string): boolean {
     .each((_, th) => {
       labels.push($(th).text().trim().toLowerCase().replace(/\s+/g, ' '));
     });
-  return labels.includes('crn') && labels.some((l) => ['cap', 'act', 'rem'].includes(l));
+  const crnCol = labels.indexOf('crn');
+  if (crnCol < 0) return false;
+  if (!labels.some((l) => ['cap', 'act', 'rem'].includes(l))) return false;
+  let crnRows = 0;
+  $('tr').each((_, tr) => {
+    const tds = $(tr).find('td');
+    if (tds.length > crnCol && /^\d{4,5}$/.test($(tds[crnCol]).text().trim())) crnRows++;
+  });
+  return crnRows > 0;
 }
 
 /**

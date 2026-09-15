@@ -38,6 +38,24 @@ const RESULT_CLOSED = `
 <td class="dddefault">1814</td></tr>
 </table></body></html>`;
 
+/** First submit: open seats reserved for the waitlist, so an LW re-submit is needed. */
+const RESULT_WAITLIST_OFFER = `
+<html><body><h1>Registration</h1>
+<table class="datadisplaytable" summary="This table is used to present Registration Errors.">
+<tr><th class="ddheader">Status</th><th class="ddheader">Action</th><th class="ddheader">CRN</th></tr>
+<tr><td class="dddefault"><a href="x">Open-Space(s) Reserved for Waitlist</a></td>
+<td class="dddefault"><select name="RSTS_IN"><option value="">None</option><option value="LW">(Add(ed) to Waitlist)</option></select></td>
+<td class="dddefault">1814</td></tr>
+</table></body></html>`;
+
+/** The page the LW re-submit finally renders: the CRN is on the waitlist. */
+const RESULT_WAITLISTED = `
+<html><body><h1>Registration</h1>
+<table class="datadisplaytable" summary="Current Schedule">
+<tr><th class="ddheader">Status</th><th class="ddheader">Action</th><th class="ddheader">CRN</th></tr>
+${schedRow('1814', 'Waitlist on Jun 02, 2026')}
+</table></body></html>`;
+
 /** Fake page: records operations and serves scripted documents. No browser, no network. */
 class FakePage {
   readonly log: string[] = [];
@@ -227,5 +245,30 @@ ${schedRow('1814', 'Waitlist on Jun 01, 2026')}
 
     expect(outcome.kind).toBe('waitlisted');
     expect(submits(page)).toBe(0);
+  });
+
+  it('reports the waitlist join itself, not the stale offer page it submitted from', async () => {
+    const page = new FakePage();
+    let submitCount = 0;
+    page.onSubmit = () => {
+      submitCount++;
+      if (submitCount === 1) {
+        page.queueReads(RESULT_WAITLIST_OFFER);
+        return;
+      }
+      // The re-submit's first read still lands on the page we submitted from —
+      // its navigation has not committed yet — and the CRN sits in that page's
+      // Registration Errors row with an LW option. Only the next read shows the
+      // waitlist join.
+      page.queueReads(RESULT_WAITLIST_OFFER, RESULT_WAITLISTED);
+    };
+
+    const outcome = await clientFor(page).then((c) => c.act('202701', '1814', 'WAITLIST'));
+
+    expect(submitCount).toBe(2); // the offer really did trigger an LW re-submit
+    expect(page.log.some((l) => l.startsWith('selectOption select[name="RSTS_IN"]=LW'))).toBe(true);
+    // Reporting the stale page would tell the user "will reassess next cycle"
+    // while the waitlist join already happened.
+    expect(outcome.kind).toBe('waitlisted');
   });
 });

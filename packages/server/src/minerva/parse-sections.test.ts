@@ -96,4 +96,16 @@ describe('parseSections', () => {
     );
     expect(parseSections(extra).map((r) => r.crn)).toEqual(['2347', '2348']);
   });
+
+  it('reads a header-only table with an unknown caption as an empty result, not as drift', () => {
+    // A legitimate "nothing found" page may render the skeleton of the results
+    // table; with no rows there is nothing to misread, so this must NOT become a
+    // page-structure error that keeps polling forever.
+    const headerOnly = `
+<table class="datadisplaytable"><caption class="captiontext">Search Results</caption>
+<tr><th class="ddheader">CRN</th><th class="ddheader">Cap</th>
+<th class="ddheader">Act</th><th class="ddheader">Rem</th></tr>
+</table>`;
+    expect(parseSections(headerOnly)).toEqual([]);
+  });
 });
