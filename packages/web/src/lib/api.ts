@@ -12,6 +12,62 @@ export interface SchedulerState {
  * session cannot support polling (see `session-truth.ts`). */
 export const SESSION_NOT_READY = 'session-not-ready';
 
+/** Manual-run cooldown, mirrored from `MANUAL_RUN_COOLDOWN_MS` in
+ * packages/server/src/scheduler/scheduler.ts. Used to place the end of the window
+ * on the client's own clock; the server enforces it and re-checks every request. */
+export const MANUAL_RUN_COOLDOWN_MS = 60_000;
+
+/** Result of `POST /api/targets/:id/run` — what *this request* did.
+ *
+ * `started: true` means the cycle was accepted and is running in the background;
+ * its outcome still arrives via the event stream. `started: false` means the
+ * request was dropped, and `reason` says why — the UI must show it, otherwise
+ * the button just flashes and the click silently does nothing (audit Q16/Q60).
+ * `reason` is an open string (the server also reports `target is <status>`, and
+ * a future `'queued'` is reserved), so consumers must fall back to a neutral
+ * message for values they don't know. */
+export interface RunTargetResult {
+  started: boolean;
+  reason?: string;
+  /** How much of the manual cooldown is left: the full window on acceptance, the
+   * remainder on a `'cooldown'` rejection, 0/absent otherwise. A *duration*, so
+   * the UI anchors it to its own receive time and needs no clock agreement with
+   * the server. */
+  retryAfterMs?: number;
+  /** The target's `lastForcedRunAt` after this request (epoch ms, absent when it
+   * never had a forced run). Informational — a freshly-loaded page can show a
+   * running window without asking again. Deliberately *not* used for the
+   * countdown: subtracting the client's clock from a server epoch is exactly what
+   * makes a countdown skew-sensitive. */
+  lastForcedRunAt?: number;
+}
+
+/** Milliseconds of manual-run cooldown left, as an instant on the *caller's*
+ * clock.
+ *
+ * `localCoolingUntil` (a `retryAfterMs` duration anchored to the moment the
+ * response arrived) wins **whenever it exists**, even if it is in the past —
+ * that is what makes it exclusive rather than merely additive: taking a maximum
+ * over both sources instead would let a stale or skewed server epoch keep the
+ * countdown (and the button) alive after the local window has ended.
+ *
+ * `targetLastForcedRunAt` is the server's epoch for the window's start, used
+ * **only** while there is no local estimate at all (a freshly-loaded page that
+ * has not clicked yet). That path does subtract the client's clock from a server
+ * epoch, so skew shows up in the rendered seconds; it is cosmetic, since the
+ * server re-checks every request.
+ *
+ * 0 = a forced run is allowed now. */
+export function cooldownRemainingMs(
+  targetLastForcedRunAt: number | undefined,
+  localCoolingUntil: number | undefined,
+  now: number,
+): number {
+  if (localCoolingUntil !== undefined) return Math.max(0, localCoolingUntil - now);
+  if (targetLastForcedRunAt === undefined) return 0;
+  return Math.max(0, targetLastForcedRunAt + MANUAL_RUN_COOLDOWN_MS - now);
+}
+
 type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'targetCrn' | 'mode'> &
   Partial<Pick<WatchTarget, 'faculty' | 'label'>>;
 
@@ -98,7 +154,7 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   removeTarget: (id: string) => req<{ ok: true }>(`/api/targets/${id}`, { method: 'DELETE' }),
-  runTarget: (id: string) => post<{ started: boolean }>(`/api/targets/${id}/run`),
+  runTarget: (id: string) => post<RunTargetResult>(`/api/targets/${id}/run`),
 
   getSettings: () => req<Settings>('/api/settings'),
   putSettings: (patch: Partial<Settings>) =>

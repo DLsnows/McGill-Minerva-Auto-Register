@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, errorMessage, isSessionNotReady, type ApiError } from './api';
+import { api, cooldownRemainingMs, errorMessage, isSessionNotReady, MANUAL_RUN_COOLDOWN_MS, type ApiError } from './api';
 
 function mockFetch(body: unknown, ok = true, status = 200) {
   return vi.fn().mockResolvedValue({
@@ -103,5 +103,36 @@ describe('api', () => {
     // come from the same response.
     expect(out.query.used).toBeLessThanOrEqual(out.query.limit);
     expect(out.query.remaining).toBe(out.query.limit - out.query.used);
+  });
+});
+
+// Review finding (4th round): the local estimate and the server epoch were
+// combined with `Math.max`, so the server epoch always participated — with a fast
+// server clock that inflates the countdown, and a mid-window refetch would make a
+// live countdown jump upwards. The local estimate must win outright whenever it
+// exists; the server epoch is only the pre-first-response fallback.
+describe('cooldownRemainingMs', () => {
+  const NOW = 1_000_000;
+
+  it('uses the local estimate alone, even when the server epoch disagrees wildly', () => {
+    const localCoolingUntil = NOW + 45_000;
+    const skewedServerStart = NOW + 120_000; // server clock minutes ahead
+    expect(cooldownRemainingMs(skewedServerStart, localCoolingUntil, NOW)).toBe(45_000);
+  });
+
+  it('keeps an expired local estimate authoritative instead of reviving it from the server epoch', () => {
+    const localCoolingUntil = NOW - 1; // the local window already ended
+    const skewedServerStart = NOW + 120_000;
+    expect(cooldownRemainingMs(skewedServerStart, localCoolingUntil, NOW)).toBe(0);
+  });
+
+  it('falls back to the server epoch when there is no local estimate (fresh page load)', () => {
+    expect(cooldownRemainingMs(NOW - 20_000, undefined, NOW)).toBe(
+      MANUAL_RUN_COOLDOWN_MS - 20_000,
+    );
+  });
+
+  it('reports no cooldown when neither source exists', () => {
+    expect(cooldownRemainingMs(undefined, undefined, NOW)).toBe(0);
   });
 });

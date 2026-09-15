@@ -9,6 +9,7 @@ import { z } from 'zod';
 import type { LogEvent, Settings } from '@autoregister/shared';
 import type { Budget } from '../budget/budget';
 import type { Store } from '../store/store';
+import type { ForcedRunResult } from '../scheduler/scheduler';
 import { SessionTruth, sessionReadiness, type SessionStatus } from './session-truth';
 
 export { SessionTruth, sessionReadiness };
@@ -34,7 +35,9 @@ export interface ApiSession {
 export interface ApiScheduler {
   start(tickMs?: number): void;
   stop(): void;
-  runTarget(id: string): void;
+  /** Request an immediate forced cycle. Returns what actually happened so the
+   * route can distinguish "accepted" from "dropped" (audit Q16/Q60). */
+  runTarget(id: string): ForcedRunResult;
   isRunning(): boolean;
   /** Re-apply the poll cadence to already-scheduled targets (after a settings
    * change). Optional so lightweight test doubles can omit it. */
@@ -156,19 +159,23 @@ export function buildServer(
     return { ok: true };
   });
   // One-click "Register now": run an immediate forced cycle for this target.
-  // `started: true` means the run was *accepted*; it executes asynchronously and
-  // its outcome arrives via the event stream (like a normal tick). The status
-  // check below is a best-effort fast-fail — runCycle re-checks status when it runs.
+  // The response says what really happened for this request:
+  //   { started: true }                                  — accepted, runs async
+  //   { started: false, reason: 'in progress' }          — a cycle already runs
+  //   { started: false, reason: 'cooldown', retryAfterMs } — manual throttle
+  //   { started: false, reason: 'target is <status>' }   — not being watched
+  // The outcome of an accepted cycle still arrives via the event stream (like a
+  // normal tick); `started` only means "this request was accepted". Returning a
+  // blanket `started: true` is what made the button flash and do nothing
+  // (audit Q16/Q60) — the dropped-vs-accepted distinction is the whole point.
   app.post('/api/targets/:id/run', (req, reply) => {
     const { id } = req.params as { id: string };
     const target = deps.store.getTarget(id);
     if (!target) return reply.code(404).send({ error: 'not found' });
-    // runOnce no-ops on non-watching targets; report honestly rather than a bare started:true.
-    if (target.status !== 'watching') {
-      return reply.send({ started: false, reason: `target is ${target.status}` });
-    }
-    deps.scheduler.runTarget(id);
-    return { started: true };
+    // `runTarget` re-checks status, the in-flight guard and the manual cooldown,
+    // and reports each case honestly rather than a bare started:true. Its
+    // fast-fail status check is still best-effort: runCycle re-checks when it runs.
+    return reply.send(deps.scheduler.runTarget(id));
   });
 
   // --- settings ---

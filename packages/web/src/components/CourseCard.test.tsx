@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CourseCard } from './CourseCard';
 import type { WatchTarget } from '@autoregister/shared';
@@ -77,5 +77,136 @@ describe('CourseCard', () => {
     rerender(<CourseCard target={{ ...target, status: 'registered' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />);
     expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
+  });
+
+  // Regression (audit Q16/Q60): a dropped manual run must be visible. Before the
+  // fix the card only knew `running`, which the Dashboard cleared as soon as the
+  // POST returned, so a rejected request left no trace on screen at all.
+  it('shows the run notice when the manual run was not accepted', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        runNotice={{ text: 'A check for this course is already running', until: Date.now() + 30_000 }}
+      />,
+    );
+    expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i);
+  });
+
+  // The notice describes a cycle that was running *at that moment*, so it may not
+  // sit on the card forever: the client cannot observe the end of that cycle
+  // reliably, so it is shown for a bounded time (review finding — a stale
+  // "already running" line ended up next to a REGISTERED badge).
+  it('clears an expired run notice', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        runNotice={{ text: 'A check for this course is already running', until: Date.now() - 1 }}
+      />,
+    );
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
+
+  it('renders no run notice by default', () => {
+    render(<CourseCard target={target} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />);
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
+
+  it('disables Register now while the manual-run cooldown is active', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        coolingUntil={Date.now() + 30_000}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+    expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in \d+s/i);
+  });
+
+  it('re-enables Register now and drops the notice once the cooldown has passed', () => {
+    render(
+      <CourseCard
+        target={target}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        coolingUntil={Date.now() - 1}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled();
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
+
+  // Review finding: the cooldown string was frozen at response time, so it
+  // outlived the window and sat next to an enabled button. It must count down
+  // and clear itself.
+  it('counts the cooldown down and clears it when it expires', () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <CourseCard
+          target={target}
+          onToggleMode={noop}
+          onRun={noop}
+          onTogglePolling={noop}
+          coolingUntil={Date.now() + 3_000}
+        />,
+      );
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 3s/i);
+      expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+
+      act(() => {
+        vi.advanceTimersByTime(2_000);
+      });
+      expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 1s/i);
+
+      act(() => {
+        vi.advanceTimersByTime(1_100);
+      });
+      expect(screen.queryByTestId('run-notice')).toBeNull();
+      expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review finding (8th round): after an accepted run that ends in a terminal
+  // state (the course registered within the window) the card kept offering "you
+  // can try again in Ns" next to a REGISTERED badge and a disabled button —
+  // the same stale-claim-next-to-a-terminal-badge contradiction that bounds the
+  // dropped notice.
+  it('does not show a cooldown notice on a course that is no longer watched', () => {
+    render(
+      <CourseCard
+        target={{ ...target, status: 'registered', lastForcedRunAt: Date.now() }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
+    expect(screen.queryByTestId('run-notice')).toBeNull();
+  });
+
+  // The server records the window on the target when it accepts a run, so a
+  // reload (or another tab) sees the cooldown without ever hitting a rejection.
+  it('derives the cooldown from the target’s lastForcedRunAt (server truth)', () => {
+    render(
+      <CourseCard
+        target={{ ...target, lastForcedRunAt: Date.now() - 20_000 }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /register now/i })).toBeDisabled();
+    expect(screen.getByTestId('run-notice')).toHaveTextContent(/Try again in 40s/i);
   });
 });
