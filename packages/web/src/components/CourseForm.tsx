@@ -35,8 +35,12 @@ const FIELDS: { key: keyof CourseFormValues; required: boolean }[] = [
 /** Text fields that must be filled in before the form may be submitted. */
 const REQUIRED_KEYS = FIELDS.filter((f) => f.required).map((f) => f.key);
 
-/** `mode` has a default (`auto`), so it is never part of the required check — see `form.modeDefaultHint`. */
-const isBlank = (v: CourseFormValues, key: keyof CourseFormValues) => !String(v[key]).trim();
+/**
+ * `mode` has a default (`auto`), so it is never part of the required check — see `form.modeDefaultHint`.
+ * The nullish guard keeps a field that somehow arrives as `null`/`undefined` (API rows are not
+ * validated at runtime) blank instead of the non-empty string `"null"`.
+ */
+const isBlank = (v: CourseFormValues, key: keyof CourseFormValues) => !String(v[key] ?? '').trim();
 
 const trimAll = (v: CourseFormValues): CourseFormValues => ({
   term: v.term.trim(),

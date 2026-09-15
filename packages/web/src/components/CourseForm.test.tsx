@@ -98,6 +98,14 @@ describe('CourseForm', () => {
     expect(screen.getAllByText('This field is required.')).toHaveLength(2);
   });
 
+  it('treats a nullish field value as missing rather than the string "null"', () => {
+    // pr-agent suggestion: API rows are not runtime-validated, so a field can arrive as
+    // null/undefined despite the type; it must still count as blank.
+    const values = { term: '202701', subject: undefined, courseNumber: null, targetCrn: '2347', faculty: 'Faculty of Science', label: '', mode: 'auto' } as unknown as CourseFormValues;
+    const submitted = courseFormReducer({ values, missing: [] }, { type: 'submit' });
+    expect(submitted.missing).toEqual(['subject', 'courseNumber']);
+  });
+
   it('reduces values and missing together, so a batched update keeps both patches', () => {
     // The decisive guard for the reviewer-flagged regression. React applies queued actions one
     // by one and commits the resulting state as a whole, so the "both patches survive and the
