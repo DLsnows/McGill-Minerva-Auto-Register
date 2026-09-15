@@ -63,4 +63,10 @@ jobs:
             gh pr comment ${{ github.event.pull_request.number }} --body "### Code Review
             [your findings here, or 'No issues found.']
             🤖 Generated with [Claude Code](https://claude.ai/code)"
-          claude_args: "--model deepseek-v4-pro[1M] --max-turns 15 --allowedTools Bash,Read,Grep,Glob"
+          # --max-turns 15 was too tight: on a four-file PR the reviewer used 18 turns and
+          # still reported "No issues found", but the action treated the budget overrun as a
+          # failure, so the `review` check went red on a clean PR (observed on #33). The
+          # review comment had already been posted by then, which made the red check doubly
+          # confusing. 30 leaves room for a real multi-file read without inviting an
+          # unbounded run.
+          claude_args: "--model deepseek-v4-pro[1M] --max-turns 30 --allowedTools Bash,Read,Grep,Glob"
