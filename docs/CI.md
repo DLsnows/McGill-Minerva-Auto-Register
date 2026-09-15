@@ -22,6 +22,12 @@
 | `prod`（默认分支）                          | ✅                 | ✅（head 必须是 `dev` 或 `staging`）      | ❌           | ❌           | ✅       |
 | `feat/**`、`feature/**`（子支线 / 集成 PR） | ❌ **不跑**        | ❌                                        | ❌           | ❌           | ✅       |
 
+> **子支线的 PR 跑什么？答案是：只有 `claude-code-review.yml` 与 `pr-agent.yml` 两个 AI 评审，
+> 除此之外没有任何 CI。** 这不是漏配，是策略：`ci.yml` / `branch-gate.yml` / `preview-e2e.yml` /
+> `lighthouse.yml` 的 `on.pull_request.branches` 都**不包含** `feat/**`（GitHub 的 `branches`
+> 过滤器只能列出具体分支名，无法表达 "base 不是长期分支"），所以子支线 PR 上这四个 workflow
+> 根本不启动。质量由**本地 `npm run gates`** 保证，最终把关点是集成 PR → `dev`。
+
 **为什么子支线 PR 不跑全量 CI**：子任务分支的 PR base 是集成分支（例如 `feat/ci-and-ux-overhaul`），
 按设计它们只是"可以合的中间态"，真正的把关点是集成 PR → `dev`。如果每条子支线 PR 都跑一遍
 全量矩阵 + Playwright + Lighthouse，成本会随支线数量线性增长，而收益几乎为零——过几分钟集成分支
@@ -55,20 +61,36 @@ npm run gates -- --base origin/dev --only lint,test
 | `web-build`          | `ubuntu-slim`   | `npm ci` → `npm run build:web`                                                   | 和 lint 同量级，deps 有 npm 缓存                                                                                                                           |
 | `report`             | `ubuntu-slim`   | 汇总三个 job 的 Markdown 片段，发一条 sticky 评论                                | 每个 job 先把小结写成 artifact，`report` 按固定顺序拼接，所以评论形状永远一致                                                                              |
 
-### prettier 为什么只查改动文件
+### prettier：只禁止**新引入**的违规
 
 `npm run format:check`（全量）**当前是红的**：本仓库有约 37 个文件早于现行 Prettier 配置。
 在一次 CI 改造 PR 里顺手全量格式化会淹没 diff，并且毁掉这些文件的 `git blame`。
 
-因此在还清这笔历史债之前：
+但只做「检查本 PR 改动过的文件」也不够——**这些历史脏文件里就有产品支线天天在改的那些**
+（`packages/web/src/pages/Settings.tsx`、`packages/web/src/i18n/index.ts`、
+`packages/server/src/api/server.ts` …）。按「改动过就必须干净」判定，任何 PR 只要碰一下它们就必然红，
+而让每条支线各自格式化这些文件，又会在互相 rebase 时制造大面积冲突。
 
-- `ci.yml` 只对**本 PR 改动过的** `.ts/.tsx/.js/.mjs/.json/.md/.yml/.css` 跑 prettier
-  （`git diff --name-only --diff-filter=ACMR origin/<base>...HEAD`，再用 `git check-ignore` 过滤 `.prettierignore`）。
-  实现在 `scripts/ci/format-check-changed.mjs`（跨平台，不依赖 bash/xargs）。
-- 全量 `format:check` 保持原样，作为**待清理的历史债**记录在这里，不在 CI 里跑。
+所以判定口径是 **「不得新引入格式违规」**（`scripts/ci/format-check-changed.mjs`）：
 
-想还这笔债：单独开一个 `chore/format-repo` PR 跑 `npm run format`，在 `.git-blame-ignore-revs` 里
-登记该 commit，然后把 `ci.yml` 的 prettier 步骤换成全量 `npm run format:check`。
+| 文件状态 | 判定 |
+|---|---|
+| base 上**不存在**（新增文件） | 必须格式干净 |
+| base 上存在，且 base 版本**干净** | 必须保持干净 |
+| base 上存在，且 base 版本**本来就脏** | 记为 **pre-existing debt**，**不阻塞**，但会在输出与 JSON 报告里列出文件名 |
+
+- 具体做法：对每个改动文件，先 `git show <base>:<path>` 取出 base 版本，写到保持目录结构与**原文件名**
+  的临时文件（否则 Prettier 会套错 parser／配置），用同一份 `.prettierrc.json` 各跑一次 `--check`，
+  再比较两侧结果。脚本注释里记录了三个必须注意的坑（临时文件丢配置、`package.json` 必须同名、
+  base 版本要用同样的方式判定）。
+- 退出码**只由新引入的违规决定**。历史债即使全部都是，也只报告、不失败。
+- 历史债会以 `format-changed.json`（`CI_REPORT_PATH`）形式留给 CI，并在 sticky 评论里提示。
+- 只想严格判定（例如清理完历史债之后）：`--no-base-compare` 即回到「改动过的文件必须全部干净」。
+- 本地同样一条命令：`npm run format:check:changed`（或 `npm run gates` 里的 `format:changed`）。
+
+想真正还这笔债：单独开一个 `chore/format-repo` PR 跑 `npm run format`，在 `.git-blame-ignore-revs` 里
+登记该 commit，然后把 `ci.yml` 的 prettier 步骤换成全量 `npm run format:check`（或保留本脚本并加
+`--no-base-compare`）。
 
 ## preview e2e（`preview-e2e.yml`）
 
@@ -161,9 +183,12 @@ branch gate 拦下**。这是有意的：依赖升级应当由维护者审阅后
 
 | 现象                                                          | 原因 / 处理                                                                                   |
 | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| 子支线 PR 上没有任何 CI                                       | 按设计如此（base 不是长期分支）。跑 `npm run gates`                                           |
+| 子支线 PR 上没有任何 CI                                       | 按设计如此（base 不是长期分支，四个 workflow 的 `branches` 都不含 `feat/**`）。跑 `npm run gates` |
 | `format:check:changed` 报 `could not resolve a base revision` | 浅克隆或缺 `origin/*`。`fetch-depth: 0` 已配好；本地执行 `git fetch origin` 或 `--base <ref>` |
+| `format:check:changed` 打印 `pre-existing formatting debt`     | 正常：这些文件在 base 上就不过 prettier，**不阻塞**。不要在本 PR 里顺手格式化它们             |
+| `format:check:changed` 报 `newly-introduced formatting violations` | 本次改动把某个原本干净的文件写脏了（或新增了脏文件）→ `npx prettier --write <列出的文件>` |
 | preview e2e 报 `Executable doesn't exist`                     | 本地缺版本匹配的 Chromium：`npm run e2e:install`                                              |
 | preview e2e 报 `web build not found`                          | 先 `npm run build:web`（`npm run e2e` 已经串了这一步）                                        |
 | Lighthouse 报 `Chrome` 找不到                                 | CI 用 `ubuntu-latest`（自带 Chrome）；本地用 `LH_CHROME_PATH` / `CHROME_PATH` 指定            |
+| Lighthouse 某路由显示「report 已写出但退出码非 0」            | chrome-launcher 清理临时 profile 的竞态（Windows 常见）。报告仍然有效，评论里会标注降级       |
 | 想重跑 Lighthouse / e2e                                       | 它们只在 `opened` 触发 → 开新 PR，或本地 `npm run lighthouse` / `npm run e2e`                 |
