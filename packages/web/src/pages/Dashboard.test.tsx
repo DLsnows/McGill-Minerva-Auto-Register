@@ -319,21 +319,62 @@ describe('Dashboard', () => {
   // Review finding (5th round): the "already running" notice was written once and
   // never retired, so once the cycle finished the card showed it next to a fresh
   // "last poll just now" — two lines contradicting each other.
+  //
+  // The signal is `nextPollAt`, the cycle boundary, not `lastPolledAt`: the
+  // scheduler writes the latter mid-cycle (after the query, before it acts), so a
+  // click landing in that window would capture an already-advanced value and the
+  // notice could never be retired (6th-round review finding). This test models
+  // exactly that: the refreshed target keeps the *same* `lastPolledAt` the drop
+  // captured and only moves `nextPollAt`.
   it('retires the "already running" notice once the cycle it described has finished', async () => {
-    mockApi(watching, 'authenticated');
+    const scheduled = { ...watching[0], lastPolledAt: Date.now() - 5_000, nextPollAt: Date.now() + 60_000 };
+    mockApi([scheduled], 'authenticated');
     vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'in progress' });
-    const getTargets = vi.spyOn(api, 'getTargets').mockResolvedValue(watching);
+    const getTargets = vi.spyOn(api, 'getTargets').mockResolvedValue([scheduled]);
     renderDashboard();
     await waitFor(() => screen.getByRole('button', { name: /register now/i }));
     await userEvent.click(screen.getByRole('button', { name: /register now/i }));
     await waitFor(() => expect(screen.getByTestId('run-notice')).toHaveTextContent(/already running/i));
 
     // The cycle that the notice described finishes: its log line arrives on the
-    // live stream, the Dashboard refetches targets, and the refreshed target
-    // reports a poll that happened after the drop — so the drop is history.
-    getTargets.mockResolvedValue([{ ...watching[0], lastPolledAt: Date.now() }]);
+    // live stream, the Dashboard refetches targets, and the refreshed target has
+    // been rescheduled — so the drop is history. `lastPolledAt` is deliberately
+    // unchanged, because the cycle had already polled when the drop was reported.
+    getTargets.mockResolvedValue([{ ...scheduled, nextPollAt: Date.now() + 120_000 }]);
     streamEvent('cycle finished');
     await waitFor(() => expect(screen.queryByTestId('run-notice')).toBeNull());
+  });
+
+  // Review finding (6th round): the in-flight seed must not read as an *active*
+  // cooldown on a card whose `now` is stale. With a near-past seed (`Date.now() -
+  // 1000`) and a `now` ~25s behind, `cooldownRemainingMs` returned ~24s, so a
+  // dropped run showed a frozen "Try again in Ns" instead of its verdict and left
+  // the button disabled even though the server would accept a retry.
+  it('does not fake a cooldown on a card whose tick is stale when a run is dropped', async () => {
+    vi.useFakeTimers();
+    try {
+      mockApi(watching, 'authenticated');
+      vi.spyOn(api, 'runTarget').mockResolvedValue({ started: false, reason: 'in progress' });
+      renderDashboard();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      // Let the card's idle heartbeat go stale before the click.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(25_000);
+      });
+      fireEvent.click(screen.getByRole('button', { name: /register now/i }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const notice = screen.getByTestId('run-notice');
+      expect(notice).toHaveTextContent(/already running/i);
+      expect(notice).not.toHaveTextContent(/Try again in \d+s/i);
+      // The server would accept a retry, so the button must be usable again.
+      expect(screen.getByRole('button', { name: /register now/i })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Review finding: with a fixed error message ("Try again in 45s") the countdown

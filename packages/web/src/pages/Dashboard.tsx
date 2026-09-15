@@ -16,8 +16,8 @@ export default function Dashboard() {
    * is deliberately not stored here — it is derived from `coolingUntil` /
    * `target.lastForcedRunAt` in CourseCard so it counts down and clears. */
   const [runNotice, setRunNotice] = useState<Record<string, string>>({});
-  /** `lastPolledAt` at the moment each notice was written, used to retire a
-   * dropped-run notice once the cycle it was about has actually finished. */
+  /** `nextPollAt` at the moment each notice was written — the cycle boundary, used
+   * to retire a dropped-run notice once the cycle it was about has finished. */
   const [noticeAtPoll, setNoticeAtPoll] = useState<Record<string, number | undefined>>({});
   const [coolingUntil, setCoolingUntil] = useState<Record<string, number>>({});
   const [schedErr, setSchedErr] = useState<string>();
@@ -50,9 +50,13 @@ export default function Dashboard() {
   }, [lastEventId]);
 
   // A dropped "in progress" notice describes a cycle that was running *at that
-  // moment*, so it must not outlive it: once a refetch shows the target has been
-  // polled since the drop, the cycle finished and the notice is stale — leaving
-  // it would contradict the card's own "last poll just now" line (review finding).
+  // moment*, so it must not outlive it. The signal is `nextPollAt`, not
+  // `lastPolledAt`: the scheduler writes `lastPolledAt` mid-cycle (right after the
+  // query, before it acts), so a click landing in the post-query phase would
+  // capture an already-advanced value and the notice could never be retired.
+  // `nextPollAt` is only rewritten at the very end of a cycle — every exit path
+  // calls `scheduleNext()` / `scheduleAfterReset()` — so a change there means the
+  // cycle the notice described is over.
   useEffect(() => {
     const list = targets.data;
     if (!list) return;
@@ -60,11 +64,11 @@ export default function Dashboard() {
       const next: Record<string, string> = {};
       let changed = false;
       for (const [id, notice] of Object.entries(s)) {
-        // `undefined` means the target had never been polled when the drop was
-        // reported, so *any* recorded poll is newer than the notice.
+        // `undefined` means the target had no scheduled cycle when the drop was
+        // reported, so any value now recorded is newer than the notice.
         const atDrop = noticeAtPoll[id];
-        const polledAt = list.find((t) => t.id === id)?.lastPolledAt;
-        const stale = polledAt !== undefined && (atDrop === undefined || polledAt > atDrop);
+        const nextPollAt = list.find((t) => t.id === id)?.nextPollAt;
+        const stale = nextPollAt !== undefined && (atDrop === undefined || nextPollAt !== atDrop);
         if (stale) changed = true;
         else next[id] = notice;
       }
@@ -141,11 +145,11 @@ export default function Dashboard() {
         });
       const drop = (notice: string) => {
         setRunNotice((s) => ({ ...s, [id]: notice }));
-        // Remember how far this target had been polled when we wrote the notice,
-        // so the effect above can retire it once a later cycle lands.
+        // Remember this target's `nextPollAt` when the notice was written, so the
+        // effect above can retire it once the cycle it described ends.
         setNoticeAtPoll((s) => ({
           ...s,
-          [id]: targetsRef.current.data?.find((t) => t.id === id)?.lastPolledAt,
+          [id]: targetsRef.current.data?.find((t) => t.id === id)?.nextPollAt,
         }));
       };
       // `coolingUntil` is an end instant on *this* clock, so it is built from a
@@ -156,12 +160,13 @@ export default function Dashboard() {
       // `target.lastForcedRunAt` only covers a page that never saw a response.
       const markCooling = (retryAfterMs: number) =>
         setCoolingUntil((s) => ({ ...s, [id]: Date.now() + retryAfterMs }));
-      // Seed a local estimate *before* awaiting: once one exists the card stops
-      // consulting the stored `lastForcedRunAt` (which may be stale or skewed), so
-      // the in-flight render cannot show a window that has already ended. The seed
-      // sits clearly in the past — `Date.now()` itself would round up to a bogus
-      // "1s left" on the next tick.
-      markCooling(-1_000);
+      // Seed a definitely-expired local estimate before awaiting, so the card stops
+      // consulting the stored `lastForcedRunAt` (which may be stale or skewed) for
+      // the duration of the request. `-Infinity` rather than a value relative to
+      // `Date.now()`: the card compares against its own `now`, which can be seconds
+      // behind, and a near-past seed would read as an *active* cooldown there —
+      // freezing a bogus countdown over the real verdict and disabling the button.
+      markCooling(-Infinity);
       setRunning((s) => new Set(s).add(id));
       drop(tr('run.starting')); // in-flight hint; replaced by the verdict below
       try {

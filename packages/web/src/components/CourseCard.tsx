@@ -44,13 +44,20 @@ export function CourseCard({
   loggedIn = true,
 }: Props) {
   const { t } = useTranslation();
-  // Tick fast only while a cooldown is counting down: every tick re-renders this
-  // card, so a permanent per-second interval on every idle card is wasted work
-  // (review finding). The interval relaxes back to 30s at the same render that
-  // drops the notice.
+  // Tick fast while something is actually moving — a run request in flight or a
+  // cooldown counting down — and relax to 30s otherwise: every tick re-renders
+  // this card, so a permanent per-second interval on every idle card is wasted
+  // work (review finding).
+  //
+  // `running` is part of that condition on purpose. `now` is otherwise up to 30s
+  // stale, and the Dashboard sets `coolingUntil` from `Date.now()` the instant the
+  // POST settles; without the in-flight fast tick that fresh value would be
+  // compared against the stale `now`, showing an inflated countdown for a frame
+  // ("Try again in 85s") — and the faster interval would not even engage, because
+  // the stale `now` still reads the server fallback as expired.
   const coolingByResponse = Date.now() < (coolingUntil ?? 0);
   const coolingByTarget = Date.now() < (target.lastForcedRunAt ?? 0) + MANUAL_RUN_COOLDOWN_MS;
-  const now = useNow(coolingByResponse || coolingByTarget ? 1_000 : 30_000);
+  const now = useNow(running || coolingByResponse || coolingByTarget ? 1_000 : 30_000);
   const title = target.label ?? `${target.subject} ${target.courseNumber}`;
   const canRun = target.status === 'watching';
   const canPause = PAUSABLE.includes(target.status);
