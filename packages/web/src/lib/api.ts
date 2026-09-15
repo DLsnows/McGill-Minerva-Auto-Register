@@ -1,4 +1,4 @@
-import type { BudgetSnapshot, LogEvent, Settings, WatchTarget } from '@autoregister/shared';
+import type { LogEvent, Settings, WatchStatus, WatchTarget } from '@autoregister/shared';
 
 export type { BudgetCount, BudgetSnapshot } from '@autoregister/shared';
 export type SessionStatus = 'unknown' | 'authenticated' | 'logged-out' | 'logging-in';
@@ -7,6 +7,17 @@ export interface SessionInfo {
 }
 export interface SchedulerState {
   running: boolean;
+}
+/** Response of `POST /api/scheduler/start-all`: what the master "Start all"
+ * switch actually did, so the UI can report it instead of staying silent. */
+export interface StartAllResult {
+  running: boolean;
+  /** Targets revived out of the 'error' terminal state. */
+  recovered: number;
+  /** Paused targets put back under watch. */
+  resumed: number;
+  /** Terminal non-error targets left alone (registered / waitlisted / stopped). */
+  skipped: number;
 }
 
 type NewTarget = Pick<WatchTarget, 'term' | 'subject' | 'courseNumber' | 'targetCrn' | 'mode'> &
@@ -44,6 +55,8 @@ export const api = {
     }),
   removeTarget: (id: string) => req<{ ok: true }>(`/api/targets/${id}`, { method: 'DELETE' }),
   runTarget: (id: string) => post<{ started: boolean }>(`/api/targets/${id}/run`),
+  resumeTarget: (id: string) =>
+    post<{ running: boolean; status: WatchStatus }>(`/api/targets/${id}/resume`),
 
   getSettings: () => req<Settings>('/api/settings'),
   putSettings: (patch: Partial<Settings>) =>
@@ -59,7 +72,7 @@ export const api = {
   getScheduler: () => req<SchedulerState>('/api/scheduler'),
   startScheduler: () => post<{ running: boolean }>('/api/scheduler/start'),
   stopScheduler: () => post<{ running: boolean }>('/api/scheduler/stop'),
-  startAll: () => post<{ running: boolean; resumed: number }>('/api/scheduler/start-all'),
+  startAll: () => post<StartAllResult>('/api/scheduler/start-all'),
   stopAll: () => post<{ running: boolean; paused: number }>('/api/scheduler/stop-all'),
 
   getEvents: (limit = 200) => req<LogEvent[]>(`/api/events?limit=${limit}`),

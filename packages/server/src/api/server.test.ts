@@ -404,13 +404,15 @@ describe('API', () => {
     await app2.close();
   });
 
-  it('POST /api/scheduler/start-all resumes paused targets (not error) and starts the engine', async () => {
+  it('POST /api/scheduler/start-all resumes paused AND revives error targets, reports the counts', async () => {
     const store = new Store(dir);
     const start = vi.fn();
     const a = store.addTarget({ ...validTarget, targetCrn: '1111' });
     const b = store.addTarget({ ...validTarget, targetCrn: '2222' });
+    const c = store.addTarget({ ...validTarget, targetCrn: '3333' });
     store.updateTarget(a.id, { status: 'paused' });
     store.updateTarget(b.id, { status: 'error' });
+    store.updateTarget(c.id, { status: 'registered' });
     const app2 = buildServer({
       store,
       budget: new Budget(store),
@@ -418,11 +420,114 @@ describe('API', () => {
       scheduler: { start, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
     });
     const r = await app2.inject({ method: 'POST', url: '/api/scheduler/start-all' });
-    expect(r.json()).toMatchObject({ running: true, resumed: 1 });
+    // 'error' used to be skipped, leaving the course permanently stopped with no
+    // way out except deleting it.
+    expect(r.json()).toMatchObject({ running: true, resumed: 1, recovered: 1, skipped: 1 });
     expect(store.getTarget(a.id)!.status).toBe('watching'); // paused → watching
-    expect(store.getTarget(b.id)!.status).toBe('error'); // error left untouched
+    expect(store.getTarget(b.id)!.status).toBe('watching'); // error → watching (revived)
+    expect(store.getTarget(c.id)!.status).toBe('registered'); // completed → untouched
+    // Reviving also arms an immediate first poll, otherwise the revived course
+    // would sit idle for a whole tick despite the engine running.
+    expect(store.getTarget(b.id)!.nextPollAt).toBeGreaterThan(0);
     expect(start).toHaveBeenCalled();
     await app2.close();
+  });
+
+  it('POST /api/targets gives a brand-new (watching) target an immediate first poll', async () => {
+    const store = new Store(dir);
+    const tickSoon = vi.fn();
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false, tickSoon },
+    });
+    const before = Date.now();
+    const res = await app2.inject({ method: 'POST', url: '/api/targets', payload: validTarget });
+    expect(res.statusCode).toBe(200);
+    const created = store.listTargets()[0];
+    expect(created.status).toBe('watching');
+    // Not undefined (never polled) and not the 30-minute cadence — seconds away.
+    expect(created.nextPollAt).toBeGreaterThanOrEqual(before);
+    expect(created.nextPollAt!).toBeLessThan(before + 5000);
+    expect(res.json().nextPollAt).toBe(created.nextPollAt);
+    await app2.close();
+  });
+
+  it('PATCH paused → watching sets a near-future nextPollAt, clears the failure streak and ticks', async () => {
+    const store = new Store(dir);
+    const clearFailures = vi.fn();
+    const tickSoon = vi.fn();
+    const t = store.addTarget({ ...validTarget, targetCrn: '4444' });
+    store.updateTarget(t.id, { status: 'paused', nextPollAt: undefined });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: {
+        start: () => undefined, stop: () => undefined, runTarget: () => undefined,
+        isRunning: () => false, clearFailures, tickSoon,
+      },
+    });
+    const before = Date.now();
+    const r = await app2.inject({ method: 'PATCH', url: `/api/targets/${t.id}`, payload: { status: 'watching' } });
+    expect(r.statusCode).toBe(200);
+    const next = store.getTarget(t.id)!.nextPollAt;
+    expect(next).toBeDefined();
+    expect(next!).toBeGreaterThanOrEqual(before);
+    // Near future: seconds, not the 30-minute poll interval.
+    expect(next!).toBeLessThan(before + 5000);
+    expect(r.json().nextPollAt).toBe(next);
+    expect(clearFailures).toHaveBeenCalledWith(t.id);
+    expect(tickSoon).toHaveBeenCalled();
+    await app2.close();
+  });
+
+  it('PATCH to a non-watching status leaves nextPollAt alone', async () => {
+    const store = new Store(dir);
+    const t = store.addTarget({ ...validTarget, targetCrn: '5555' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: { start: () => undefined, stop: () => undefined, runTarget: () => undefined, isRunning: () => false },
+    });
+    await app2.inject({ method: 'PATCH', url: `/api/targets/${t.id}`, payload: { status: 'paused' } });
+    expect(store.getTarget(t.id)!.nextPollAt).toBeUndefined();
+    await app2.close();
+  });
+
+  it('POST /api/targets/:id/resume revives an error target, clears its streak and starts the engine', async () => {
+    const store = new Store(dir);
+    const start = vi.fn();
+    const clearFailures = vi.fn();
+    const t = store.addTarget({ ...validTarget, targetCrn: '6666' });
+    store.updateTarget(t.id, { status: 'error' });
+    const app2 = buildServer({
+      store,
+      budget: new Budget(store),
+      session: { launch: async () => undefined, ensureLoggedIn: async () => undefined, isLoggedIn: async () => true },
+      scheduler: {
+        start, stop: () => undefined, runTarget: () => undefined,
+        isRunning: () => false, clearFailures,
+      },
+    });
+    const before = Date.now();
+    const r = await app2.inject({ method: 'POST', url: `/api/targets/${t.id}/resume` });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toMatchObject({ running: true, status: 'watching' });
+    const revived = store.getTarget(t.id)!;
+    expect(revived.status).toBe('watching');
+    expect(revived.nextPollAt!).toBeGreaterThanOrEqual(before);
+    expect(revived.nextPollAt!).toBeLessThan(before + 5000);
+    expect(clearFailures).toHaveBeenCalledWith(t.id);
+    expect(start).toHaveBeenCalled();
+    await app2.close();
+  });
+
+  it('POST /api/targets/:id/resume returns 404 for a missing target', async () => {
+    const r = await app.inject({ method: 'POST', url: '/api/targets/nope/resume' });
+    expect(r.statusCode).toBe(404);
   });
 
   it('POST /api/scheduler/stop-all pauses watching targets and stops the engine', async () => {

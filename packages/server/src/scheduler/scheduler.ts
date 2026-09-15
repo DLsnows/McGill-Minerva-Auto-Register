@@ -214,6 +214,24 @@ export class Scheduler {
     this.failureStreak.delete(targetId);
   }
 
+  /** Drop a target's accumulated consecutive-failure streak.
+   *
+   * Called when a target (re-)enters `watching`, so the three-strikes breaker
+   * starts from zero again. Without this, an 'error' target that the user
+   * explicitly revived would trip the breaker on its very next failure and snap
+   * straight back to 'error' — i.e. the revived state could never actually be
+   * recovered from the UI. Only the per-target counter is touched; FAILURE_LIMIT
+   * and its "N consecutive failures" semantics are unchanged. */
+  clearFailures(targetId: string): void {
+    this.failureStreak.delete(targetId);
+  }
+
+  /** Forget every accumulated failure streak — used by "Start all" so a revived
+   * set of targets is not immediately re-tripped by stale counters. */
+  clearAllFailures(): void {
+    this.failureStreak.clear();
+  }
+
   /** Trigger an immediate forced run for one target (one-click "Register now").
    * Fire-and-forget; results surface via the event stream like a normal tick. */
   runTarget(id: string): void {
@@ -305,16 +323,34 @@ export class Scheduler {
     return midnight - now;
   }
 
-  /** Thin timer loop: every `tickMs`, run cycles for due watching targets. */
+  /** Thin timer loop: every `tickMs`, run cycles for due watching targets.
+   *
+   * Also fires one immediate (unawaited) tick, so pressing "Start" polls the due
+   * targets now instead of after a whole `tickMs` of dead air — the user saw
+   * "nothing happened" for the first 30s and assumed the start had failed.
+   * `ticking` already guards overlap, so a still-running immediate tick simply
+   * makes the first interval tick a no-op. */
   start(tickMs = 30_000): void {
     if (this.timer) return;
-    this.timer = setInterval(() => {
-      if (this.ticking) return; // skip if the previous tick is still running
-      this.ticking = true;
-      void this.tick().finally(() => {
-        this.ticking = false;
-      });
-    }, tickMs);
+    this.timer = setInterval(() => this.runTick(), tickMs);
+    this.runTick();
+  }
+
+  /** Kick off a tick without waiting for it (shared by `start` and `tickSoon`). */
+  private runTick(): void {
+    if (this.ticking) return; // skip if a tick is already in flight
+    this.ticking = true;
+    void this.tick().finally(() => {
+      this.ticking = false;
+    });
+  }
+
+  /** Trigger a tick right away if the engine is running. Called after a target
+   * (re-)enters `watching`, so "Start" produces visible console activity within
+   * a second instead of only on the next 30s tick. A no-op while stopped —
+   * nothing may poll before the user starts it. */
+  tickSoon(): void {
+    if (this.timer) this.runTick();
   }
 
   stop(): void {

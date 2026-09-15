@@ -29,7 +29,26 @@ export interface ApiScheduler {
   /** Re-apply the poll cadence to already-scheduled targets (after a settings
    * change). Optional so lightweight test doubles can omit it. */
   rescheduleWatching?(): void;
+  /** Run one tick immediately if the engine is running (optional: test doubles). */
+  tickSoon?(): void;
+  /** Drop one target's consecutive-failure streak when it enters `watching`. */
+  clearFailures?(id: string): void;
+  /** Drop every target's failure streak ("Start all" revives error targets). */
+  clearAllFailures?(): void;
 }
+
+/** Targets entering `watching` get a first poll this far in the future. Kept
+ * well under the scheduler's 30s tick so "Start" produces console output within
+ * ~a second, while the small spread stops every restored course from hitting the
+ * Minerva server in the same instant. */
+const FIRST_POLL_JITTER_MS = 3000;
+
+/** First-poll timestamp for a target that just entered `watching`: "now", spread
+ * over a small jitter window. See FIRST_POLL_JITTER_MS. */
+function firstPollAt(now: number): number {
+  return now + Math.round(Math.random() * FIRST_POLL_JITTER_MS);
+}
+
 export interface ApiDeps {
   store: Store;
   budget: Budget;
@@ -95,13 +114,27 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
   app.post('/api/targets', (req, reply) => {
     const parsed = targetSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    return deps.store.addTarget(parsed.data);
+    // New targets default to 'watching' (store.addTarget). Give them a first
+    // poll time right away: without it `nextPollAt` stays undefined and the
+    // target is only picked up by the next tick, and there is no `watching`
+    // transition afterwards that would set it.
+    return deps.store.addTarget({ ...parsed.data, nextPollAt: firstPollAt(Date.now()) });
   });
   app.patch('/api/targets/:id', (req, reply) => {
     const parsed = targetPatchSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    const updated = deps.store.updateTarget((req.params as { id: string }).id, parsed.data);
+    const { id } = req.params as { id: string };
+    const updated = deps.store.updateTarget(id, parsed.data);
     if (!updated) return reply.code(404).send({ error: 'not found' });
+    // A target (re-)entering 'watching' (resume from pause, revive from error,
+    // un-terminal from stopped) must poll immediately rather than wait a full
+    // tick, and must not carry an old failure streak into the new run.
+    if (parsed.data.status === 'watching') {
+      const fresh = deps.store.updateTarget(id, { nextPollAt: firstPollAt(Date.now()) });
+      deps.scheduler.clearFailures?.(id);
+      deps.scheduler.tickSoon?.();
+      return fresh;
+    }
     return updated;
   });
   app.delete('/api/targets/:id', (req) => {
@@ -202,13 +235,40 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     deps.scheduler.stop();
     return { running: false };
   });
-  // "Start all": resume every PAUSED target (error / registered / waitlisted /
-  // stopped are intentionally left untouched), then start the engine.
+  // "Start all": revive every recoverable target — 'paused' (deliberately
+  // stopped) and 'error' (parked by the three-strikes breaker) — then start the
+  // engine. 'error' used to be a dead end the UI could not leave: it is neither
+  // pausable nor resumable from the course card, and start-all collected only
+  // 'paused', so the only way out was deleting and re-creating the course.
+  // The completed states (registered / waitlisted / stopped) stay untouched.
+  //
+  // Every revived target also gets an immediate first poll time: that is the fix
+  // for "the first Start does not actually start polling" — previously the flip
+  // to 'watching' carried no `nextPollAt`, so the first real poll waited a whole
+  // 30s tick and looked like a no-op.
   app.post('/api/scheduler/start-all', () => {
-    const resumed = deps.store.listTargets().filter((t) => t.status === 'paused');
-    for (const t of resumed) deps.store.updateTarget(t.id, { status: 'watching' });
+    const all = deps.store.listTargets();
+    const resumable = all.filter((t) => t.status === 'paused' || t.status === 'error');
+    const now = Date.now();
+    let recovered = 0;
+    for (const t of resumable) {
+      if (t.status === 'error') recovered += 1;
+      deps.store.updateTarget(t.id, { status: 'watching', nextPollAt: firstPollAt(now) });
+    }
+    // A revived target starts with a clean failure streak, otherwise its very
+    // next failure would immediately re-trip the breaker.
+    deps.scheduler.clearAllFailures?.();
     deps.scheduler.start();
-    return { running: true, resumed: resumed.length };
+    const isDone = (s: string) => s === 'registered' || s === 'waitlisted' || s === 'stopped';
+    return {
+      running: true,
+      /** Targets revived out of the 'error' terminal state. */
+      recovered,
+      /** Paused targets put back under watch. */
+      resumed: resumable.length - recovered,
+      /** Terminal non-error targets left untouched. */
+      skipped: all.filter((t) => isDone(t.status)).length,
+    };
   });
   // "Stop all": pause every actively-watching target, then stop the engine.
   app.post('/api/scheduler/stop-all', () => {
@@ -216,6 +276,18 @@ export function buildServer(deps: ApiDeps, clients: Set<WebSocket> = new Set()):
     for (const t of paused) deps.store.updateTarget(t.id, { status: 'paused' });
     deps.scheduler.stop();
     return { running: false, paused: paused.length };
+  });
+  // "Resume watching" for one target: the per-course escape hatch out of 'error'
+  // (a hard target that tripped the breaker). PATCH /api/targets/:id with status
+  // 'watching' does the same, but this route gives the course card one
+  // unambiguous action and starts the engine when it is not already running.
+  app.post('/api/targets/:id/resume', (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!deps.store.getTarget(id)) return reply.code(404).send({ error: 'not found' });
+    deps.store.updateTarget(id, { status: 'watching', nextPollAt: firstPollAt(Date.now()) });
+    deps.scheduler.clearFailures?.(id);
+    deps.scheduler.start();
+    return { running: true, status: 'watching' as const };
   });
 
   // --- events + budget ---
