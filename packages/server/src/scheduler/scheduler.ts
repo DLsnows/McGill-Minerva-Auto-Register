@@ -57,6 +57,9 @@ export class Scheduler {
   private readonly random: () => number;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /** A tick was requested while one was already in flight — re-run it once that one
+   * settles, so a request is never silently dropped (see `runTick`). */
+  private tickQueued = false;
   /** Targets with a runOnce currently executing — prevents the tick loop and a
    * manual `runTarget` (or two manual runs) from double-acting the same course. */
   private readonly inFlight = new Set<string>();
@@ -214,6 +217,18 @@ export class Scheduler {
     this.failureStreak.delete(targetId);
   }
 
+  /** Drop a target's accumulated consecutive-failure streak.
+   *
+   * Called when a target (re-)enters `watching`, so the three-strikes breaker
+   * starts from zero again. Without this, an 'error' target that the user
+   * explicitly revived would trip the breaker on its very next failure and snap
+   * straight back to 'error' — i.e. the revived state could never actually be
+   * recovered from the UI. Only the per-target counter is touched; FAILURE_LIMIT
+   * and its "N consecutive failures" semantics are unchanged. */
+  clearFailures(targetId: string): void {
+    this.failureStreak.delete(targetId);
+  }
+
   /** Trigger an immediate forced run for one target (one-click "Register now").
    * Fire-and-forget; results surface via the event stream like a normal tick. */
   runTarget(id: string): void {
@@ -305,21 +320,62 @@ export class Scheduler {
     return midnight - now;
   }
 
-  /** Thin timer loop: every `tickMs`, run cycles for due watching targets. */
+  /** Thin timer loop: every `tickMs`, run cycles for due watching targets.
+   *
+   * Also fires one immediate (unawaited) tick, so pressing "Start" polls the due
+   * targets now instead of after a whole `tickMs` of dead air — the user saw
+   * "nothing happened" for the first 30s and assumed the start had failed.
+   * `ticking` already guards overlap, so a still-running immediate tick simply
+   * makes the first interval tick a no-op. */
   start(tickMs = 30_000): void {
     if (this.timer) return;
-    this.timer = setInterval(() => {
-      if (this.ticking) return; // skip if the previous tick is still running
-      this.ticking = true;
-      void this.tick().finally(() => {
-        this.ticking = false;
-      });
-    }, tickMs);
+    this.timer = setInterval(() => this.runTick(), tickMs);
+    this.runTick();
+  }
+
+  /** Kick off a tick without waiting for it (shared by `start` and `tickSoon`).
+   *
+   * The in-flight guard used to *drop* a request that arrived mid-tick. That silently
+   * defeated the "revive ⇒ poll now" invariant: a target revived while a tick was
+   * already running (clicking Resume on several error cards in a row, or a route
+   * landing exactly on a 30s interval tick) got no immediate poll at all — `start()`
+   * is a no-op when the engine is up — so it fell back to waiting a full interval.
+   * The request is now *queued* and re-run once the current tick settles. */
+  private runTick(): void {
+    if (this.ticking) {
+      this.tickQueued = true;
+      return;
+    }
+    this.ticking = true;
+    void this.tick().finally(() => {
+      this.ticking = false;
+      if (this.tickQueued) {
+        this.tickQueued = false;
+        // Re-check the engine before honouring the queued request. Without this a tick
+        // queued a moment before `stop()` still ran afterwards and polled every target
+        // left in `watching` — "Stop" that does not stop. (`stop-all` hides it because it
+        // pauses every target first, but a bare `POST /api/scheduler/stop` leaves them
+        // watching, so the effect was reachable.)
+        if (this.timer) this.runTick();
+      }
+    });
+  }
+
+  /** Trigger a tick right away if the engine is running. Called after a target
+   * (re-)enters `watching`, so "Start" produces visible console activity within
+   * a second instead of only on the next 30s tick. A no-op while stopped —
+   * nothing may poll before the user starts it. */
+  tickSoon(): void {
+    if (this.timer) this.runTick();
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    // Drop any request that was queued while a tick was in flight; the guard in
+    // `runTick`'s finally block checks `this.timer`, and this makes the intent explicit
+    // so a future change to that guard cannot resurrect the work.
+    this.tickQueued = false;
   }
 
   isRunning(): boolean {

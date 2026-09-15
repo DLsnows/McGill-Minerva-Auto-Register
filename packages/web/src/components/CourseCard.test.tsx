@@ -68,14 +68,50 @@ describe('CourseCard', () => {
     expect(screen.getByRole('button', { name: /pause/i })).toBeEnabled();
   });
 
-  it('does NOT offer Pause/Resume for terminal states (error, registered)', () => {
+  it('offers no Pause/Resume for completed states (registered), but a recovery action for error', () => {
     const { rerender } = render(
       <CourseCard target={{ ...target, status: 'error' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />,
     );
-    expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^▶ resume$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
+    // 'error' is recoverable — the breaker parked it, the user can revive it.
+    expect(screen.getByRole('button', { name: /resume watching/i })).toBeInTheDocument();
+
     rerender(<CourseCard target={{ ...target, status: 'registered' }} onToggleMode={noop} onRun={noop} onTogglePolling={noop} />);
-    expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^▶ resume$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /resume watching/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
+  });
+
+  // Regression: the failure breaker sets status 'error' and the card used to
+  // render no way out of it at all (no pause, no resume, no immediate run) —
+  // only deleting and re-creating the course worked.
+  it('revives an error course through onResume', async () => {
+    const onResume = vi.fn();
+    render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        onResume={onResume}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /resume watching/i }));
+    expect(onResume).toHaveBeenCalledWith('t1');
+  });
+
+  it('blocks the error recovery action when logged out', () => {
+    render(
+      <CourseCard
+        target={{ ...target, status: 'error' }}
+        onToggleMode={noop}
+        onRun={noop}
+        onTogglePolling={noop}
+        onResume={noop}
+        loggedIn={false}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /resume watching/i })).toBeDisabled();
   });
 });
