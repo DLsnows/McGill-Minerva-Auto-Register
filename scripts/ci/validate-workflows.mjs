@@ -75,6 +75,7 @@ function validateWorkflow(file) {
   validateForkGuard(label, jobs);
 
   console.log(`  ✓ ${label} (jobs: ${Object.keys(jobs).join(', ')})`);
+  return doc;
 }
 
 /**
@@ -152,15 +153,41 @@ function validateDependabot() {
   console.log(
     `  ✓ ${label} (ecosystems: ${(doc?.updates ?? []).map((u) => u['package-ecosystem']).join(', ')})`,
   );
+  return doc;
+}
+
+/**
+ * `dependabot.yml` and `branch-gate.yml` have to agree: if Dependabot opens its PRs against
+ * `dev` (target-branch), the gate must let `dependabot/*` into `dev`. Otherwise every
+ * dependency PR is born red — gate failure plus a full CI run — which is the same
+ * "unmanaged dependency PR" problem this repository just set out to fix, only louder.
+ *
+ * The behavioural matrix lives in `branch-gate.test.mjs`; this is the static half, so a
+ * cross-file inconsistency is caught even where bash is unavailable.
+ */
+function validateDependabotGateAgreement(dependabotDoc, branchGateDoc) {
+  const label = '.github/dependabot.yml + .github/workflows/branch-gate.yml';
+  const target = dependabotDoc?.updates?.[0]?.['target-branch'];
+  if (target !== 'dev') return; // nothing to reconcile
+
+  const steps = branchGateDoc?.jobs?.['branch-gate']?.steps ?? [];
+  const gateRun = steps.map((s) => s?.run ?? '').join('\n');
+  check(
+    gateRun.includes('dependabot/*'),
+    label,
+    '`dependabot.yml` sets `target-branch: dev`, so branch-gate.yml must allow `dependabot/*` into `dev` (otherwise every dependency PR is guaranteed to fail the gate)',
+  );
 }
 
 console.log(`[validate-workflows] parsing ${WORKFLOW_DIR}`);
+const docs = new Map();
 for (const file of readdirSync(WORKFLOW_DIR)
   .filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
   .sort()) {
-  validateWorkflow(file);
+  docs.set(file, validateWorkflow(file));
 }
-validateDependabot();
+const dependabotDoc = validateDependabot();
+validateDependabotGateAgreement(dependabotDoc, docs.get('branch-gate.yml'));
 
 if (problems.length) {
   console.error('');

@@ -104,10 +104,29 @@ async function waitFor(fn, label, timeoutMs = 10_000) {
 }
 
 // ── console-error watchdog ─────────────────────────────────────────────────────────────
-/** Failures that are environmental, not app bugs: the headless runner has no network
- * access to Google Fonts, so the font stylesheet fetch reports "Failed to load resource".
- * The app itself must never log an error or throw. */
-const IGNORED_CONSOLE = [/Failed to load resource/i, /net::ERR_/i, /favicon/i];
+/**
+ * Console errors are a *supplementary* sentinel, not the main one — see the endpoint
+ * coverage assertions below, which is what actually proves the app talked to the API
+ * successfully.
+ *
+ * The ignore list is deliberately narrow. An earlier version dropped every
+ * "Failed to load resource" and every `net::ERR_`, which also swallowed the exact symptom
+ * of a broken backend (`/api/targets` returning 500 renders as "Failed to load resource:
+ * the server responded with a status of 500") — the app could be completely broken and the
+ * "no console errors" assertion would still pass. Only resources that genuinely cannot load
+ * in this environment are dropped now:
+ *   - the Google Fonts stylesheet (index.html loads it; the runner has no external network);
+ *   - the favicon (the fixture build ships none);
+ *   - `net::ERR_*` connection-level failures for those same external hosts.
+ * API failures are never ignored: `/api/*` responses are asserted directly.
+ */
+const IGNORED_CONSOLE = [
+  /fonts\.googleapis\.com/i,
+  /fonts\.gstatic\.com/i,
+  /favicon/i,
+  // Connection-level failures for the external font origin (DNS/offline runner).
+  /net::ERR_(NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|CONNECTION_(REFUSED|RESET|CLOSED)|TIMED_OUT|ADDRESS_UNREACHABLE|CERT_|SSL_)/i,
+];
 
 function watchConsole(page) {
   const errors = [];
@@ -121,11 +140,57 @@ function watchConsole(page) {
   return errors;
 }
 
+// ── endpoint coverage ─────────────────────────────────────────────────────────────────
+/** What the fake backend was asked for during one test case. */
+async function fetchLedger(page) {
+  return page.evaluate(async () => {
+    const res = await fetch('/api/__requests');
+    return res.json();
+  });
+}
+
+/**
+ * Asserts the API calls a case depends on: every listed route must have been called at
+ * least `min` times, no `/api/*` call may have returned 4xx/5xx, and the fake backend must
+ * have produced no 5xx at all. This is the assertion that fails loudly when the frontend
+ * silently stops talking to an endpoint, or when an endpoint starts erroring.
+ */
+async function assertEndpoints(page, expected) {
+  const ledger = await fetchLedger(page);
+  const problems = [];
+
+  for (const [route, min] of Object.entries(expected)) {
+    const count = ledger.routes?.[route]?.count ?? 0;
+    if (count < min) problems.push(`expected >=${min} call(s) to ${route}, saw ${count}`);
+  }
+  for (const [route, entry] of Object.entries(ledger.routes ?? {})) {
+    if (entry.failures?.length) {
+      problems.push(`${route} returned ${[...new Set(entry.failures)].join('/')}`);
+    }
+  }
+  if (ledger.serverErrors?.length) {
+    problems.push(`fake backend produced 5xx: ${ledger.serverErrors.join(', ')}`);
+  }
+
+  assert(
+    problems.length === 0,
+    `endpoint coverage failed: ${problems.join('; ')} (ledger: ${JSON.stringify(ledger.routes)})`,
+  );
+}
+
 // ── test cases ────────────────────────────────────────────────────────────────────────
 const CASES = [
   {
     name: 'home-renders',
     title: 'Home renders title + ticker with no console errors',
+    // Endpoints the dashboard must have talked to, with a minimum call count.
+    endpoints: {
+      '/api/targets': 1,
+      '/api/settings': 1,
+      '/api/budget': 1,
+      '/api/session': 1,
+      '/api/scheduler': 1,
+    },
     async run({ page, errors }) {
       await page.goto(`${BASE_URL}/`, { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('.ticker', { timeout: 15_000 });
@@ -180,6 +245,7 @@ const CASES = [
   {
     name: 'add-course',
     title: 'Courses page — adding a course shows it in the list',
+    endpoints: { '/api/targets': 2, '/api/settings': 1 },
     async run({ page, errors }) {
       await page.goto(`${BASE_URL}/courses`, { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('input[aria-label="Term"]', { timeout: 15_000 });
@@ -215,6 +281,8 @@ const CASES = [
   {
     name: 'settings-persist',
     title: 'Settings page — poll interval saves and survives a reload',
+    // The save must actually PUT (not just flip local state) and re-read after the reload.
+    endpoints: { '/api/settings': 4 },
     async run({ page, errors }) {
       const NEW_INTERVAL = 17;
 
@@ -251,6 +319,7 @@ const CASES = [
   {
     name: 'language-switch',
     title: 'Language switch — zh → en → fr each render the nav copy',
+    endpoints: { '/api/targets': 1 },
     async run({ page, errors }) {
       const languageButton = (label) => page.getByRole('button', { name: label, exact: true });
 
@@ -450,6 +519,12 @@ async function main() {
     const result = { name: testCase.name, title: testCase.title, status: 'passed', durationMs: 0 };
     try {
       await testCase.run({ page, context, errors });
+      // Runs after the case's own assertions so the ledger has seen every call the case
+      // makes — including the ones triggered by a page reload.
+      if (testCase.endpoints) {
+        await assertEndpoints(page, testCase.endpoints);
+        result.endpoints = testCase.endpoints;
+      }
       console.log(`  ✓ ${testCase.name} — ${testCase.title}`);
     } catch (err) {
       result.status = 'failed';

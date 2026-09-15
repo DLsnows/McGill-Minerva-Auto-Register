@@ -47,10 +47,10 @@ npm run build:web
 
 ## CI 触发矩阵（详见 `docs/CI.md`）
 
-| PR base | 跑什么 |
-|---|---|
-| `dev` / `staging` / `prod` | 全量 CI（lint / typecheck / prettier-changed / test / web build）+ branch gate；base=`dev` 时首次 opened 额外跑 preview e2e 与 Lighthouse |
-| `feat/**` / `feature/**`（子支线） | **不跑全量 CI** —— 本地跑 gates；Claude review 与 pr-agent 照常跑 |
+| PR base                            | 跑什么                                                                                                                                    |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `dev` / `staging` / `prod`         | 全量 CI（lint / typecheck / prettier-changed / test / web build）+ branch gate；base=`dev` 时首次 opened 额外跑 preview e2e 与 Lighthouse |
+| `feat/**` / `feature/**`（子支线） | **不跑全量 CI** —— 本地跑 gates；Claude review 与 pr-agent 照常跑                                                                         |
 
 ## PR 要求
 

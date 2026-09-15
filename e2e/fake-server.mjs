@@ -87,13 +87,110 @@ const now = () => Date.now();
 
 const REQUIRED_TARGET_FIELDS = ['term', 'subject', 'courseNumber', 'targetCrn', 'faculty'];
 
+/**
+ * Per-endpoint request ledger.
+ *
+ * Why this exists: the e2e suite's "no console errors" assertion cannot distinguish an app
+ * bug from a blocked font request, and a 500 from `/api/targets` looks like any other
+ * "Failed to load resource" line. Counting calls and recording non-2xx statuses per route
+ * gives the suite a signal that is both precise and impossible to satisfy accidentally —
+ * and it also catches the opposite failure ("this endpoint was never called at all"), which
+ * an error-only assertion can never see.
+ *
+ * `/api/__requests` and `/api/health` are excluded so the bookkeeping endpoint and the
+ * readiness probe don't pollute the counts.
+ */
+const requestLedger = new Map();
+const EXCLUDED_FROM_LEDGER = new Set(['/api/__requests', '/api/health']);
+
+/** Paths that carry an id — counted under their route template so counts stay meaningful. */
+const DYNAMIC_ROUTE_TEMPLATES = [
+  [/^\/api\/targets\/[^/]+\/run$/, '/api/targets/:id/run'],
+  [/^\/api\/targets\/[^/]+$/, '/api/targets/:id'],
+];
+
+function ledgerKeyFor(pathname) {
+  for (const [pattern, template] of DYNAMIC_ROUTE_TEMPLATES) {
+    if (pattern.test(pathname)) return template;
+  }
+  return pathname;
+}
+
+function recordRequest(req) {
+  // GitHub-hosted Actions masks the query string in `req.url`, so never parse it.
+  const pathname = req.url.split('?')[0];
+  if (EXCLUDED_FROM_LEDGER.has(pathname)) return;
+  const key = ledgerKeyFor(pathname);
+  const entry = requestLedger.get(key) ?? { count: 0, statuses: {}, failures: [] };
+  entry.count += 1;
+  requestLedger.set(key, entry);
+}
+
+function recordResponse(req, reply) {
+  const pathname = req.url.split('?')[0];
+  if (EXCLUDED_FROM_LEDGER.has(pathname)) return;
+  const key = ledgerKeyFor(pathname);
+  const status = reply.statusCode;
+  const entry = requestLedger.get(key) ?? { count: 0, statuses: {}, failures: [] };
+  entry.statuses[status] = (entry.statuses[status] ?? 0) + 1;
+  if (status >= 400) entry.failures.push(status);
+  requestLedger.set(key, entry);
+}
+
+/** Snapshot for the test runner: counts + failure statuses per route. */
+function ledgerSnapshot() {
+  const routes = {};
+  for (const [route, entry] of requestLedger) {
+    routes[route] = { count: entry.count, statuses: entry.statuses, failures: entry.failures };
+  }
+  return {
+    routes,
+    serverErrors: [...requestLedger].flatMap(([, e]) => e.failures.filter((s) => s >= 500)),
+  };
+}
+
 const app = Fastify({ logger: false });
+
+/**
+ * Fault injection for testing the suite's own safety net: with
+ * `E2E_FAULT_ROUTES=/api/budget,/api/settings` the listed routes answer 500 instead of 200.
+ * Used to prove that a broken endpoint actually fails the run (and that the console filter
+ * no longer swallows it) rather than silently passing.
+ */
+const FAULT_ROUTES = new Set(
+  (process.env.E2E_FAULT_ROUTES ?? '')
+    .split(',')
+    .map((r) => r.trim())
+    .filter(Boolean),
+);
+
+app.addHook('onRequest', (req, _reply, done) => {
+  recordRequest(req);
+  done();
+});
+
+app.addHook('preHandler', (req, reply, done) => {
+  const pathname = req.url.split('?')[0];
+  if (FAULT_ROUTES.has(pathname)) {
+    reply.code(500).send({ error: `injected fault for ${pathname}` });
+    return;
+  }
+  done();
+});
+
+app.addHook('onResponse', (req, reply, done) => {
+  recordResponse(req, reply);
+  done();
+});
 
 app.register(websocketPlugin).after((err) => {
   if (err) console.error('[fake-server] websocket plugin failed to load:', err);
 });
 
 app.get('/api/health', () => ({ ok: true }));
+
+// Test-support endpoint: which fake endpoints were hit, and did any of them fail?
+app.get('/api/__requests', () => ledgerSnapshot());
 
 // --- targets ---
 app.get('/api/targets', () => state.targets);
