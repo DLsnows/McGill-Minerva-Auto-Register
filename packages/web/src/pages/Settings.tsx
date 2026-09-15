@@ -42,6 +42,7 @@ function NumField({
   min,
   max,
   step,
+  rejectEmpty = false,
 }: {
   label: string;
   value: number;
@@ -49,6 +50,14 @@ function NumField({
   min?: number;
   max?: number;
   step?: number;
+  /** Treat a cleared field as an unsettled value (`NaN`) instead of `0`.
+   *
+   * Opt-in, and deliberately not the default: `Number('')` is `0`, and for a field whose
+   * server bound is `min(0)` clearing it is a perfectly good way to store `0`. Applying
+   * the coercion to every numeric input silently turned that into `NaN` -> `null` -> a
+   * raw 400 for `jitterMinutes` and `registerBudget`. Only the two operation-speed fields
+   * want it, because they have their own friendly range guard (`isPacingValid`). */
+  rejectEmpty?: boolean;
 }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
@@ -57,16 +66,16 @@ function NumField({
         aria-label={label}
         type="number"
         style={inputStyle}
-        // Show an unresolved value as empty rather than "NaN" / "Infinity".
+        // Show an unsettled value as empty rather than "NaN" / "Infinity".
         value={Number.isFinite(value) ? value : ''}
         min={min}
         max={max}
         step={step}
-        // `Number('')` is 0, not NaN — so a cleared field used to snap straight back to
-        // "0", which is exactly the silently-stored zero the pacing validation exists to
-        // prevent (and it contradicted this comment). Map the empty string to NaN so the
-        // field stays empty and `isPacingValid` / the zod schema reject the save.
-        onChange={(e) => onChange(e.target.value.trim() === '' ? NaN : Number(e.target.value))}
+        onChange={(e) =>
+          onChange(
+            rejectEmpty && e.target.value.trim() === '' ? NaN : Number(e.target.value),
+          )
+        }
       />
     </label>
   );
@@ -171,6 +180,7 @@ export default function SettingsPage() {
             min={OP_PAUSE_MIN}
             max={OP_PAUSE_MAX}
             step={50}
+            rejectEmpty
             onChange={(n) => setForm({ ...form, opPauseMs: n })}
           />
           <NumField
@@ -179,6 +189,7 @@ export default function SettingsPage() {
             min={0}
             max={OP_PAUSE_MAX}
             step={50}
+            rejectEmpty
             onChange={(n) => setForm({ ...form, opJitterMs: n })}
           />
         </div>

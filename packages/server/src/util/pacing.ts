@@ -90,9 +90,10 @@ export function resetPacing(): PacingConfig {
  * - `base >= MIN`: the bound is `-jitter` or higher, so the *default* 3000 ± 1000 still
  *   ranges 2000…4000 and is symmetric. Nothing changes for any configuration whose
  *   jitter fits inside the headroom above the floor.
- * - `base < MIN`: the bound rises to `0`, making the draw non-negative. The floor is then
- *   a single point of the support (offset exactly 0) rather than the mode, and the
- *   configured maximum `base + jitter` is still reached.
+ * - `base < MIN`: the bound rises to `MIN - base` (positive), so the draw is confined to
+ *   `[MIN - base, jitter]`. The floor is then reached at exactly `offset = MIN - base`,
+ *   a single point of the support rather than the mode, and the configured maximum
+ *   `base + jitter` is still reached.
  *
  * Rejected alternatives, for the record:
  * - clamping the *result* (`max(floor, base + offset)`) removes the below-floor values

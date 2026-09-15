@@ -43,8 +43,24 @@ describe('Settings', () => {
     await waitFor(() => expect(put).toHaveBeenCalledWith(expect.objectContaining({ pollIntervalMinutes: 45 })));
   });
 
-  it('has no email / SMTP UI at all (feature temporarily sunset)', async () => {
+  it('still lets a min-0 field be cleared to 0 (the empty->NaN rule is scoped to pacing)', async () => {
+    // Regression from scoping: the empty -> NaN coercion was briefly applied to every
+    // numeric input, which broke two perfectly valid inputs. `jitterMinutes` and
+    // `registerBudget` both have a server bound of `min(0)`, so clearing them is a
+    // legitimate way to store 0 -- with the coercion they became NaN -> null -> a raw
+    // 400 zod dump. Only the two operation-speed fields opt in.
     mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
+    renderSettings();
+    const jitter = await screen.findByLabelText('Jitter (min)');
+    await userEvent.clear(jitter);
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(expect.objectContaining({ jitterMinutes: 0 })),
+    );
+  });
+
+  it('has no email / SMTP UI at all (feature temporarily sunset)', async () => {    mockAll();
     renderSettings();
     await waitFor(() => screen.getByLabelText('Poll interval (min)'));
     // The toggle, the section heading and every SMTP input are gone.
