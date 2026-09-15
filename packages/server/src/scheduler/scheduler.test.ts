@@ -11,6 +11,7 @@ import type {
 } from '@autoregister/shared';
 import { Store } from '../store/store';
 import { Budget } from '../budget/budget';
+import { PageStructureError } from '@autoregister/shared';
 import { Scheduler, type Actor, type SessionGuard, type Watcher } from './scheduler';
 
 let dir: string;
@@ -363,5 +364,127 @@ describe('Scheduler.isRunning', () => {
     expect(scheduler.isRunning()).toBe(true);
     scheduler.stop();
     expect(scheduler.isRunning()).toBe(false);
+  });
+});
+
+describe('Scheduler failure attribution (Q22)', () => {
+  function setupPageDrift() {
+    const store = new Store(dir);
+    const watcher: Watcher = {
+      checkCourse: async () => {
+        throw new PageStructureError(
+          'the "Sections Found" table header is not recognized (missing column(s): WL Rem)',
+        );
+      },
+    };
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher,
+      actor: new FakeActor({ kind: 'registered', crn: '1814' }),
+      session: new FakeSession(true),
+      now: () => NOW,
+      random: () => 0.5,
+    });
+    const target = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '1814',
+      mode: 'auto',
+    });
+    return { store, scheduler, target };
+  }
+
+  it('does NOT count an unrecognized results page as a missing CRN', async () => {
+    const { store, scheduler, target } = setupPageDrift();
+    store.updateTarget(target.id, { lastStats: stats() });
+
+    for (let i = 0; i < 4; i++) await scheduler.runOnce(target.id);
+
+    // Before the fix every drifted page counted as "CRN not found": 3 strikes and
+    // the target was stopped for a reason that had nothing to do with the course.
+    expect(store.getTarget(target.id)!.status).toBe('watching');
+    const events = store.recentEvents();
+    expect(
+      events.some((e) => e.level === 'error' && /page-structure problem/i.test(e.message)),
+    ).toBe(true);
+    // The misleading attribution must be gone entirely.
+    expect(events.some((e) => /not found in search results/i.test(e.message))).toBe(false);
+    expect(events.some((e) => /Query failed/i.test(e.message))).toBe(false);
+    // The last known seat numbers survive, so the UI does not go blank.
+    expect(store.getTarget(target.id)!.lastStats).toEqual(stats());
+    // …and the target keeps its normal cadence.
+    expect(store.getTarget(target.id)!.nextPollAt!).toBeGreaterThan(NOW);
+  });
+
+  it('still stops a target whose CRN is genuinely absent from readable results', async () => {
+    const store = new Store(dir);
+    const scheduler = new Scheduler({
+      store,
+      budget: new Budget(store),
+      watcher: new FakeWatcher(null), // readable results, CRN simply not in them
+      actor: new FakeActor({ kind: 'registered', crn: '1814' }),
+      session: new FakeSession(true),
+      now: () => NOW,
+      random: () => 0.5,
+    });
+    const target = store.addTarget({
+      term: '202701',
+      subject: 'COMP',
+      faculty: 'Faculty of Science',
+      courseNumber: '551',
+      targetCrn: '9999',
+      mode: 'auto',
+    });
+
+    for (let i = 0; i < 3; i++) await scheduler.runOnce(target.id);
+
+    expect(store.getTarget(target.id)!.status).toBe('error');
+    expect(
+      store.recentEvents().some((e) => /not found in search results/i.test(e.message)),
+    ).toBe(true);
+  });
+});
+
+describe('Scheduler registration-result attribution (Q4)', () => {
+  it('does not report an unreadable submit result as "no action taken"', async () => {
+    const { scheduler, store, target } = setup({
+      decision: { action: 'REGISTER', reason: 'rem>0' },
+      outcome: {
+        kind: 'unverified',
+        crn: '1814',
+        message: 'the result page was not recognized — the submission may still have gone through',
+      },
+    });
+
+    await scheduler.runOnce(target.id);
+
+    const events = store.recentEvents();
+    expect(events.some((e) => e.level === 'error' && /could not verify/i.test(e.message))).toBe(true);
+    expect(events.some((e) => /No action taken/i.test(e.message))).toBe(false);
+
+    // Bounded, not an endless resubmit loop: the third consecutive unreadable
+    // result stops the target and asks for a human.
+    await scheduler.runOnce(target.id);
+    expect(store.getTarget(target.id)!.status).toBe('watching');
+    await scheduler.runOnce(target.id);
+    expect(store.getTarget(target.id)!.status).toBe('error');
+  });
+
+  it('treats a not-found submit result as unverified rather than a clean cycle', async () => {
+    const { scheduler, store, target } = setup({
+      decision: { action: 'REGISTER', reason: 'rem>0' },
+      outcome: { kind: 'not-found', crn: '1814' },
+    });
+
+    await scheduler.runOnce(target.id);
+
+    const events = store.recentEvents();
+    // Before the fix: "No action taken (not-found)" at info level, failure streak
+    // reset, target rescheduled → the next cycle submitted the same CRN again.
+    expect(events.some((e) => /No action taken/i.test(e.message))).toBe(false);
+    expect(events.some((e) => e.level === 'error' && /could not verify/i.test(e.message))).toBe(true);
   });
 });

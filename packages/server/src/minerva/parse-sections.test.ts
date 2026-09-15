@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { PageStructureError } from '@autoregister/shared';
 import { parseSections } from './parse-sections';
 
 // Synthetic fixture mirroring Minerva's real structure (no personal data).
@@ -68,5 +69,31 @@ describe('parseSections', () => {
 
   it('returns empty array when no sections table is present', () => {
     expect(parseSections('<html><body>No classes found</body></html>')).toEqual([]);
+  });
+
+  // Q22 — "the page has no results" and "we do not understand this page" are
+  // different answers. Before the fix BOTH returned [] and the scheduler blamed
+  // the CRN, stopping the target after 3 tries for the wrong reason.
+  it('throws PageStructureError when a sections table is present but a required column is gone', () => {
+    // Minerva renames/drops "WL Rem" (or the header row changes): the table is
+    // plainly there, we just cannot read the waitlist numbers out of it.
+    const drifted = FIXTURE.replace('<th class="ddheader">WL Rem</th>', '');
+    expect(() => parseSections(drifted)).toThrow(PageStructureError);
+    expect(() => parseSections(drifted)).toThrow(/WL Rem/);
+  });
+
+  it('throws PageStructureError when the results table caption was renamed', () => {
+    const renamed = FIXTURE.replace('>Sections Found<', '>Search Results<');
+    expect(() => parseSections(renamed)).toThrow(PageStructureError);
+    expect(() => parseSections(renamed)).toThrow(/caption/i);
+  });
+
+  it('still returns entries when an unrelated extra column is added', () => {
+    // Guard against over-eager structure errors: additive changes must parse.
+    const extra = FIXTURE.replace(
+      '<th class="ddheader">Status</th>',
+      '<th class="ddheader">Status</th><th class="ddheader">Notes</th>',
+    );
+    expect(parseSections(extra).map((r) => r.crn)).toEqual(['2347', '2348']);
   });
 });

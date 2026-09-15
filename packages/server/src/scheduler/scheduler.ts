@@ -8,6 +8,7 @@ import type {
   SectionStats,
   WatchTarget,
 } from '@autoregister/shared';
+import { PageStructureError } from '@autoregister/shared';
 import type { Budget } from '../budget/budget';
 import type { Store } from '../store/store';
 
@@ -121,6 +122,20 @@ export class Scheduler {
       check = await this.deps.watcher.checkCourse(query);
     } catch (e) {
       budget.recordQuery(now);
+      if (e instanceof PageStructureError) {
+        // The results page is not the page we know how to read (renamed caption,
+        // dropped column, unreadable document). That is a fact about Minerva's
+        // HTML, NOT about this CRN: counting it as "CRN not found" would stop the
+        // target after 3 tries for the wrong reason (audit Q22). Keep watching
+        // (and keep the last known stats) and report the real cause.
+        this.log(
+          'error',
+          `Minerva results page not recognized: ${errMsg(e)} — this is a page-structure problem, not a missing CRN; keeping the last known stats and retrying.`,
+          targetId,
+        );
+        this.scheduleNext(target);
+        return;
+      }
       if (this.noteFailure(target, `Query failed: ${errMsg(e)}`)) return;
       this.scheduleNext(target);
       return;
@@ -237,9 +252,28 @@ export class Scheduler {
         return; // stop watching
       case 'waitlist-full':
       case 'closed':
-      case 'not-found':
         this.noteSuccess(target.id);
         this.log('info', `No action taken (${outcome.kind})`, target.id, outcome);
+        this.scheduleNext(target);
+        return;
+      case 'not-found':
+      case 'unverified':
+        // A submission whose result we could NOT read is not "nothing happened":
+        // the registration may well have gone through. Silently treating it as a
+        // clean cycle is what made the old code resubmit the same CRN every cycle
+        // (audit Q4). Report it honestly and let the failure breaker bound the
+        // retries instead of looping forever. The register client re-checks the
+        // schedule before submitting again, so an already-registered CRN is never
+        // resubmitted.
+        if (
+          this.noteFailure(
+            target,
+            `Could not verify the registration result for ${target.label ?? target.targetCrn}: ${outcome.message ?? outcome.kind}`,
+            outcome,
+          )
+        ) {
+          return;
+        }
         this.scheduleNext(target);
         return;
       case 'waitlist-available':
