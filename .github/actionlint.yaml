@@ -1,0 +1,8 @@
+# actionlint configuration — https://github.com/rhysd/actionlint/blob/main/docs/config.md
+#
+# `ubuntu-slim` is a GitHub-hosted runner label that actionlint's release notes lag behind
+# (it knows ubuntu-latest/-24.04/-22.04/… but not this one). Declaring it here keeps
+# `actionlint .github/workflows/*.yml` useful: any OTHER unknown label is still reported.
+self-hosted-runner:
+  labels:
+    - ubuntu-slim

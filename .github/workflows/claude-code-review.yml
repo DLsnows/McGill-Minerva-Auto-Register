@@ -40,6 +40,17 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.DEEPSEEK_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Without this the action refuses every bot-authored PR before it reads a line
+          # of the diff:
+          #   "Action failed with error: Workflow initiated by non-human actor: dependabot
+          #    (type: Bot). Add bot to allowed_bots list or use '*' to allow all bots."
+          # That made the `review` check red on all nine historical Dependabot PRs, so the
+          # one reviewer that *did* run on them always reported failure.
+          #
+          # Deliberately NOT '*': this repository is public, and the action's own docs warn
+          # that '*' lets external Apps invoke it with attacker-controlled prompts. Only
+          # the dependency bot is allowlisted.
+          allowed_bots: 'dependabot[bot]'
           prompt: |
             Review pull request #${{ github.event.pull_request.number }}.
 
@@ -52,4 +63,10 @@ jobs:
             gh pr comment ${{ github.event.pull_request.number }} --body "### Code Review
             [your findings here, or 'No issues found.']
             🤖 Generated with [Claude Code](https://claude.ai/code)"
-          claude_args: "--model deepseek-v4-pro[1M] --max-turns 15 --allowedTools Bash,Read,Grep,Glob"
+          # --max-turns 15 was too tight: on a four-file PR the reviewer used 18 turns and
+          # still reported "No issues found", but the action treated the budget overrun as a
+          # failure, so the `review` check went red on a clean PR (observed on #33). The
+          # review comment had already been posted by then, which made the red check doubly
+          # confusing. 30 leaves room for a real multi-file read without inviting an
+          # unbounded run.
+          claude_args: "--model deepseek-v4-pro[1M] --max-turns 30 --allowedTools Bash,Read,Grep,Glob"

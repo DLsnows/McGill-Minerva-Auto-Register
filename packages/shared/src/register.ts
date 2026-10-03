@@ -6,6 +6,8 @@ export type RegisterOutcomeKind =
   | 'waitlist-full' // closed - waitlist full
   | 'closed' // closed - class full (no waitlist room)
   | 'error' // other/unknown registration error (captured verbatim)
+  | 'unverified' // submitted, but the result page could not be read/recognized:
+  // the registration MAY have gone through, so this is never "nothing happened".
   | 'not-found'; // CRN not present in schedule or errors
 
 export interface RegisterOutcome {

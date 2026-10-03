@@ -1,19 +1,47 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DataProvider } from '../lib/DataContext';
 import SettingsPage from './Settings';
 import { api } from '../lib/api';
+import { ZERO_BUDGET } from '../lib/budget-fixture';
+
+const LOADED_SETTINGS = {
+  pollIntervalMinutes: 30,
+  jitterMinutes: 3,
+  opPauseMs: 3000,
+  opJitterMs: 1000,
+  queryBudget: 100,
+  registerBudget: 20,
+  notify: { desktop: true, sound: true, email: false },
+};
 
 function mockAll() {
   vi.spyOn(api, 'getTargets').mockResolvedValue([]);
   vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
-  vi.spyOn(api, 'getBudget').mockResolvedValue({ query: 100, register: 20 });
-  vi.spyOn(api, 'getSettings').mockResolvedValue({
-    pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
-    notify: { desktop: true, sound: true, email: false },
-  });
+  vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
+  vi.spyOn(api, 'getSettings').mockResolvedValue(LOADED_SETTINGS);
   vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+  vi.spyOn(api, 'getPower').mockResolvedValue({
+    supported: false,
+    enabled: false,
+    active: false,
+    powerSource: 'unknown',
+    reason: 'unsupported',
+  });
+}
+
+/** The Windows keep-awake controller is available and reports `reason`. */
+function mockPower(
+  reason: 'active' | 'battery' | 'disabled' | 'unavailable' | 'keeperFailed' = 'disabled',
+) {
+  return vi.spyOn(api, 'getPower').mockResolvedValue({
+    supported: true,
+    enabled: reason === 'active',
+    active: reason === 'active',
+    powerSource: reason === 'battery' ? 'battery' : 'ac',
+    reason,
+  });
 }
 
 const renderSettings = () =>
@@ -29,26 +57,118 @@ describe('Settings', () => {
   it('prefills and saves general settings', async () => {
     mockAll();
     const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
-      pollIntervalMinutes: 45, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
+      pollIntervalMinutes: 45,
+      jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
+      queryBudget: 100,
+      registerBudget: 20,
       notify: { desktop: true, sound: true, email: false },
     });
     renderSettings();
-    await waitFor(() => expect((screen.getByLabelText('Poll interval (min)') as HTMLInputElement).value).toBe('30'));
+    await waitFor(() =>
+      expect((screen.getByLabelText('Poll interval (min)') as HTMLInputElement).value).toBe('30'),
+    );
     await userEvent.clear(screen.getByLabelText('Poll interval (min)'));
     await userEvent.type(screen.getByLabelText('Poll interval (min)'), '45');
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
-    await waitFor(() => expect(put).toHaveBeenCalledWith(expect.objectContaining({ pollIntervalMinutes: 45 })));
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(expect.objectContaining({ pollIntervalMinutes: 45 })),
+    );
   });
 
-  it('blocks save when email notify is on but email fields are incomplete', async () => {
+  it('still lets a min-0 field be cleared to 0 (the empty->NaN rule is scoped to pacing)', async () => {
+    // Regression from scoping: the empty -> NaN coercion was briefly applied to every
+    // numeric input, which broke two perfectly valid inputs. `jitterMinutes` and
+    // `registerBudget` both have a server bound of `min(0)`, so clearing them is a
+    // legitimate way to store 0 -- with the coercion they became NaN -> null -> a raw
+    // 400 zod dump. Only the two operation-speed fields opt in.
     mockAll();
     const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
     renderSettings();
-    await waitFor(() => screen.getByLabelText('Email notifications'));
-    await userEvent.click(screen.getByLabelText('Email notifications'));
+    const jitter = await screen.findByLabelText('Jitter (min)');
+    await userEvent.clear(jitter);
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
-    expect(put).not.toHaveBeenCalled();
-    expect(screen.getByText(/email .*required/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(expect.objectContaining({ jitterMinutes: 0 })),
+    );
+  });
+
+  it('saves an unrelated change when the server never sent the pacing fields', async () => {
+    // Claude review on #36, non-blocking note: `isPacingValid(form)` gated the
+    // *entire* save, so a `settings.data` without `opPauseMs`/`opJitterMs` (a
+    // server older than this feature, or a cached body from one) made the page
+    // refuse every change -- including an unrelated toggle -- behind a
+    // misleading "operation speed must be a number".
+    //
+    // This is not hypothetical: it is the same shape as the real defect this
+    // branch fixes, where the e2e fake backend omitted the two fields and the
+    // page rendered them as blanks that `NumField` coerced to 0. A field the
+    // server never sent is a field the page must not write.
+    mockAll();
+    const staleSettings: Record<string, unknown> = { ...LOADED_SETTINGS };
+    delete staleSettings.opPauseMs;
+    delete staleSettings.opJitterMs;
+    vi.spyOn(api, 'getSettings').mockResolvedValue(staleSettings as never);
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue(staleSettings as never);
+
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+
+    // The section is hidden rather than rendered as two blank, un-saveable inputs.
+    expect(screen.queryByLabelText('Pause between operations (ms)')).not.toBeInTheDocument();
+
+    await userEvent.clear(screen.getByLabelText('Poll interval (min)'));
+    await userEvent.type(screen.getByLabelText('Poll interval (min)'), '45');
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() => expect(put).toHaveBeenCalled());
+    const body = put.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.pollIntervalMinutes, 'the real edit must reach the server').toBe(45);
+    // Crucially: no `opPauseMs: 0`, which the real schema rejects with a raw 400
+    // (`min(250)`) and which would overwrite the persisted value with a blank.
+    expect(body).not.toHaveProperty('opPauseMs');
+    expect(body).not.toHaveProperty('opJitterMs');
+    // And the misleading pacing error is not what the user is shown.
+    expect(screen.queryByText(/operation speed must be a number/i)).not.toBeInTheDocument();
+  });
+
+  it('has no email / SMTP UI at all (feature temporarily sunset)', async () => {
+    mockAll();
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+    // The toggle, the section heading and every SMTP input are gone.
+    expect(screen.queryByLabelText(/email/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/smtp/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /setup guide/i })).not.toBeInTheDocument();
+    // No stray label/text mentions it either.
+    expect(screen.queryByText(/email/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/smtp/i)).not.toBeInTheDocument();
+    // The channels that stay are still rendered.
+    expect(screen.getByLabelText('Desktop notifications')).toBeInTheDocument();
+    expect(screen.getByLabelText('Sound')).toBeInTheDocument();
+  });
+
+  it('saves the notify channels with email forced off', async () => {
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
+      queryBudget: 100,
+      registerBudget: 20,
+      notify: { desktop: false, sound: true, email: false },
+    });
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Desktop notifications'));
+    await userEvent.click(screen.getByLabelText('Desktop notifications'));
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(
+        expect.objectContaining({ notify: { desktop: false, sound: true, email: false } }),
+      ),
+    );
   });
 
   it('surfaces a save error', async () => {
@@ -63,21 +183,398 @@ describe('Settings', () => {
   it('saves the dry-run toggle', async () => {
     mockAll();
     const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
-      pollIntervalMinutes: 30, jitterMinutes: 3, queryBudget: 100, registerBudget: 20,
-      notify: { desktop: true, sound: true, email: false }, dryRun: true,
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
+      queryBudget: 100,
+      registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+      dryRun: true,
     });
     renderSettings();
     await waitFor(() => screen.getByLabelText('Dry-run mode'));
     await userEvent.click(screen.getByLabelText('Dry-run mode'));
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
-    await waitFor(() => expect(put).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true })));
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true })),
+    );
+  });
+  it('refreshes the budget snapshot too after a save (the stale-remaining bug)', async () => {
+    mockAll();
+    const getBudget = vi.spyOn(api, 'getBudget');
+    vi.spyOn(api, 'putSettings').mockResolvedValue({
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
+      queryBudget: 10000,
+      registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+    });
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+    const before = getBudget.mock.calls.length;
+
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+    // Saving the daily limits must re-read the budget: without this the shell
+    // pairs the new limit with the previous snapshot's used-count.
+    await waitFor(() => expect(getBudget.mock.calls.length).toBeGreaterThan(before));
+    await waitFor(() => expect(screen.getByText('Saved ✓')).toBeInTheDocument());
   });
 
-  it('links to the email setup guide', async () => {
+  it('surfaces an error and does not claim success when the post-save refresh fails', async () => {
     mockAll();
+    vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
+    // The mount fetches succeed; both post-save refetches fail.
+    const boom = () => Promise.reject(new Error('refresh boom'));
+    const budgetCalls = { n: 0 };
+    const settingsCalls = { n: 0 };
+    vi.spyOn(api, 'getBudget').mockImplementation(() =>
+      budgetCalls.n++ === 0 ? Promise.resolve(ZERO_BUDGET) : boom(),
+    );
+    vi.spyOn(api, 'getSettings').mockImplementation(() =>
+      settingsCalls.n++ === 0 ? Promise.resolve(LOADED_SETTINGS) : boom(),
+    );
     renderSettings();
-    await waitFor(() => screen.getByLabelText('Email notifications'));
-    const link = screen.getByRole('link', { name: /setup guide/i });
-    expect(link).toHaveAttribute('href', expect.stringContaining('EMAIL_SETUP.md'));
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() => expect(budgetCalls.n).toBeGreaterThan(1));
+    await waitFor(() => expect(screen.getByText(/refresh boom/i)).toBeInTheDocument());
+    expect(screen.queryByText('Saved ✓')).toBeNull();
+    // The PUT resolved before the refetches ran, so the settings *were* persisted.
+    // Reporting this as a save failure would tell the user the opposite of the truth.
+    expect(screen.getByText(/were saved, but re-reading them failed/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Failed to save settings/i)).toBeNull();
+    // Exactly one bar: this page reports the `settings` half, nothing reports the
+    // `budget` half (this page has no budget UI at all).
+    expect(screen.getAllByText(/refresh boom/i)).toHaveLength(1);
+  });
+
+  /**
+   * Ownership boundary: `budget` feeds the ticker, so the *shell* owns the raw
+   * budget error bar. When only the budget half of the post-save refresh fails,
+   * this page must not repeat that message — but it must still say something,
+   * because the PUT did land and the ticker is now pairing the new limit with a
+   * stale snapshot. Silence here would make a successful save indistinguishable
+   * from a save that never happened.
+   *
+   * The note is keyed to `budget.revision`, never to `settings.revision`: in this
+   * branch the *settings* re-read succeeded, so a settings-keyed note is retired
+   * by the very render that set it and never appears (review catch). The positive
+   * assertion below is what pins that down — asserting only the *absence* of the
+   * other two strings is exactly how the bug slipped through.
+   */
+  it('does not repeat a budget-only refresh failure, but still does not claim success', async () => {
+    mockAll();
+    vi.spyOn(api, 'putSettings').mockResolvedValue(LOADED_SETTINGS);
+    const budgetCalls = { n: 0 };
+    vi.spyOn(api, 'getBudget').mockImplementation(() =>
+      budgetCalls.n++ === 0
+        ? Promise.resolve(ZERO_BUDGET)
+        : Promise.reject(new Error('budget refresh boom')),
+    );
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() => expect(budgetCalls.n).toBeGreaterThan(1));
+    expect(screen.queryByText('Saved ✓')).toBeNull();
+    // Not the raw budget error (that belongs to the shell's bar), not the
+    // settings-refresh message …
+    expect(screen.queryByText(/budget refresh boom/i)).toBeNull();
+    expect(screen.queryByText(/were saved, but re-reading them failed/i)).toBeNull();
+    // … but a save-specific note that is actually on screen, and stays there.
+    expect(screen.getByText(/budget snapshot is stale/i)).toBeInTheDocument();
+
+    // A second save re-arms the note rather than letting it lapse silently.
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    await waitFor(() => expect(budgetCalls.n).toBeGreaterThan(2));
+    expect(screen.getByText(/budget snapshot is stale/i)).toBeInTheDocument();
+    expect(screen.queryByText('Saved ✓')).toBeNull();
+  });
+
+  /**
+   * Two overlapping saves would each run their own PUT + refetch pair, and the
+   * older continuation's `setSaved(false)` — its read is inevitably superseded by
+   * the newer save's — would wipe the "Saved ✓" the newer one had just earned,
+   * leaving a persisted save with neither confirmation nor error. The in-flight
+   * guard (mirroring `onToggleScheduler`'s `schedBusyRef`) makes the overlap
+   * impossible, which this pins.
+   *
+   * The second click is dispatched through the React handler directly: the button
+   * is `disabled` while saving, so `userEvent.click` would be a no-op and the test
+   * would pass even with the guard removed. Reading the props off the fiber is the
+   * only way to reach the handler with a stale snapshot — the same trick
+   * `Dashboard.test.tsx` uses for its disabled control.
+   */
+  const reachableOnClick = (el: Element): unknown => {
+    const key = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+    if (!key) throw new Error('no React props found on the element');
+    return (el as unknown as Record<string, { onClick?: unknown }>)[key]?.onClick;
+  };
+
+  it('ignores a second save while one is in flight, instead of clobbering the flag', async () => {
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue(LOADED_SETTINGS);
+    // The save's re-reads are held, so the second click really does arrive while
+    // the first save is still in flight.
+    const pending: Array<(v: Awaited<ReturnType<typeof api.getSettings>>) => void> = [];
+    let calls = 0;
+    vi.spyOn(api, 'getSettings').mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve(LOADED_SETTINGS);
+      return new Promise((resolve) => pending.push(resolve));
+    });
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const button = screen.getByRole('button', { name: /save settings/i });
+    expect(button).toBeDisabled();
+
+    // Invoke the handler anyway: only one PUT and one re-read pair may exist.
+    const onClick = reachableOnClick(button);
+    expect(typeof onClick).toBe('function');
+    await act(async () => {
+      (onClick as () => void)();
+      await Promise.resolve();
+    });
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(pending.length).toBeLessThanOrEqual(1);
+
+    // Let the single save finish: confirmed, with the flag intact.
+    await act(async () => {
+      pending[0](LOADED_SETTINGS);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByText('Saved ✓')).toBeInTheDocument());
+    expect(screen.queryByText(/were saved, but re-reading them failed/i)).toBeNull();
+  });
+
+  /**
+   * Q13 variant A. `form` is seeded from `settings.data`, so when the initial
+   * `GET /api/settings` failed the page rendered `if (!form) → "Loading
+   * settings…"` forever: no error, no retry, and — because `useResource` never
+   * re-runs its mount effect — no way out for the rest of the SPA session short
+   * of a full page reload.
+   *
+   * The page itself does not render the error bar: the shell owns `settings`
+   * (see App.tsx), so the message and the retry live there on every route.
+   * Rendering on its own, as here, the page must still not claim to be loading.
+   */
+  it('does not sit on "Loading settings…" forever when the initial GET fails', async () => {
+    let calls = 0;
+    vi.spyOn(api, 'getTargets').mockResolvedValue([]);
+    vi.spyOn(api, 'getSession').mockResolvedValue({ status: 'authenticated' });
+    vi.spyOn(api, 'getBudget').mockResolvedValue(ZERO_BUDGET);
+    vi.spyOn(api, 'getSettings').mockImplementation(() =>
+      calls++ === 0
+        ? Promise.reject(new Error('GET /api/settings failed: 500'))
+        : Promise.resolve(LOADED_SETTINGS),
+    );
+    vi.spyOn(api, 'getScheduler').mockResolvedValue({ running: false });
+    renderSettings();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Settings could not be loaded/i)).toBeInTheDocument(),
+    );
+    // The permanent spinner is exactly what the defect looked like.
+    expect(screen.queryByText(/Loading settings/i)).toBeNull();
+    expect(screen.queryByLabelText('Poll interval (min)')).toBeNull();
+    // The hint points at the shell's bar, which is where the retry lives.
+    expect(screen.getByText(/Retry in the bar above the ticker/i)).toBeInTheDocument();
+  });
+
+  it('prefills and saves the operation-speed settings', async () => {
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
+    renderSettings();
+    const pause = await screen.findByLabelText('Pause between operations (ms)');
+    const jitter = screen.getByLabelText('Operation jitter (± ms)');
+    expect((pause as HTMLInputElement).value).toBe('3000');
+    expect((jitter as HTMLInputElement).value).toBe('1000');
+    // The section is separate from — and worded differently from — the poll interval.
+    expect(screen.getByRole('heading', { name: /operation speed/i })).toBeInTheDocument();
+
+    await userEvent.clear(pause);
+    await userEvent.type(pause, '1500');
+    await userEvent.clear(jitter);
+    await userEvent.type(jitter, '400');
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(
+        expect.objectContaining({ opPauseMs: 1500, opJitterMs: 400 }),
+      ),
+    );
+  });
+
+  it('refuses to save an out-of-range operation speed', async () => {
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
+    renderSettings();
+    const pause = await screen.findByLabelText('Pause between operations (ms)');
+    await userEvent.clear(pause);
+    await userEvent.type(pause, '100'); // below the 250ms anti-detection floor
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    expect(put).not.toHaveBeenCalled();
+    // The error bar (not just the hint) names the accepted range.
+    expect(screen.getByText(/nothing was saved/i).textContent).toContain('250–60000 ms');
+  });
+
+  it('refuses to save an operation pause above the maximum', async () => {
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
+    renderSettings();
+    const pause = await screen.findByLabelText('Pause between operations (ms)');
+    await userEvent.clear(pause);
+    await userEvent.type(pause, '70000');
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    expect(put).not.toHaveBeenCalled();
+    expect(screen.getByText(/nothing was saved/i)).toBeInTheDocument();
+  });
+
+  it('refuses to save an emptied operation pause instead of silently storing 0', async () => {
+    mockAll();
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({} as never);
+    renderSettings();
+    const pause = await screen.findByLabelText('Pause between operations (ms)');
+    await userEvent.clear(pause);
+    // `Number('')` is 0, so the naive handler made this snap back to a visible "0" the
+    // moment the user cleared it — the silently-stored zero this validation exists to
+    // prevent, and a contradiction of the field's own comment. The empty string now maps
+    // to NaN, so the field stays empty.
+    expect(pause).toHaveValue(null);
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+    expect(put).not.toHaveBeenCalled();
+    expect(screen.getByText(/nothing was saved/i).textContent).toContain('250–60000 ms');
+  });
+});
+
+describe('Settings — keep-awake (Windows only)', () => {
+  it('renders nothing at all when the platform is not supported', async () => {
+    mockAll(); // getPower → supported: false
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Poll interval (min)'));
+    // Wait for the power probe to have settled before asserting absence.
+    await waitFor(() => expect(api.getPower).toHaveBeenCalled());
+    expect(screen.queryByLabelText('Keep this PC awake')).not.toBeInTheDocument();
+    expect(screen.queryByText('Power (Windows)')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('keep-awake-status')).not.toBeInTheDocument();
+  });
+
+  it('renders the switch plus the full explanation when supported', async () => {
+    mockAll();
+    mockPower('disabled');
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Keep this PC awake'));
+
+    expect(screen.getByText('Power (Windows)')).toBeInTheDocument();
+    // The four things the user asked to be told clearly:
+    expect(screen.getByText(/will not go to sleep while the switch is on/i)).toBeInTheDocument();
+    expect(screen.getByText(/display still turns off normally/i)).toBeInTheDocument();
+    expect(screen.getByText(/only applies while the charger is connected/i)).toBeInTheDocument();
+    expect(screen.getByText(/on battery the PC still sleeps/i)).toBeInTheDocument();
+    expect(screen.getByText(/normal power behaviour resumes immediately/i)).toBeInTheDocument();
+  });
+
+  it('shows the live status reported by GET /api/power', async () => {
+    mockAll();
+    mockPower('active');
+    renderSettings();
+    await waitFor(() =>
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(
+        /Active — the PC will not sleep/i,
+      ),
+    );
+  });
+
+  it('shows the waiting-for-AC status on battery', async () => {
+    mockAll();
+    mockPower('battery');
+    renderSettings();
+    await waitFor(() =>
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(/Waiting for AC power/i),
+    );
+  });
+
+  it('saves the switch and refreshes the live status', async () => {
+    mockAll();
+    const power = mockPower('disabled');
+    const put = vi.spyOn(api, 'putSettings').mockResolvedValue({
+      pollIntervalMinutes: 30,
+      jitterMinutes: 3,
+      opPauseMs: 3000,
+      opJitterMs: 1000,
+      queryBudget: 100,
+      registerBudget: 20,
+      notify: { desktop: true, sound: true, email: false },
+      keepAwake: true,
+    });
+    renderSettings();
+    await waitFor(() => screen.getByLabelText('Keep this PC awake'));
+    await userEvent.click(screen.getByLabelText('Keep this PC awake'));
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith(expect.objectContaining({ keepAwake: true })),
+    );
+    // Initial load + post-save refresh.
+    await waitFor(() => expect(power).toHaveBeenCalledTimes(2));
+  });
+
+  it('distinguishes a dead keeper from an unreadable power source', async () => {
+    // Review regression: a keeper that dies on its own used to be surfaced as
+    // "the power source could not be read", which blames the wrong thing.
+    mockAll();
+    mockPower('keeperFailed');
+    renderSettings();
+    await waitFor(() =>
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(
+        /sleep-prevention helper could not run/i,
+      ),
+    );
+    expect(screen.getByTestId('keep-awake-status')).not.toHaveTextContent(
+      /power source could not be read/i,
+    );
+  });
+
+  it('polls the status so a mid-session power change is reflected', async () => {
+    mockAll();
+    const power = mockPower('disabled');
+    // Fake timers must be installed BEFORE render: the interval is created on
+    // whatever clock exists at mount time (same pattern as Session.poll.test).
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        renderSettings();
+      });
+      expect(power).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(/^Status: Off$/);
+
+      // The server releases the hold when a laptop switches to battery; the open
+      // settings page must not keep claiming it is active.
+      power.mockResolvedValue({
+        supported: true,
+        enabled: true,
+        active: false,
+        powerSource: 'battery',
+        reason: 'battery',
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(30_000);
+      });
+      expect(power.mock.calls.length).toBeGreaterThan(1);
+      expect(screen.getByTestId('keep-awake-status')).toHaveTextContent(/Waiting for AC power/i);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import { useEventStream } from './useEventStream';
+import { installFakeWebSocket } from '../test-setup';
 
 class FakeWS {
   static last: FakeWS | undefined;
@@ -18,6 +19,10 @@ class FakeWS {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  // `vi.stubGlobal` restores the previous global, which is the shared test-setup
+  // stub — reset it so the next file starts from a clean, empty socket list.
+  vi.unstubAllGlobals();
+  installFakeWebSocket();
   FakeWS.last = undefined;
 });
 

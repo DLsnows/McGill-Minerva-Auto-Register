@@ -1,0 +1,113 @@
+name: Preview E2E
+
+# End-to-end acceptance for the real web bundle, against an in-memory fake API
+# (e2e/fake-server.mjs). No Minerva, no browser session, no scheduler — the whole point is
+# that a PR author can see "does the preview actually work" without touching the school's
+# servers.
+#
+# Trigger: PR -> `dev`, `opened` only. `synchronize`/`reopened` are intentionally absent:
+# a full Chromium download + build + suite is the most expensive job in this repo, and one
+# authoritative run per PR is enough. To re-run, push a commit and re-open… or simply run
+# `npm run e2e` locally (the fake backend makes that identical to CI).
+#
+# FORK SAFETY: the `guard` job runs first and the suite depends on it. A fork PR must never
+# reach `npm ci` / the build — refusing it in branch-gate.yml alone would be too late, since
+# both workflows start in parallel and the fork's own `package.json` would already have run.
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    runs-on: ubuntu-slim
+    outputs:
+      same_repo: ${{ steps.check.outputs.same_repo }}
+    steps:
+      - name: Require an in-repo head branch
+        id: check
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" = "$THIS_REPO" ]; then
+            echo "same_repo=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "same_repo=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PR head is the fork '$HEAD_REPO' — refusing to run repository code. Preview E2E is skipped for fork PRs by design."
+          fi
+
+  preview-e2e:
+    name: Preview E2E (Playwright)
+    needs: guard
+    if: ${{ ! github.event.pull_request.draft && needs.guard.outputs.same_repo == 'true' }}
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build web bundle
+        run: npm run build:web
+
+      - name: Run preview end-to-end suite
+        id: e2e
+        continue-on-error: true
+        run: node e2e/run.mjs
+
+      - name: Upload screenshots, traces and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-e2e-artifacts
+          path: e2e/artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Build comment body
+        if: always()
+        run: |
+          if [ -f e2e/artifacts/summary.md ]; then
+            cat e2e/artifacts/summary.md > /tmp/comment.md
+          else
+            {
+              echo "<!-- section:preview-e2e -->"
+              echo "## :theater: Preview end-to-end (Playwright)"
+              echo ""
+              echo ":x: The suite did not produce a summary — it likely crashed before the first check ran."
+              echo "See the \`preview-e2e-artifacts\` artifact and the job log."
+            } > /tmp/comment.md
+          fi
+
+      - name: Post sticky comment
+        if: always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: preview-e2e
+          path: /tmp/comment.md
+
+      - name: Fail if the suite failed
+        if: always() && steps.e2e.outcome == 'failure'
+        run: exit 1

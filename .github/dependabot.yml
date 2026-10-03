@@ -1,0 +1,31 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    # Dependency PRs target the integration branch, never the default branch (`prod`).
+    # `prod` only ever receives promotions from `staging`/`dev` (enforced by branch-gate.yml),
+    # so Dependabot PRs against it would sit unmergeable — and, before ci.yml existed, they
+    # ran no CI at all.
+    target-branch: dev
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: build(deps)
+    # One PR for routine minor/patch bumps per dependency kind, one PR per major bump.
+    groups:
+      development-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+        applies-to: version-updates
+      production-dependencies:
+        dependency-type: production
+        update-types: [minor, patch]
+        applies-to: version-updates
+    ignore:
+      # DefinitelyTyped packages track their upstream library and publish majors on their
+      # own cadence — grouped noise with no migration value. Majors of everything else
+      # still arrive, just one PR each.
+      - dependency-name: '@types/*'
+        update-types: ['version-update:semver-major']

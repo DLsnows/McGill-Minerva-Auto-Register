@@ -24,6 +24,8 @@ export class Notifier {
       }
     }
 
+    // Kept for the email feature, which is temporarily sunset: the server forces
+    // `settings.notify.email` to false, so this branch is unreachable in practice.
     if (s.notify.email && isEmailConfigured(s.email)) {
       try {
         await sendEmail(s.email, title, body);

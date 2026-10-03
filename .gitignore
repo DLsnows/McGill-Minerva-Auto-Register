@@ -19,6 +19,14 @@ build/
 .browser-profile/
 playwright-profile/
 
+# Playwright browser builds installed by `npm run e2e:install` (large, version-pinned)
+.pw-browsers/
+.ms-playwright/
+
+# E2E + Lighthouse run output (screenshots, traces, reports)
+e2e/artifacts/
+lighthouse-reports/
+
 # Local app data (sqlite db, logs, screenshots of errors)
 data/
 *.sqlite
