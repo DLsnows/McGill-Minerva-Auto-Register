@@ -15,6 +15,13 @@ concurrency:
 
 jobs:
   review:
+    # 只在 base = dev 的 PR 上跑(用户 2026-10-18 裁定);用 job 级 if 判断 base,而不是 on.pull_request.branches
+    # —— 被触发器过滤掉的 PR 不会产生 check run,若该 workflow 是必需检查会一直停在等待状态;跳过时报告为 skipped。
+    if: github.event.pull_request.base.ref == 'dev'
+    # 网关要求会话头。Claude Code 自带 x-claude-code-session-id(实测被网关接受),这里再显式加一层兜底。
+    # 必须写在 job 级 env:action.yml 用 ${{ env.ANTHROPIC_CUSTOM_HEADERS }} 重新导出该变量。
+    env:
+      ANTHROPIC_CUSTOM_HEADERS: "x-opencode-session: gh-${{ github.run_id }}-${{ github.run_attempt }}"
     runs-on: ubuntu-slim
     steps:
       - name: Checkout repository
@@ -33,12 +40,16 @@ jobs:
       - name: Run Claude Code Review
         uses: anthropics/claude-code-action@v1
         env:
-          ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-          ANTHROPIC_MODEL: deepseek-v4-pro[1M]
-          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-pro[1M]
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4-flash
+          # OpenCode Go 的 Anthropic 兼容端点(2026-10-18 从 https://api.deepseek.com/anthropic 迁移过来)。
+          ANTHROPIC_BASE_URL: https://opencode.ai/zen/go
+          # 该网关只认裸 id:"deepseek-v4.1-flash[1M]" 会返回 {"message":"Model is unavailable."}。
+          # "[1M]" 是上下文标注、不是 id 的一部分,而这个 id 本身就是 1M 上下文(2026-10-18 实测:
+          # 约 96 万 token 输入通过、约 107 万被拒;max_tokens 上限 393216),所以不需要后缀。
+          ANTHROPIC_MODEL: deepseek-v4.1-flash
+          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4.1-flash
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-v4.1-flash
         with:
-          anthropic_api_key: ${{ secrets.DEEPSEEK_KEY }}
+          anthropic_api_key: ${{ secrets.OPENCODE_GO_API_KEY_FOR_REVIEW }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # Without this the action refuses every bot-authored PR before it reads a line
           # of the diff:
@@ -67,6 +78,11 @@ jobs:
           # still reported "No issues found", but the action treated the budget overrun as a
           # failure, so the `review` check went red on a clean PR (observed on #33). The
           # review comment had already been posted by then, which made the red check doubly
-          # confusing. 30 leaves room for a real multi-file read without inviting an
-          # unbounded run.
-          claude_args: "--model deepseek-v4-pro[1M] --max-turns 30 --allowedTools Bash,Read,Grep,Glob"
+          # confusing.
+          #
+          # 30 then turned out to be too tight for deepseek-v4.1-flash on OpenCode Go: with a
+          # two-file workflow-only diff the reviewer used all 30 and died with
+          # "Reached maximum number of turns (30)" (num_turns 31) BEFORE posting anything --
+          # so the job went red and produced no review at all. The model reasons more per turn
+          # than the previous one did. 60 keeps the bound while leaving room to finish.
+          claude_args: "--model deepseek-v4.1-flash --max-turns 60 --allowedTools Bash,Read,Grep,Glob"

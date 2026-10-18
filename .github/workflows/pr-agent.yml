@@ -10,7 +10,7 @@ concurrency:
 
 jobs:
   pr_agent_job:
-    if: ${{ github.event.sender.type != 'Bot' }}
+    if: ${{ github.event.pull_request.base.ref == 'dev' && github.event.sender.type != 'Bot' }}
     # NOTE: keep ubuntu-latest (NOT ubuntu-slim). pr-agent is a Docker container
     # action; the slim runner image has no docker daemon, so the action's build
     # phase fails with "no such file or directory" on /var/run/docker.sock.
@@ -26,11 +26,33 @@ jobs:
         uses: the-pr-agent/pr-agent@b3fc28e103aedd7f209ffd12add34adc3ff9d945
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEEPSEEK.KEY: ${{ secrets.DEEPSEEK_KEY }}
-          config.model: "deepseek/deepseek-v4-pro"
-          config.fallback_models: '["deepseek/deepseek-v4-pro"]'
-          config.custom_model_max_tokens: "131072"
-          config.max_model_tokens: "120000"
+          # OpenCode Go 的 Anthropic 兼容端点(2026-10-18 从 DeepSeek 直连的 deepseek/ 提供方迁过来)。
+          # 点号配置项是 pr-agent 自己的:它会用 settings 里的 api_key 覆盖裸 litellm 环境变量,
+          # 只设 ANTHROPIC_API_KEY 会被空值覆盖。裸 ANTHROPIC_API_* 留作 litellm 兜底。
+          ANTHROPIC.KEY: ${{ secrets.OPENCODE_GO_API_KEY_FOR_REVIEW }}
+          ANTHROPIC.API_BASE: "https://opencode.ai/zen/go"
+          ANTHROPIC_API_BASE: "https://opencode.ai/zen/go"
+          ANTHROPIC_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY_FOR_REVIEW }}
+          # 网关强制要求会话头,缺失会返回 MissingSessionID;走 pr-agent 支持的 LITELLM.EXTRA_HEADERS。
+          LITELLM.EXTRA_HEADERS: '{"x-opencode-session": "pr-agent-${{ github.run_id }}-${{ github.run_attempt }}"}'
+          # 输出上限:pr-agent 在这里没有 max_output_tokens 键,请求不带 max_tokens 时 litellm 的
+          # Anthropic 适配器会回落到 4096(带推理的模型会被 reasoning 吃光,审查空跑但 job 报绿)。
+          # 出处(可核对):pr-agent v0.39.0 的 requirements.txt 钉 litellm==1.84.0。该版
+          # litellm/llms/anthropic/chat/transformation.py:162-182 在请求不带 max_tokens 时调用
+          # get_max_tokens_for_model();本模型 id 不在其内置表里 → 落到 constants.py:413 的
+          # DEFAULT_ANTHROPIC_CHAT_MAX_TOKENS(默认 4096)。pr-agent 侧全文件唯一设置 max_tokens
+          # 的地方是 litellm_ai_handler.py:351,只在 enable_claude_extended_thinking=true 时执行
+          # (configuration.toml:68 默认 false,本仓未开)。
+          DEFAULT_ANTHROPIC_CHAT_MAX_TOKENS: "131072"
+          # 模型:OpenCode Go 只认裸 id;"deepseek-v4.1-flash[1M]" 会返回 {"message":"Model is unavailable."}。
+          # "[1M]" 是上下文标注、不是 id 的一部分,而这个 id 本身就是 1M 上下文(2026-10-18 实测:
+          # 约 96 万 token 输入通过、约 107 万被拒),所以不需要后缀。同网关上的备选是 deepseek-v4-pro。
+          config.model: "anthropic/deepseek-v4.1-flash"
+          config.fallback_models: '["anthropic/deepseek-v4-pro"]'
+          # 该 id 不在 pr-agent 内置的 MAX_TOKENS 表里,不设 custom_model_max_tokens 会让 get_max_tokens() 抛异常。
+          # 1M 上下文是输入与输出共用的:输入上限 850000 + 输出上限 131072 ≈ 98 万,留一点余量。
+          config.custom_model_max_tokens: "1000000"
+          config.max_model_tokens: "800000"
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
           github_action_config.auto_improve: "true"
