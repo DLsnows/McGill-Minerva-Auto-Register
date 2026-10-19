@@ -1,4 +1,4 @@
-name: Claude PR Review
+name: Claude PR Review (Opus 5.5)
 
 # Claude（Opus 5.5）代码审查，走用户的 Claude 订阅（OAuth token，不按量计费）。只审不改。
 # 所有 base 的 PR 都跑（含 feat/** 子支线；跳过 draft / fork / dependabot；dev → staging → prod 的晋升 PR 不审）。
