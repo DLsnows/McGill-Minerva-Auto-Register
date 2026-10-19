@@ -54,6 +54,27 @@ function validateWorkflow(file) {
   for (const [jobId, job] of Object.entries(jobs)) {
     check(job && typeof job === 'object', label, `job \`${jobId}\` is not a mapping`);
     if (!job || typeof job !== 'object') continue;
+    // Caller job of a reusable workflow (the AI review stubs): no runs-on / steps of its own.
+    // Only the central, version-pinned workflow is accepted, and `secrets: inherit` is
+    // forbidden (it would hand every repo secret to the called workflow).
+    if (typeof job.uses === 'string') {
+      check(
+        /^Synchain-oss\/ci-workflows\/\.github\/workflows\/[\w-]+\.yml@v1$/.test(job.uses),
+        label,
+        `job \`${jobId}\` \`uses\` must be Synchain-oss/ci-workflows/.github/workflows/<name>.yml@v1 (got \`${job.uses}\`)`,
+      );
+      check(
+        job.secrets !== 'inherit',
+        label,
+        `job \`${jobId}\` must pass secrets explicitly, not \`secrets: inherit\``,
+      );
+      check(
+        !('runs-on' in job) && !('steps' in job),
+        label,
+        `job \`${jobId}\` calls a reusable workflow and cannot also define runs-on/steps`,
+      );
+      continue;
+    }
     check(typeof job['runs-on'] === 'string', label, `job \`${jobId}\` is missing \`runs-on\``);
     check(Array.isArray(job.steps) && job.steps.length > 0, label, `job \`${jobId}\` has no steps`);
     for (const [i, step] of (job.steps ?? []).entries()) {

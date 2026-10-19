@@ -23,7 +23,7 @@ prod  ← 由维护者从 dev/staging 晋升
 
 1. **不要 push 到 `dev` / `staging` / `prod`**。
 2. **不要自动把任何 PR 合并到 `dev`** —— 必须由维护者审核合并。
-3. **不要修改 `.github/workflows/claude-code-review.yml` 或 `pr-agent.yml`**（评审基础设施）。
+3. **不要修改 `.github/workflows/claude-review.yml`、`deepseek-review.yml` 或 `pr-agent.yml`**（评审基础设施；它们是 `Synchain-oss/ci-workflows@v1` 中央 workflow 的薄调用）。未经 owner 授权不得改动；2026-10-18 的迁移已获 owner 授权。
 4. **不要提交** `data/`、`.env`、`.browser-profile/`、`screenshots/`、任何 Minerva 页面 HTML 样本。
 5. **不要在没有任务授权时修改 `package-lock.json`**。
 
@@ -50,7 +50,7 @@ npm run build:web
 | PR base                            | 跑什么                                                                                                                                    |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `dev` / `staging` / `prod`         | 全量 CI（lint / typecheck / prettier-changed / test / web build）+ branch gate；base=`dev` 时首次 opened 额外跑 preview e2e 与 Lighthouse |
-| `feat/**` / `feature/**`（子支线） | **不跑全量 CI** —— 本地跑 gates；Claude review 与 pr-agent 照常跑                                                                         |
+| `feat/**` / `feature/**`（子支线） | **不跑全量 CI** —— 本地跑 gates；Claude review 照常跑（pr-agent 只在 base=`dev` 时跑）                                                    |
 
 ## PR 要求
 

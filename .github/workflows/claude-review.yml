@@ -1,0 +1,28 @@
+name: Claude PR Review
+
+# Claude（Opus 5.5）代码审查，走用户的 Claude 订阅（OAuth token，不按量计费）。只审不改。
+# 所有 base 的 PR 都跑（含 feat/** 子支线；跳过 draft / fork / dependabot；dev → staging → prod 的晋升 PR 不审）。
+# 工具边界、符号链接拒审、diff 预取等安全设置都在 Synchain-oss/ci-workflows 的 claude-review.yml
+# 里统一维护；这里只放本仓专属的审查重点。
+# 取代旧的 claude-code-review.yml（DeepSeek 经 OpenCode Go，按量计费）。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  claude-pr-review:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+    uses: Synchain-oss/ci-workflows/.github/workflows/claude-review.yml@v1
+    with:
+      focus: |
+        - 找出 bug、逻辑错误与安全问题
+        - 跳过格式、代码风格、类型错误（这些由 CI 负责）以及本 PR 之前就存在的问题
+    secrets:
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
