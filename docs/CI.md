@@ -1,28 +1,29 @@
 # CI 与质量门禁
 
-本仓库的 CI 由 6 个 workflow 组成（`.github/workflows/`）：
+本仓库的 CI 由 7 个 workflow 组成（`.github/workflows/`）：
 
-| Workflow                 | 触发                                                                                  | 作用                                                                                        |
-| ------------------------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `ci.yml`                 | PR → `dev` / `staging` / `prod`（opened / synchronize / reopened / ready_for_review） | 全量门禁：lint+typecheck+prettier(changed) / unit-tests / web-build，聚合成一条 sticky 评论 |
-| `branch-gate.yml`        | PR → `dev` / `staging` / `prod`（同上）                                               | 强制晋升链 + 拒绝 fork                                                                      |
-| `preview-e2e.yml`        | PR → `dev`，**仅 `opened`**                                                           | Playwright 对真实前端产物跑端到端验收（假后端，不连 Minerva）                               |
-| `lighthouse.yml`         | PR → `dev`，**仅 `opened`**                                                           | 对本地托管的构建产物跑 Lighthouse（默认不阻塞）                                             |
-| `claude-code-review.yml` | 所有 PR                                                                               | Claude 评审（评审基础设施，勿改）                                                           |
-| `pr-agent.yml`           | 所有 PR                                                                               | pr-agent 评审（评审基础设施，勿改）                                                         |
+| Workflow              | 触发                                                                                  | 作用                                                                                        |
+| --------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `ci.yml`              | PR → `dev` / `staging` / `prod`（opened / synchronize / reopened / ready_for_review） | 全量门禁：lint+typecheck+prettier(changed) / unit-tests / web-build，聚合成一条 sticky 评论 |
+| `branch-gate.yml`     | PR → `dev` / `staging` / `prod`（同上）                                               | 强制晋升链 + 拒绝 fork                                                                      |
+| `preview-e2e.yml`     | PR → `dev`，**仅 `opened`**                                                           | Playwright 对真实前端产物跑端到端验收（假后端，不连 Minerva）                               |
+| `lighthouse.yml`      | PR → `dev`，**仅 `opened`**                                                           | 对本地托管的构建产物跑 Lighthouse（默认不阻塞）                                             |
+| `claude-review.yml`   | 所有 PR（跳过 draft / fork / bot；晋升 PR 不审）                                      | Claude 评审，走 Claude 订阅（评审基础设施，勿改；中央 workflow `ci-workflows@v1`）          |
+| `pr-agent.yml`        | PR → `dev`（跳过 draft / fork / bot）                                                 | pr-agent 评审，OpenCode Go（评审基础设施，勿改；中央 workflow `ci-workflows@v1`）           |
+| `deepseek-review.yml` | 仅手动 `workflow_dispatch`                                                            | Claude 订阅额度用完时的应急评审（OpenCode Go，按量计费），Actions 页填 PR 号                |
 
 ---
 
 ## 触发矩阵
 
-| PR base                                     | full CI (`ci.yml`) | branch gate                               | preview e2e  | Lighthouse   | 评审 bot |
-| ------------------------------------------- | ------------------ | ----------------------------------------- | ------------ | ------------ | -------- |
-| `dev`                                       | ✅                 | ✅（head 必须是 `feat/*` 或 `feature/*`） | ✅ 仅 opened | ✅ 仅 opened | ✅       |
-| `staging`                                   | ✅                 | ✅（head 必须是 `dev`）                   | ❌           | ❌           | ✅       |
-| `prod`（默认分支）                          | ✅                 | ✅（head 必须是 `dev` 或 `staging`）      | ❌           | ❌           | ✅       |
-| `feat/**`、`feature/**`（子支线 / 集成 PR） | ❌ **不跑**        | ❌                                        | ❌           | ❌           | ✅       |
+| PR base                                     | full CI (`ci.yml`) | branch gate                               | preview e2e  | Lighthouse   | 评审 bot               |
+| ------------------------------------------- | ------------------ | ----------------------------------------- | ------------ | ------------ | ---------------------- |
+| `dev`                                       | ✅                 | ✅（head 必须是 `feat/*` 或 `feature/*`） | ✅ 仅 opened | ✅ 仅 opened | Claude + pr-agent      |
+| `staging`                                   | ✅                 | ✅（head 必须是 `dev`）                   | ❌           | ❌           | Claude（晋升 PR 跳过） |
+| `prod`（默认分支）                          | ✅                 | ✅（head 必须是 `dev` 或 `staging`）      | ❌           | ❌           | Claude（晋升 PR 跳过） |
+| `feat/**`、`feature/**`（子支线 / 集成 PR） | ❌ **不跑**        | ❌                                        | ❌           | ❌           | Claude                 |
 
-> **子支线的 PR 跑什么？答案是：只有 `claude-code-review.yml` 与 `pr-agent.yml` 两个 AI 评审，
+> **子支线的 PR 跑什么？答案是：只有 `claude-review.yml` 这一个 AI 评审（`pr-agent.yml` 只跑 base=`dev`），
 > 除此之外没有任何 CI。** 这不是漏配，是策略：`ci.yml` / `branch-gate.yml` / `preview-e2e.yml` /
 > `lighthouse.yml` 的 `on.pull_request.branches` 都**不包含** `feat/**`（GitHub 的 `branches`
 > 过滤器只能列出具体分支名，无法表达 "base 不是长期分支"），所以子支线 PR 上这四个 workflow
@@ -322,8 +323,8 @@ commit 前缀 `build(deps)`。
 - **major 一律单独成 PR**（groups 只收 `update-types: [minor, patch]`）。
 - `@types/*` 的 major 更新被 ignore（DefinitelyTyped 的 major 跟随上游库发布，噪音大于价值）。
 
-因为目标是 `dev`，这些 PR 会走 `ci.yml` + branch gate + 两个 AI 评审（`claude-code-review.yml`
-已通过 `allowed_bots: 'dependabot[bot]'` 放行 bot 触发的 PR）。
+因为目标是 `dev`，这些 PR 会走 `ci.yml` + branch gate；两个 AI 评审（`claude-review.yml`、`pr-agent.yml`）
+由中央 workflow 直接跳过 bot 发起的 PR（不再需要 `allowed_bots`，也不会再因 bot 触发而红叉）。
 
 **`dependabot/*` 被显式放行进 `dev`**：Dependabot 的分支名是 `dependabot/npm_and_yarn/...`，
 而 branch gate 的 `dev` 规则原本只收 `feat/*` / `feature/*`。若不放行，**每一个依赖 PR 都注定
