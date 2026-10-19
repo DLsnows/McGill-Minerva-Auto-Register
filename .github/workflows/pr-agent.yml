@@ -1,4 +1,4 @@
-name: PR Agent Code Review
+name: PR Agent (DeepSeek V4.1 Flash)
 
 # pr-agent（describe / review / improve），DeepSeek V4.1 Flash 经 OpenCode Go，按量计费。
 # 只在 PR → dev 上跑（用户 2026-10-18 裁定），PR 每次 push 都重跑；
