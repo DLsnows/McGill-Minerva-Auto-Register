@@ -26,7 +26,7 @@
   "devDependencies": {
     "@types/node-notifier": "^8.0.5",
     "@types/nodemailer": "^6.4.17",
-    "@types/ws": "^8.5.13",
-    "tsx": "^4.19.2"
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15"
   }
 }
